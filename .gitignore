@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.codex-logs/
+
+src-tauri/target/
+
+*.pdb
+*.log
+.DS_Store
+Thumbs.db
