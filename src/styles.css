@@ -7,13 +7,13 @@
     -apple-system,
     BlinkMacSystemFont,
     sans-serif;
-  --overlay-opacity: 0.96;
+  --overlay-opacity: 0.99;
   --lyric-size: 28px;
   --line-spacing: 10px;
   --bg-saturation: 74%;
   --hue: 174;
   --hue-2: 4;
-  --surface: hsla(210, 18%, 9%, var(--overlay-opacity));
+  --surface: hsla(210, 18%, 7%, var(--overlay-opacity));
   --surface-strong: hsla(210, 20%, 5%, calc(var(--overlay-opacity) + 0.02));
   --text: #f8fbff;
   --muted: #b6c1c9;
@@ -51,41 +51,28 @@ button {
 .shell {
   width: 100vw;
   height: 100vh;
-  padding: 10px;
+  padding: 0;
   background: transparent;
 }
 
 .overlay {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: 1fr;
   width: 100%;
   height: 100%;
   min-width: 360px;
   min-height: 420px;
   overflow: hidden;
   color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   background:
-    linear-gradient(150deg, hsla(var(--hue), var(--bg-saturation), 26%, 0.54), transparent 42%),
-    linear-gradient(330deg, hsla(var(--hue-2), var(--bg-saturation), 20%, 0.52), transparent 48%),
+    linear-gradient(150deg, hsla(var(--hue), var(--bg-saturation), 18%, 0.22), transparent 48%),
+    linear-gradient(330deg, hsla(var(--hue-2), var(--bg-saturation), 16%, 0.2), transparent 54%),
     var(--surface);
-  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(22px) saturate(1.2);
-}
-
-.overlay::after {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  content: "";
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: linear-gradient(to bottom, transparent, black 18%, black 80%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(12px) saturate(1.08);
 }
 
 .chrome,
@@ -97,14 +84,27 @@ button {
 }
 
 .chrome {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  left: 10px;
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  min-height: 72px;
-  padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  min-height: 44px;
+  padding: 0;
+  border-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
   user-select: none;
+  transition: opacity 140ms ease;
+}
+
+.overlay:hover .chrome,
+.chrome:focus-within {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .track-meta {
@@ -180,7 +180,11 @@ button {
 }
 
 .status-strip {
-  margin: 8px 12px 0;
+  position: absolute;
+  top: 62px;
+  right: 12px;
+  left: 12px;
+  margin: 0;
   padding: 7px 10px;
   overflow: hidden;
   color: #fff5dc;
@@ -196,7 +200,7 @@ button {
 .lyrics-viewport {
   min-height: 0;
   overflow: hidden;
-  padding: 16px 22px 24px;
+  padding: 34px 28px;
   mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
 }
 
@@ -346,7 +350,7 @@ button {
 
 .settings-panel {
   position: absolute;
-  top: 84px;
+  top: 62px;
   right: 12px;
   display: grid;
   width: min(330px, calc(100% - 24px));
@@ -423,7 +427,7 @@ input[type="checkbox"] {
 
 @media (max-width: 480px) {
   .shell {
-    padding: 6px;
+    padding: 0;
   }
 
   .overlay {

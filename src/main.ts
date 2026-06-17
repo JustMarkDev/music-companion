@@ -58,7 +58,7 @@ type LyricWord = {
 
 const DEFAULT_SETTINGS: SettingsState = {
   alwaysOnTop: true,
-  opacity: 0.96,
+  opacity: 0.99,
   fontSize: 28,
   lineSpacing: 10,
   bgSaturation: 74,
@@ -153,7 +153,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <div class="setting-row">
           <label for="opacity">Opacity</label>
-          <input id="opacity" type="range" min="30" max="100" step="1" />
+          <input id="opacity" type="range" min="80" max="100" step="1" />
         </div>
         <div class="setting-row">
           <label for="font-size">Lyric size</label>
@@ -941,7 +941,11 @@ function applyGradient() {
 function loadSettings(): SettingsState {
   try {
     const stored = localStorage.getItem("music-companion-settings");
-    return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    const loaded = stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    return {
+      ...loaded,
+      opacity: Math.max(0.98, loaded.opacity),
+    };
   } catch {
     return DEFAULT_SETTINGS;
   }
