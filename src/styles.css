@@ -76,6 +76,7 @@ button {
 }
 
 .chrome,
+.drag-surface,
 .status-strip,
 .lyrics-viewport,
 .settings-panel {
@@ -83,16 +84,31 @@ button {
   z-index: 1;
 }
 
+.drag-surface {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 3;
+  height: 58px;
+  cursor: grab;
+}
+
+.drag-surface:active {
+  cursor: grabbing;
+}
+
 .chrome {
   position: absolute;
-  top: 10px;
+  top: 8px;
   right: 10px;
   left: 10px;
+  z-index: 4;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 8px;
   align-items: center;
-  min-height: 44px;
+  min-height: 32px;
   padding: 0;
   border-bottom: 0;
   opacity: 0;
@@ -101,8 +117,10 @@ button {
   transition: opacity 140ms ease;
 }
 
-.overlay:hover .chrome,
-.chrome:focus-within {
+.overlay.controls-visible .chrome,
+.chrome:hover,
+.chrome:focus-within,
+.overlay.settings-open .chrome {
   opacity: 1;
   pointer-events: auto;
 }
@@ -136,13 +154,13 @@ button {
 .window-actions {
   display: grid;
   grid-auto-flow: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .icon-button {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   color: var(--text);
   background: rgba(255, 255, 255, 0.1);
@@ -165,8 +183,8 @@ button {
 }
 
 .icon-button svg {
-  width: 17px;
-  height: 17px;
+  width: 14px;
+  height: 14px;
   stroke-width: 2.1;
 }
 
@@ -181,7 +199,7 @@ button {
 
 .status-strip {
   position: absolute;
-  top: 62px;
+  top: 58px;
   right: 12px;
   left: 12px;
   margin: 0;
@@ -200,7 +218,7 @@ button {
 .lyrics-viewport {
   min-height: 0;
   overflow: hidden;
-  padding: 34px 28px;
+  padding: 78px 28px 34px;
   mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
 }
 
@@ -223,7 +241,7 @@ button {
   font-weight: 720;
   line-height: 1.16;
   text-align: center;
-  text-wrap: balance;
+  overflow-wrap: anywhere;
   transition:
     color 180ms ease,
     filter 180ms ease,
@@ -257,7 +275,8 @@ button {
   text-shadow:
     0 0 22px color-mix(in srgb, var(--accent) 45%, transparent),
     0 1px 16px rgba(0, 0, 0, 0.5);
-  transform: scale(1.03);
+  transform: scale(1.012);
+  animation: line-arrive 220ms ease-out;
 }
 
 .lyric-line.active::after {
@@ -310,8 +329,12 @@ button {
   text-shadow:
     0 0 18px color-mix(in srgb, var(--accent) 55%, transparent),
     0 0 34px color-mix(in srgb, var(--accent-2) 35%, transparent);
-  transform: translateY(-2px) scale(1.11);
+  transform: translateY(-1px) scale(1.035);
   animation: word-arrive 360ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.lyric-word.active.emulated {
+  animation-duration: 420ms;
 }
 
 .lyric-word.active.exact {
@@ -320,19 +343,31 @@ button {
 
 @keyframes word-arrive {
   0% {
-    filter: blur(2px) saturate(1.8);
-    opacity: 0.82;
-    transform: translateY(7px) scale(0.94);
+    filter: blur(1px) saturate(1.45);
+    opacity: 0.86;
+    transform: translateY(2px) scale(0.99);
   }
 
   55% {
-    transform: translateY(-3px) scale(1.14);
+    transform: translateY(-1px) scale(1.045);
   }
 
   100% {
     filter: blur(0) saturate(1.22);
     opacity: 1;
-    transform: translateY(-2px) scale(1.11);
+    transform: translateY(-1px) scale(1.035);
+  }
+}
+
+@keyframes line-arrive {
+  0% {
+    opacity: 0.8;
+    transform: translateY(4px) scale(1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1.012);
   }
 }
 
@@ -350,7 +385,7 @@ button {
 
 .settings-panel {
   position: absolute;
-  top: 62px;
+  top: 58px;
   right: 12px;
   display: grid;
   width: min(330px, calc(100% - 24px));
@@ -445,6 +480,6 @@ input[type="checkbox"] {
   }
 
   .lyrics-viewport {
-    padding-inline: 16px;
+    padding: 78px 16px 28px;
   }
 }

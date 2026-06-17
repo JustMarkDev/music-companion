@@ -47,6 +47,7 @@ type LyricLine = {
   text: string;
   words: LyricWord[];
   hasExactWordTiming: boolean;
+  emulated: boolean;
 };
 
 type LyricWord = {
@@ -54,6 +55,7 @@ type LyricWord = {
   startMs: number | null;
   endMs: number | null;
   exact: boolean;
+  emulated: boolean;
 };
 
 const DEFAULT_SETTINGS: SettingsState = {
@@ -83,13 +85,13 @@ const demoState: MediaState = {
   playingSessionCount: 1,
 };
 
-const demoLyrics = `[00:00.00]<00:00.00>Waiting <00:00.48>for <00:00.82>a <00:01.06>song
-[00:12.20]<00:12.20>The <00:12.44>window <00:12.98>catches <00:13.54>the <00:13.80>rhythm
-[00:23.40]<00:23.40>Every <00:23.88>line <00:24.34>finds <00:24.82>its <00:25.12>light
-[00:36.90]<00:36.90>Floating <00:37.48>over <00:37.92>work <00:38.34>and <00:38.62>play
-[00:49.10]<00:49.10>Music <00:49.56>Companion <00:50.20>keeps <00:50.68>time
-[01:03.00]<01:03.00>The <01:03.22>chorus <01:03.82>arrives <01:04.32>in <01:04.58>color
-[01:18.40]<01:18.40>Then <01:18.78>slips <01:19.18>back <01:19.58>into <01:20.00>the <01:20.22>night`;
+const demoLyrics = `[00:00.00] Waiting for a song
+[00:12.20] The window catches the rhythm
+[00:23.40] Every line finds its light
+[00:36.90] Floating over work and play
+[00:49.10] Music Companion keeps time
+[01:03.00] The chorus arrives in color
+[01:18.40] Then slips back into the night`;
 
 const tauriAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const appWindow = tauriAvailable ? getCurrentWindow() : null;
@@ -109,10 +111,12 @@ let mediaSampledAtMs = performance.now();
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
+let lyricDurationMs: number | null = demoState.durationMs;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="shell">
     <section class="overlay" id="overlay">
+      <div class="drag-surface" id="drag-surface" title="Drag window"></div>
       <header class="chrome" data-drag-region>
         <button class="icon-button handle" id="drag-handle" title="Drag window" aria-label="Drag window">
           <i data-lucide="grip"></i>
@@ -204,10 +208,38 @@ schedulePolling();
 startSyncLoop();
 
 function wireUi() {
+  const overlay = document.querySelector<HTMLElement>("#overlay");
+  overlay?.addEventListener("pointermove", (event) => {
+    const rect = overlay.getBoundingClientRect();
+    overlay.classList.toggle("controls-visible", event.clientY - rect.top <= 72);
+  });
+  overlay?.addEventListener("pointerleave", () => {
+    if (!settingsOpen) {
+      overlay.classList.remove("controls-visible");
+    }
+  });
+
+  document.querySelector("#drag-surface")?.addEventListener("pointerdown", (event) => {
+    if (appWindow && event instanceof PointerEvent && event.button === 0) {
+      void appWindow.startDragging();
+    }
+  });
+
   document.querySelector("#drag-handle")?.addEventListener("pointerdown", () => {
     if (appWindow) {
       void appWindow.startDragging();
     }
+  });
+
+  document.querySelector("#lyrics-viewport")?.addEventListener("dblclick", () => {
+    settingsOpen = !settingsOpen;
+    renderSettings();
+  });
+
+  document.querySelector("#lyrics-viewport")?.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    settingsOpen = !settingsOpen;
+    renderSettings();
   });
 
   document.querySelector("#settings-toggle")?.addEventListener("click", () => {
@@ -399,6 +431,7 @@ function applyLyrics(result: LyricsResult | null) {
   }
 
   if (result.instrumental) {
+    lyricDurationMs = getResultDurationMs(result);
     lyricsLines = [createLyricLine(null, "Instrumental")];
     lyricsMode = "instrumental";
     invalidateLyricsRender();
@@ -406,17 +439,22 @@ function applyLyrics(result: LyricsResult | null) {
   }
 
   if (result.syncedLyrics) {
-    lyricsLines = parseLyrics(result.syncedLyrics);
+    lyricDurationMs = getResultDurationMs(result);
+    lyricsLines = ensureAnimatedTimings(parseLyrics(result.syncedLyrics));
     lyricsMode = "synced";
     invalidateLyricsRender();
     return;
   }
 
   if (result.plainLyrics) {
-    lyricsLines = result.plainLyrics
-      .split(/\r?\n/)
-      .map((text) => createLyricLine(null, text.trim()))
-      .filter((line) => line.text.length > 0);
+    lyricDurationMs = getResultDurationMs(result);
+    lyricsLines = emulateLineTimings(
+      result.plainLyrics
+        .split(/\r?\n/)
+        .map((text) => createLyricLine(null, text.trim()))
+        .filter((line) => line.text.length > 0),
+      getEffectiveDurationMs(),
+    );
     lyricsMode = "plain";
     invalidateLyricsRender();
     return;
@@ -440,6 +478,10 @@ function splitWords(value: string) {
 function estimateLineDuration(line: LyricLine) {
   const wordDuration = line.hasExactWordTiming ? 380 : 460;
   return clamp(line.words.length * wordDuration, 1400, 7200);
+}
+
+function getResultDurationMs(result: LyricsResult) {
+  return result.duration ? result.duration * 1000 : currentMedia.durationMs;
 }
 
 function parseLyrics(raw: string): LyricLine[] {
@@ -476,7 +518,16 @@ function createLyricLine(timeMs: number | null, textWithWordTags: string): Lyric
     text: parsed.text || " ",
     words: parsed.words,
     hasExactWordTiming: parsed.hasExactWordTiming,
+    emulated: false,
   };
+}
+
+function ensureAnimatedTimings(lines: LyricLine[]) {
+  if (lines.some((line) => line.timeMs !== null)) {
+    return lines;
+  }
+
+  return emulateLineTimings(lines, getEffectiveDurationMs(lines));
 }
 
 function parseWords(textWithWordTags: string): {
@@ -496,6 +547,7 @@ function parseWords(textWithWordTags: string): {
         startMs: null,
         endMs: null,
         exact: false,
+        emulated: false,
       })),
       hasExactWordTiming: false,
     };
@@ -522,6 +574,7 @@ function parseWords(textWithWordTags: string): {
         startMs: markerStart,
         endMs: markerEnd,
         exact: true,
+        emulated: false,
       });
       continue;
     }
@@ -535,6 +588,7 @@ function parseWords(textWithWordTags: string): {
         startMs,
         endMs,
         exact: true,
+        emulated: false,
       });
     }
   }
@@ -594,14 +648,45 @@ function assignWordTimings(line: LyricLine) {
 
   const weights = line.words.map((word) => Math.max(1, Math.sqrt(word.text.length)));
   const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  const singableEndMs = Math.min(line.endTimeMs, line.timeMs + estimateLineDuration(line));
+  const singableDurationMs = Math.max(900, singableEndMs - line.timeMs);
   let cursor = line.timeMs;
 
   for (let index = 0; index < line.words.length; index += 1) {
-    const duration = ((line.endTimeMs - line.timeMs) * weights[index]) / totalWeight;
+    const duration = (singableDurationMs * weights[index]) / totalWeight;
     line.words[index].startMs = cursor;
-    line.words[index].endMs = index === line.words.length - 1 ? line.endTimeMs : cursor + duration;
+    line.words[index].endMs = index === line.words.length - 1 ? singableEndMs : cursor + duration;
+    line.words[index].emulated = true;
     cursor += duration;
   }
+}
+
+function emulateLineTimings(lines: LyricLine[], durationMs: number) {
+  if (lines.length === 0) {
+    return lines;
+  }
+
+  const weights = lines.map((line) =>
+    Math.max(2, line.words.length || splitWords(line.text).length),
+  );
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  let cursor = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineDuration =
+      index === lines.length - 1
+        ? durationMs - cursor
+        : (durationMs * weights[index]) / totalWeight;
+    const endTimeMs = index === lines.length - 1 ? durationMs : cursor + lineDuration;
+
+    lines[index].timeMs = cursor;
+    lines[index].endTimeMs = Math.max(cursor + 900, Math.min(durationMs, endTimeMs));
+    lines[index].emulated = true;
+    assignWordTimings(lines[index]);
+    cursor = lines[index].endTimeMs ?? cursor;
+  }
+
+  return lines;
 }
 
 function updateActiveLine(positionMs = getSyncedPositionMs()) {
@@ -613,9 +698,7 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
 
   const timed = lyricsLines.some((line) => line.timeMs !== null);
   if (!timed) {
-    const ratio = currentMedia.durationMs
-      ? clamp(positionMs / currentMedia.durationMs, 0, 0.98)
-      : 0;
+    const ratio = clamp(positionMs / getEffectiveDurationMs(), 0, 0.98);
     activeLineIndex = Math.floor(ratio * lyricsLines.length);
     activeWordIndex = resolveUntimedActiveWord(activeLineIndex, ratio);
     return;
@@ -644,9 +727,8 @@ function getSyncedPositionMs() {
     ? Math.min(performance.now() - mediaSampledAtMs, Math.max(1000, settings.pollingIntervalMs * 5))
     : 0;
   const position = currentMedia.positionMs + elapsed * rate + settings.syncOffsetMs;
-  return currentMedia.durationMs
-    ? clamp(position, 0, currentMedia.durationMs)
-    : Math.max(0, position);
+  const durationMs = currentMedia.durationMs ?? lyricDurationMs;
+  return durationMs ? clamp(position, 0, durationMs) : Math.max(0, position);
 }
 
 function resolveActiveWord(line: LyricLine | undefined, positionMs: number) {
@@ -666,7 +748,15 @@ function resolveActiveWord(line: LyricLine | undefined, positionMs: number) {
     }
   }
 
-  return -1;
+  let closestPastIndex = -1;
+  for (let index = 0; index < line.words.length; index += 1) {
+    const word = line.words[index];
+    if (word.startMs !== null && word.startMs <= positionMs) {
+      closestPastIndex = index;
+    }
+  }
+
+  return closestPastIndex;
 }
 
 function resolveUntimedActiveWord(lineIndex: number, songRatio: number) {
@@ -690,13 +780,14 @@ function getLineProgress(line: LyricLine | undefined, positionMs: number) {
     return clamp((positionMs - line.timeMs) / (line.endTimeMs - line.timeMs), 0, 1);
   }
 
-  if (!currentMedia.durationMs || lyricsLines.length === 0) {
+  if (lyricsLines.length === 0) {
     return 0;
   }
 
+  const durationMs = getEffectiveDurationMs();
   const lineIndex = lyricsLines.indexOf(line);
-  const lineStart = (currentMedia.durationMs * lineIndex) / lyricsLines.length;
-  const lineEnd = (currentMedia.durationMs * (lineIndex + 1)) / lyricsLines.length;
+  const lineStart = (durationMs * lineIndex) / lyricsLines.length;
+  const lineEnd = (durationMs * (lineIndex + 1)) / lyricsLines.length;
   return clamp((positionMs - lineStart) / (lineEnd - lineStart), 0, 1);
 }
 
@@ -710,12 +801,13 @@ function getWordState(line: LyricLine, lineIndex: number, wordIndex: number, pos
     return { progress: (positionMs - word.startMs) / (word.endMs - word.startMs) };
   }
 
-  if (!currentMedia.durationMs || lyricsLines.length === 0 || line.words.length === 0) {
+  if (lyricsLines.length === 0 || line.words.length === 0) {
     return { progress: 0 };
   }
 
-  const lineStart = (currentMedia.durationMs * lineIndex) / lyricsLines.length;
-  const lineEnd = (currentMedia.durationMs * (lineIndex + 1)) / lyricsLines.length;
+  const durationMs = getEffectiveDurationMs();
+  const lineStart = (durationMs * lineIndex) / lyricsLines.length;
+  const lineEnd = (durationMs * (lineIndex + 1)) / lyricsLines.length;
   const wordStart = lineStart + ((lineEnd - lineStart) * wordIndex) / line.words.length;
   const wordEnd = lineStart + ((lineEnd - lineStart) * (wordIndex + 1)) / line.words.length;
   return { progress: (positionMs - wordStart) / (wordEnd - wordStart) };
@@ -826,6 +918,7 @@ function updateLyricDom(positionMs: number) {
     lineElement.classList.toggle("active", lineIndex === activeLineIndex);
     lineElement.classList.toggle("near", distance === 1);
     lineElement.classList.toggle("far", distance > 4);
+    lineElement.classList.toggle("emulated", Boolean(line?.emulated));
     lineElement.style.setProperty("--line-progress", String(getLineProgress(line, positionMs)));
 
     const wordElements = lineElement.querySelectorAll<HTMLElement>(".lyric-word");
@@ -840,6 +933,7 @@ function updateLyricDom(positionMs: number) {
       );
       wordElement.classList.toggle("upcoming", state.progress <= 0);
       wordElement.classList.toggle("exact", Boolean(line.words[wordIndex]?.exact));
+      wordElement.classList.toggle("emulated", Boolean(line.words[wordIndex]?.emulated));
       wordElement.style.setProperty("--word-progress", String(clamp(state.progress, 0, 1)));
     });
   });
@@ -866,12 +960,24 @@ function getLyricsRenderKey() {
     .join("|")}`;
 }
 
+function getEffectiveDurationMs(lines = lyricsLines) {
+  return currentMedia.durationMs ?? lyricDurationMs ?? estimateLyricsDuration(lines);
+}
+
+function estimateLyricsDuration(lines: LyricLine[]) {
+  const wordCount = lines.reduce((total, line) => total + Math.max(1, line.words.length), 0);
+  return clamp(wordCount * 430, 30_000, 8 * 60_000);
+}
+
 function invalidateLyricsRender() {
   renderedLyricsKey = "";
 }
 
 function renderSettings() {
   const panel = document.querySelector<HTMLElement>("#settings-panel")!;
+  const overlay = document.querySelector<HTMLElement>("#overlay");
+  overlay?.classList.toggle("settings-open", settingsOpen);
+  overlay?.classList.toggle("controls-visible", settingsOpen);
   panel.hidden = !settingsOpen;
 
   document.querySelector<HTMLInputElement>("#opacity")!.value = String(
