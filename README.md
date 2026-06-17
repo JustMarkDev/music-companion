@@ -6,8 +6,9 @@ A Windows-only Tauri + Vite+ lyrics overlay inspired by Lyric Overlay and LyPy. 
 
 - Windows Media Transport Controls support for Spotify, Apple Music, YouTube Music, browsers, VLC, and other compatible players.
 - LRCLIB synced lyrics, with plain-lyrics fallback.
+- Enhanced LRC word timing when available, plus smooth per-word interpolation for line-timed lyrics.
 - Transparent, resizable, always-on-top overlay.
-- Live line highlighting and smooth scrolling.
+- Live line and word highlighting with smooth scrolling and animated word transitions.
 - Settings for opacity, lyric size, spacing, saturation, polling interval, start at login, and Spotify-focused auto-show behavior.
 - Tray support: close hides the overlay, tray menu can show or quit the app.
 
@@ -52,7 +53,9 @@ npm run preview  # vp preview
 
 1. The Rust backend asks Windows for the current media session through WMTC.
 2. When the active track changes, the app queries LRCLIB over HTTPS.
-3. The frontend parses LRC timestamps and highlights the active lyric line using the reported playback position.
+3. The frontend parses line timestamps and enhanced word timestamps when present.
+4. A local playback clock extrapolates between WMTC samples so highlighting stays smooth between polls.
+5. When a track only has line-level LRC, the app estimates per-word timing across each line.
 
 ## Notes
 

@@ -212,6 +212,7 @@ button {
 }
 
 .lyric-line {
+  position: relative;
   margin: var(--line-spacing) 0;
   color: rgba(255, 255, 255, 0.35);
   font-size: var(--lyric-size);
@@ -226,6 +227,23 @@ button {
     transform 180ms ease;
 }
 
+.lyric-line::after {
+  position: absolute;
+  right: 20%;
+  bottom: -6px;
+  left: 20%;
+  height: 2px;
+  content: "";
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent-2), transparent);
+  border-radius: 999px;
+  opacity: 0;
+  transform: scaleX(var(--line-progress));
+  transform-origin: left center;
+  transition:
+    opacity 180ms ease,
+    transform 80ms linear;
+}
+
 .lyric-line.near {
   color: rgba(255, 255, 255, 0.63);
 }
@@ -238,9 +256,80 @@ button {
   transform: scale(1.03);
 }
 
+.lyric-line.active::after {
+  opacity: 0.65;
+}
+
 .lyric-line.far {
   opacity: 0.42;
   filter: blur(0.2px);
+}
+
+.lyric-word {
+  display: inline-block;
+  position: relative;
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    #ffffff 0,
+    color-mix(in srgb, #ffffff 94%, var(--accent) 6%) calc(var(--word-progress) * 100%),
+    rgba(255, 255, 255, 0.38) calc(var(--word-progress) * 100%),
+    rgba(255, 255, 255, 0.38) 100%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: saturate(1);
+  transform: translateY(0) scale(1);
+  transform-origin: center bottom;
+  transition:
+    background 90ms linear,
+    filter 180ms ease,
+    opacity 180ms ease,
+    text-shadow 180ms ease,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, filter;
+}
+
+.lyric-word.past {
+  opacity: 0.82;
+  filter: saturate(0.9);
+}
+
+.lyric-word.upcoming {
+  opacity: 0.72;
+}
+
+.lyric-word.active {
+  opacity: 1;
+  filter: saturate(1.22);
+  text-shadow:
+    0 0 18px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 34px color-mix(in srgb, var(--accent-2) 35%, transparent);
+  transform: translateY(-2px) scale(1.11);
+  animation: word-arrive 360ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.lyric-word.active.exact {
+  animation-duration: 300ms;
+}
+
+@keyframes word-arrive {
+  0% {
+    filter: blur(2px) saturate(1.8);
+    opacity: 0.82;
+    transform: translateY(7px) scale(0.94);
+  }
+
+  55% {
+    transform: translateY(-3px) scale(1.14);
+  }
+
+  100% {
+    filter: blur(0) saturate(1.22);
+    opacity: 1;
+    transform: translateY(-2px) scale(1.11);
+  }
 }
 
 .empty-state {

@@ -20,6 +20,7 @@ struct MediaState {
     source_app: String,
     position_ms: u64,
     duration_ms: Option<u64>,
+    playback_rate: Option<f64>,
     playing_session_count: u32,
 }
 
@@ -179,6 +180,7 @@ mod media {
                 source_app: String::new(),
                 position_ms: 0,
                 duration_ms: None,
+                playback_rate: None,
                 playing_session_count: 0,
             });
         };
@@ -189,6 +191,10 @@ mod media {
         let timeline = session.GetTimelineProperties()?;
         let position_ms = timespan_to_ms(timeline.Position()?);
         let end_ms = timespan_to_ms(timeline.EndTime()?);
+        let playback_rate = playback
+            .PlaybackRate()
+            .ok()
+            .and_then(|value| value.Value().ok());
 
         Ok(MediaState {
             has_session: true,
@@ -200,6 +206,7 @@ mod media {
             source_app: session.SourceAppUserModelId()?.to_string_lossy(),
             position_ms,
             duration_ms: (end_ms > 0).then_some(end_ms),
+            playback_rate,
             playing_session_count: playing_count,
         })
     }
