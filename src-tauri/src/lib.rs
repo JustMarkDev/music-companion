@@ -1,14 +1,21 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("Music Companion is currently Windows-only.");
 
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
+    time::Duration,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WebviewWindow, WindowEvent,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MediaState {
     has_session: bool,
@@ -23,6 +30,28 @@ struct MediaState {
     playback_rate: Option<f64>,
     playing_session_count: u32,
 }
+
+impl MediaState {
+    fn no_session(status: &str) -> Self {
+        Self {
+            has_session: false,
+            is_playing: false,
+            status: status.to_string(),
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            source_app: String::new(),
+            position_ms: 0,
+            duration_ms: None,
+            playback_rate: None,
+            playing_session_count: 0,
+        }
+    }
+}
+
+static MEDIA_QUERY_RUNNING: AtomicBool = AtomicBool::new(false);
+static MEDIA_CACHE: OnceLock<Mutex<Option<MediaState>>> = OnceLock::new();
+const MEDIA_QUERY_WAIT: Duration = Duration::from_millis(650);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -50,8 +79,42 @@ struct LrclibLyrics {
 }
 
 #[tauri::command]
-fn get_media_state() -> Result<MediaState, String> {
-    media::current_media_state().map_err(|error| error.to_string())
+async fn get_media_state() -> Result<MediaState, String> {
+    if MEDIA_QUERY_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(cached_media_state()
+            .unwrap_or_else(|| MediaState::no_session("Windows media session is starting")));
+    }
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = media::current_media_state().map_err(|error| error.to_string());
+        if let Ok(state) = &result {
+            store_media_state(state.clone());
+        }
+        MEDIA_QUERY_RUNNING.store(false, Ordering::Release);
+        let _ = sender.send(result);
+    });
+
+    match tokio::time::timeout(MEDIA_QUERY_WAIT, receiver).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Ok(cached_media_state()
+            .unwrap_or_else(|| MediaState::no_session("Windows media session reader stopped"))),
+        Err(_) => Ok(cached_media_state()
+            .unwrap_or_else(|| MediaState::no_session("Windows media session is starting"))),
+    }
+}
+
+fn cached_media_state() -> Option<MediaState> {
+    MEDIA_CACHE.get_or_init(|| Mutex::new(None)).lock().ok()?.clone()
+}
+
+fn store_media_state(state: MediaState) {
+    if let Ok(mut cache) = MEDIA_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(state);
+    }
 }
 
 #[tauri::command]
@@ -105,7 +168,7 @@ pub fn run() {
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Unlock overlay", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
@@ -116,8 +179,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    unlock_overlay(&window);
                 }
             }
             "quit" => app.exit(0),
@@ -131,8 +193,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             } = event
             {
                 if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    unlock_overlay(&window);
                 }
             }
         });
@@ -143,6 +204,13 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
     builder.build(app)?;
     Ok(())
+}
+
+fn unlock_overlay(window: &WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.emit("overlay-unlocked", ());
 }
 
 mod media {
@@ -170,19 +238,7 @@ mod media {
         }
 
         let Some(session) = selected else {
-            return Ok(MediaState {
-                has_session: false,
-                is_playing: false,
-                status: "No session".to_string(),
-                title: String::new(),
-                artist: String::new(),
-                album: String::new(),
-                source_app: String::new(),
-                position_ms: 0,
-                duration_ms: None,
-                playback_rate: None,
-                playing_session_count: 0,
-            });
+            return Ok(MediaState::no_session("No session"));
         };
 
         let playback = session.GetPlaybackInfo()?;
@@ -230,6 +286,7 @@ mod lyrics {
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
             .user_agent("MusicCompanion/0.1.0 (https://github.com/local/music-companion)")
+            .timeout(std::time::Duration::from_secs(8))
             .build()
             .map_err(|error| error.to_string())?;
 

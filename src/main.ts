@@ -1,6 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { createIcons, Eye, EyeOff, Grip, Minus, Pin, PinOff, Power, Settings, X } from "lucide";
+import {
+  createIcons,
+  Lock,
+  Maximize2,
+  Minimize,
+  MoreHorizontal,
+  Settings,
+  Unlock,
+  X,
+} from "lucide";
 import "./styles.css";
 
 type MediaState = {
@@ -29,47 +39,33 @@ type LyricsResult = {
 };
 
 type SettingsState = {
-  alwaysOnTop: boolean;
+  clickThrough: boolean;
   opacity: number;
   fontSize: number;
   lineSpacing: number;
   bgSaturation: number;
-  syncOffsetMs: number;
-  pollingIntervalMs: number;
   startAtLogin: boolean;
-  autoShowOnSpotify: boolean;
-  startHidden: boolean;
 };
 
 type LyricLine = {
   timeMs: number | null;
   endTimeMs: number | null;
   text: string;
-  words: LyricWord[];
-  hasExactWordTiming: boolean;
-  emulated: boolean;
-};
-
-type LyricWord = {
-  text: string;
-  startMs: number | null;
-  endMs: number | null;
-  exact: boolean;
+  words: string[];
   emulated: boolean;
 };
 
 const DEFAULT_SETTINGS: SettingsState = {
-  alwaysOnTop: true,
+  clickThrough: false,
   opacity: 0.99,
   fontSize: 28,
   lineSpacing: 10,
   bgSaturation: 74,
-  syncOffsetMs: 0,
-  pollingIntervalMs: 100,
   startAtLogin: false,
-  autoShowOnSpotify: true,
-  startHidden: false,
 };
+
+const POLLING_INTERVAL_MS = 100;
+const SYNC_OFFSET_MS = 0;
 
 const demoState: MediaState = {
   hasSession: true,
@@ -102,39 +98,47 @@ let currentMedia: MediaState = demoState;
 let currentTrackKey = "";
 let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
 let activeLineIndex = 2;
-let activeWordIndex = -1;
 let lyricsMode: "synced" | "plain" | "instrumental" | "missing" = "synced";
 let settingsOpen = false;
 let pollTimer = 0;
 let animationFrame = 0;
 let mediaSampledAtMs = performance.now();
+let mediaPositionAnchorMs = demoState.positionMs;
+let lastNativePositionMs = demoState.positionMs;
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
 let lyricDurationMs: number | null = demoState.durationMs;
+let pollInFlight = false;
+let pollStartedAtMs = 0;
+let renderedChromeKey = "";
+let renderedGradientKey = "";
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="shell">
     <section class="overlay" id="overlay">
-      <div class="drag-surface" id="drag-surface" title="Drag window"></div>
-      <header class="chrome" data-drag-region>
-        <button class="icon-button handle" id="drag-handle" title="Drag window" aria-label="Drag window">
-          <i data-lucide="grip"></i>
-        </button>
-        <div class="track-meta">
-          <p class="eyebrow" id="source">Windows media session</p>
+      <header class="chrome" id="chrome" data-drag-region>
+        <div class="track-meta" data-drag-region>
           <h1 id="title">Music Companion</h1>
           <p id="artist">Waiting for media</p>
         </div>
         <div class="window-actions">
-          <button class="icon-button" id="pin-toggle" title="Always on top" aria-label="Always on top">
-            <i data-lucide="pin"></i>
-          </button>
-          <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
-            <i data-lucide="settings"></i>
-          </button>
-          <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
-            <i data-lucide="minus"></i>
+          <div class="secondary-actions">
+            <button class="icon-button" id="lock-toggle" title="Enable click-through lock" aria-label="Enable click-through lock">
+              <i data-lucide="unlock"></i>
+            </button>
+            <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
+              <i data-lucide="settings"></i>
+            </button>
+            <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
+              <i data-lucide="minimize"></i>
+            </button>
+            <button class="icon-button" id="maximize" title="Maximize" aria-label="Maximize">
+              <i data-lucide="maximize-2"></i>
+            </button>
+          </div>
+          <button class="icon-button menu-toggle" title="Window actions" aria-label="Window actions">
+            <i data-lucide="more-horizontal"></i>
           </button>
           <button class="icon-button danger" id="close" title="Hide" aria-label="Hide">
             <i data-lucide="x"></i>
@@ -171,36 +175,18 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <label for="bg-saturation">Color</label>
           <input id="bg-saturation" type="range" min="20" max="100" step="1" />
         </div>
-        <div class="setting-row">
-          <label for="sync-offset">Sync offset</label>
-          <input id="sync-offset" type="range" min="-400" max="400" step="10" />
-        </div>
-        <div class="setting-row">
-          <label for="polling">Polling</label>
-          <select id="polling">
-            <option value="50">50 ms</option>
-            <option value="100">100 ms</option>
-            <option value="250">250 ms</option>
-            <option value="500">500 ms</option>
-            <option value="750">750 ms</option>
-            <option value="1000">1000 ms</option>
-          </select>
-        </div>
         <label class="switch-row" for="start-login">
           <span>Start at login</span>
           <input id="start-login" type="checkbox" />
-        </label>
-        <label class="switch-row" for="auto-spotify">
-          <span>Show on Spotify</span>
-          <input id="auto-spotify" type="checkbox" />
         </label>
       </aside>
     </section>
   </main>
 `;
 
-createIcons({ icons: { Eye, EyeOff, Grip, Minus, Pin, PinOff, Power, Settings, X } });
+createIcons({ icons: { Lock, Maximize2, Minimize, MoreHorizontal, Settings, Unlock, X } });
 wireUi();
+wireWindowEvents();
 applySettings();
 renderAll();
 void syncStartAtLogin();
@@ -219,15 +205,15 @@ function wireUi() {
     }
   });
 
-  document.querySelector("#drag-surface")?.addEventListener("pointerdown", (event) => {
-    if (appWindow && event instanceof PointerEvent && event.button === 0) {
-      void appWindow.startDragging();
-    }
-  });
-
-  document.querySelector("#drag-handle")?.addEventListener("pointerdown", () => {
-    if (appWindow) {
-      void appWindow.startDragging();
+  document.querySelector("#chrome")?.addEventListener("pointerdown", (event) => {
+    if (
+      appWindow &&
+      event instanceof PointerEvent &&
+      event.button === 0 &&
+      event.target instanceof Element &&
+      !event.target.closest("button")
+    ) {
+      void safeWindowAction(() => appWindow.startDragging());
     }
   });
 
@@ -252,23 +238,23 @@ function wireUi() {
     renderSettings();
   });
 
-  document.querySelector("#pin-toggle")?.addEventListener("click", () => {
-    settings.alwaysOnTop = !settings.alwaysOnTop;
+  document.querySelector("#lock-toggle")?.addEventListener("click", () => {
+    settings.clickThrough = !settings.clickThrough;
     saveSettings();
-    applyAlwaysOnTop();
+    applySettings();
     renderChrome();
   });
 
   document.querySelector("#minimize")?.addEventListener("click", () => {
-    if (appWindow) {
-      void appWindow.minimize();
-    }
+    void safeWindowAction(() => appWindow?.minimize());
+  });
+
+  document.querySelector("#maximize")?.addEventListener("click", () => {
+    void safeWindowAction(() => appWindow?.toggleMaximize());
   });
 
   document.querySelector("#close")?.addEventListener("click", () => {
-    if (appWindow) {
-      void appWindow.hide();
-    }
+    void safeWindowAction(() => appWindow?.hide());
   });
 
   bindRange("opacity", (value) => {
@@ -296,17 +282,6 @@ function wireUi() {
     applySettings();
   });
 
-  bindRange("sync-offset", (value) => {
-    settings.syncOffsetMs = value;
-    saveSettings();
-  });
-
-  document.querySelector<HTMLSelectElement>("#polling")?.addEventListener("change", (event) => {
-    settings.pollingIntervalMs = Number((event.currentTarget as HTMLSelectElement).value);
-    saveSettings();
-    schedulePolling();
-  });
-
   document
     .querySelector<HTMLInputElement>("#start-login")
     ?.addEventListener("change", async (event) => {
@@ -316,10 +291,18 @@ function wireUi() {
         await invoke("set_start_at_login", { enabled: settings.startAtLogin });
       }
     });
+}
 
-  document.querySelector<HTMLInputElement>("#auto-spotify")?.addEventListener("change", (event) => {
-    settings.autoShowOnSpotify = (event.currentTarget as HTMLInputElement).checked;
+function wireWindowEvents() {
+  if (!tauriAvailable) {
+    return;
+  }
+
+  void listen("overlay-unlocked", () => {
+    settings.clickThrough = false;
     saveSettings();
+    applySettings();
+    renderChrome();
   });
 }
 
@@ -345,26 +328,38 @@ async function syncStartAtLogin() {
 
 function schedulePolling() {
   window.clearInterval(pollTimer);
-  pollTimer = window.setInterval(() => void pollMedia(), settings.pollingIntervalMs);
+  pollTimer = window.setInterval(() => void pollMedia(), POLLING_INTERVAL_MS);
   void pollMedia();
 }
 
 async function pollMedia() {
-  if (!tauriAvailable) {
-    renderChrome();
-    renderStatus();
-    applyGradient();
+  if (pollInFlight) {
+    if (pollStartedAtMs && performance.now() - pollStartedAtMs > 3000) {
+      showStatus("Waiting for Windows media session...");
+    }
     return;
   }
 
+  pollInFlight = true;
+  pollStartedAtMs = performance.now();
   try {
-    currentMedia = await invoke<MediaState>("get_media_state");
-    mediaSampledAtMs = performance.now();
-    const nextTrackKey = trackKey(currentMedia);
+    if (!tauriAvailable) {
+      renderChrome();
+      renderStatus();
+      applyGradient();
+      return;
+    }
+
+    const nextMedia = await invoke<MediaState>("get_media_state");
+    const sampledAtMs = performance.now();
+    const nextTrackKey = trackKey(nextMedia);
+    const trackChanged = Boolean(nextTrackKey && nextTrackKey !== currentTrackKey);
+    syncMediaClock(nextMedia, sampledAtMs, trackChanged);
+    currentMedia = nextMedia;
 
     if (nextTrackKey && nextTrackKey !== currentTrackKey) {
       currentTrackKey = nextTrackKey;
-      await loadLyrics(currentMedia);
+      void loadLyrics(currentMedia, nextTrackKey);
     }
 
     if (!nextTrackKey) {
@@ -374,35 +369,32 @@ async function pollMedia() {
       invalidateLyricsRender();
     }
 
-    if (
-      appWindow &&
-      settings.autoShowOnSpotify &&
-      isSpotifySession(currentMedia) &&
-      currentMedia.isPlaying
-    ) {
-      await appWindow.show();
-      await appWindow.setFocus();
-    }
-
     renderChrome();
     renderLyrics();
     renderStatus();
     applyGradient();
   } catch (error) {
     showStatus(`Media bridge error: ${String(error)}`);
+  } finally {
+    pollInFlight = false;
+    pollStartedAtMs = 0;
   }
 }
 
-async function loadLyrics(media: MediaState) {
+async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media)) {
   if (!media.hasSession || !media.title) {
-    lyricsLines = [];
-    lyricsMode = "missing";
+    if (currentTrackKey === expectedTrackKey) {
+      lyricsLines = [];
+      lyricsMode = "missing";
+    }
     return;
   }
 
   const key = trackKey(media);
   if (lyricCache.has(key)) {
-    applyLyrics(lyricCache.get(key) ?? null);
+    if (currentTrackKey === key) {
+      applyLyrics(lyricCache.get(key) ?? null);
+    }
     return;
   }
 
@@ -415,10 +407,14 @@ async function loadLyrics(media: MediaState) {
       durationMs: media.durationMs,
     });
     lyricCache.set(key, result);
-    applyLyrics(result);
+    if (currentTrackKey === key) {
+      applyLyrics(result);
+    }
   } catch {
     lyricCache.set(key, null);
-    applyLyrics(null);
+    if (currentTrackKey === key) {
+      applyLyrics(null);
+    }
   }
 }
 
@@ -476,8 +472,7 @@ function splitWords(value: string) {
 }
 
 function estimateLineDuration(line: LyricLine) {
-  const wordDuration = line.hasExactWordTiming ? 380 : 460;
-  return clamp(line.words.length * wordDuration, 1400, 7200);
+  return clamp(line.words.length * 460, 1400, 7200);
 }
 
 function getResultDurationMs(result: LyricsResult) {
@@ -511,13 +506,12 @@ function parseLyrics(raw: string): LyricLine[] {
 }
 
 function createLyricLine(timeMs: number | null, textWithWordTags: string): LyricLine {
-  const parsed = parseWords(textWithWordTags);
+  const text = stripWordTags(textWithWordTags);
   return {
     timeMs,
     endTimeMs: null,
-    text: parsed.text || " ",
-    words: parsed.words,
-    hasExactWordTiming: parsed.hasExactWordTiming,
+    text: text || " ",
+    words: splitWords(text),
     emulated: false,
   };
 }
@@ -530,74 +524,11 @@ function ensureAnimatedTimings(lines: LyricLine[]) {
   return emulateLineTimings(lines, getEffectiveDurationMs(lines));
 }
 
-function parseWords(textWithWordTags: string): {
-  text: string;
-  words: LyricWord[];
-  hasExactWordTiming: boolean;
-} {
-  const wordTagPattern = /<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>/g;
-  const matches = [...textWithWordTags.matchAll(wordTagPattern)];
-  const text = textWithWordTags.replace(wordTagPattern, "").replace(/\s+/g, " ").trim();
-
-  if (matches.length === 0) {
-    return {
-      text,
-      words: splitWords(text).map((word) => ({
-        text: word,
-        startMs: null,
-        endMs: null,
-        exact: false,
-        emulated: false,
-      })),
-      hasExactWordTiming: false,
-    };
-  }
-
-  const words: LyricWord[] = [];
-
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index];
-    const nextMatch = matches[index + 1];
-    const markerStart = parseTimeParts(match[1], match[2], match[3]);
-    const markerEnd = nextMatch ? parseTimeParts(nextMatch[1], nextMatch[2], nextMatch[3]) : null;
-    const segmentStart = (match.index ?? 0) + match[0].length;
-    const segmentEnd = nextMatch?.index ?? textWithWordTags.length;
-    const segmentWords = splitWords(textWithWordTags.slice(segmentStart, segmentEnd));
-
-    if (segmentWords.length === 0) {
-      continue;
-    }
-
-    if (segmentWords.length === 1 || markerEnd === null || markerEnd <= markerStart) {
-      words.push({
-        text: segmentWords.join(" "),
-        startMs: markerStart,
-        endMs: markerEnd,
-        exact: true,
-        emulated: false,
-      });
-      continue;
-    }
-
-    const duration = markerEnd - markerStart;
-    for (let wordIndex = 0; wordIndex < segmentWords.length; wordIndex += 1) {
-      const startMs = markerStart + (duration * wordIndex) / segmentWords.length;
-      const endMs = markerStart + (duration * (wordIndex + 1)) / segmentWords.length;
-      words.push({
-        text: segmentWords[wordIndex],
-        startMs,
-        endMs,
-        exact: true,
-        emulated: false,
-      });
-    }
-  }
-
-  return {
-    text,
-    words,
-    hasExactWordTiming: words.some((word) => word.exact),
-  };
+function stripWordTags(textWithWordTags: string) {
+  return textWithWordTags
+    .replace(/<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function finalizeLyricTimings(lines: LyricLine[]) {
@@ -610,55 +541,9 @@ function finalizeLyricTimings(lines: LyricLine[]) {
     const nextTimedLine = lines.slice(index + 1).find((candidate) => candidate.timeMs !== null);
     const fallbackEnd = line.timeMs + estimateLineDuration(line);
     line.endTimeMs = Math.max(line.timeMs + 320, nextTimedLine?.timeMs ?? fallbackEnd);
-    assignWordTimings(line);
   }
 
   return lines;
-}
-
-function assignWordTimings(line: LyricLine) {
-  if (line.timeMs === null || line.endTimeMs === null || line.words.length === 0) {
-    return;
-  }
-
-  if (line.hasExactWordTiming) {
-    for (let index = 0; index < line.words.length; index += 1) {
-      const word = line.words[index];
-      const nextExactStart = line.words
-        .slice(index + 1)
-        .find((candidate) => candidate.startMs !== null);
-      if (word.startMs === null) {
-        word.startMs = index === 0 ? line.timeMs : line.words[index - 1].endMs;
-      }
-
-      const inferredDuration =
-        index > 0 && word.startMs !== null && line.words[index - 1].startMs !== null
-          ? word.startMs - line.words[index - 1].startMs
-          : 520;
-
-      word.endMs =
-        nextExactStart?.startMs ??
-        word.endMs ??
-        (word.startMs !== null
-          ? Math.min(line.endTimeMs, word.startMs + clamp(inferredDuration, 320, 1200))
-          : line.endTimeMs);
-    }
-    return;
-  }
-
-  const weights = line.words.map((word) => Math.max(1, Math.sqrt(word.text.length)));
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  const singableEndMs = Math.min(line.endTimeMs, line.timeMs + estimateLineDuration(line));
-  const singableDurationMs = Math.max(900, singableEndMs - line.timeMs);
-  let cursor = line.timeMs;
-
-  for (let index = 0; index < line.words.length; index += 1) {
-    const duration = (singableDurationMs * weights[index]) / totalWeight;
-    line.words[index].startMs = cursor;
-    line.words[index].endMs = index === line.words.length - 1 ? singableEndMs : cursor + duration;
-    line.words[index].emulated = true;
-    cursor += duration;
-  }
 }
 
 function emulateLineTimings(lines: LyricLine[], durationMs: number) {
@@ -682,7 +567,6 @@ function emulateLineTimings(lines: LyricLine[], durationMs: number) {
     lines[index].timeMs = cursor;
     lines[index].endTimeMs = Math.max(cursor + 900, Math.min(durationMs, endTimeMs));
     lines[index].emulated = true;
-    assignWordTimings(lines[index]);
     cursor = lines[index].endTimeMs ?? cursor;
   }
 
@@ -692,7 +576,6 @@ function emulateLineTimings(lines: LyricLine[], durationMs: number) {
 function updateActiveLine(positionMs = getSyncedPositionMs()) {
   if (lyricsLines.length === 0) {
     activeLineIndex = -1;
-    activeWordIndex = -1;
     return;
   }
 
@@ -700,117 +583,70 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
   if (!timed) {
     const ratio = clamp(positionMs / getEffectiveDurationMs(), 0, 0.98);
     activeLineIndex = Math.floor(ratio * lyricsLines.length);
-    activeWordIndex = resolveUntimedActiveWord(activeLineIndex, ratio);
     return;
   }
 
-  let nextIndex = 0;
+  let nextIndex = -1;
   for (let index = 0; index < lyricsLines.length; index += 1) {
     const time = lyricsLines[index].timeMs;
-    if (time !== null && time <= positionMs + 80) {
+    if (time !== null && time <= positionMs) {
       nextIndex = index;
     }
   }
   activeLineIndex = nextIndex;
-  activeWordIndex = resolveActiveWord(lyricsLines[activeLineIndex], positionMs);
 }
 
 function getSyncedPositionMs() {
   if (!tauriAvailable) {
     const duration = currentMedia.durationMs ?? 180_000;
     const elapsed = performance.now() - demoStartedAtMs;
-    return (demoState.positionMs + elapsed + settings.syncOffsetMs + duration) % duration;
+    return (demoState.positionMs + elapsed + SYNC_OFFSET_MS + duration) % duration;
   }
 
-  const rate = currentMedia.playbackRate ?? 1;
-  const elapsed = currentMedia.isPlaying
-    ? Math.min(performance.now() - mediaSampledAtMs, Math.max(1000, settings.pollingIntervalMs * 5))
-    : 0;
-  const position = currentMedia.positionMs + elapsed * rate + settings.syncOffsetMs;
+  const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
   const durationMs = currentMedia.durationMs ?? lyricDurationMs;
   return durationMs ? clamp(position, 0, durationMs) : Math.max(0, position);
 }
 
-function resolveActiveWord(line: LyricLine | undefined, positionMs: number) {
-  if (!line || line.words.length === 0) {
-    return -1;
+function getEstimatedMediaPositionMs(nowMs: number) {
+  if (!currentMedia.isPlaying) {
+    return mediaPositionAnchorMs;
   }
 
-  for (let index = 0; index < line.words.length; index += 1) {
-    const word = line.words[index];
-    if (
-      word.startMs !== null &&
-      word.endMs !== null &&
-      word.startMs <= positionMs + 50 &&
-      word.endMs >= positionMs - 20
-    ) {
-      return index;
-    }
-  }
-
-  let closestPastIndex = -1;
-  for (let index = 0; index < line.words.length; index += 1) {
-    const word = line.words[index];
-    if (word.startMs !== null && word.startMs <= positionMs) {
-      closestPastIndex = index;
-    }
-  }
-
-  return closestPastIndex;
+  const elapsed = Math.max(0, nowMs - mediaSampledAtMs);
+  return mediaPositionAnchorMs + elapsed * getPlaybackRate();
 }
 
-function resolveUntimedActiveWord(lineIndex: number, songRatio: number) {
-  const line = lyricsLines[lineIndex];
-  if (!line || line.words.length === 0) {
-    return -1;
-  }
-
-  const lineStartRatio = lineIndex / lyricsLines.length;
-  const lineEndRatio = (lineIndex + 1) / lyricsLines.length;
-  const lineRatio = clamp((songRatio - lineStartRatio) / (lineEndRatio - lineStartRatio), 0, 0.98);
-  return Math.floor(lineRatio * line.words.length);
+function getPlaybackRate() {
+  const rate = currentMedia.playbackRate;
+  return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : 1;
 }
 
-function getLineProgress(line: LyricLine | undefined, positionMs: number) {
-  if (!line) {
-    return 0;
+function syncMediaClock(media: MediaState, sampledAtMs: number, trackChanged: boolean) {
+  if (!media.hasSession) {
+    mediaSampledAtMs = sampledAtMs;
+    mediaPositionAnchorMs = 0;
+    lastNativePositionMs = 0;
+    return;
   }
 
-  if (line.timeMs !== null && line.endTimeMs !== null) {
-    return clamp((positionMs - line.timeMs) / (line.endTimeMs - line.timeMs), 0, 1);
+  const nativePositionMs = media.positionMs;
+  const nativeDeltaMs = Math.abs(nativePositionMs - lastNativePositionMs);
+  const seekThresholdMs = Math.max(500, POLLING_INTERVAL_MS * 2);
+  const nativePositionJumped = nativeDeltaMs > seekThresholdMs;
+  const shouldReanchor =
+    trackChanged ||
+    !currentMedia.hasSession ||
+    currentMedia.isPlaying !== media.isPlaying ||
+    !media.isPlaying ||
+    nativePositionJumped;
+
+  if (shouldReanchor) {
+    mediaSampledAtMs = sampledAtMs;
+    mediaPositionAnchorMs = nativePositionMs;
   }
 
-  if (lyricsLines.length === 0) {
-    return 0;
-  }
-
-  const durationMs = getEffectiveDurationMs();
-  const lineIndex = lyricsLines.indexOf(line);
-  const lineStart = (durationMs * lineIndex) / lyricsLines.length;
-  const lineEnd = (durationMs * (lineIndex + 1)) / lyricsLines.length;
-  return clamp((positionMs - lineStart) / (lineEnd - lineStart), 0, 1);
-}
-
-function getWordState(line: LyricLine, lineIndex: number, wordIndex: number, positionMs: number) {
-  const word = line.words[wordIndex];
-  if (!word) {
-    return { progress: 0 };
-  }
-
-  if (word.startMs !== null && word.endMs !== null && word.endMs > word.startMs) {
-    return { progress: (positionMs - word.startMs) / (word.endMs - word.startMs) };
-  }
-
-  if (lyricsLines.length === 0 || line.words.length === 0) {
-    return { progress: 0 };
-  }
-
-  const durationMs = getEffectiveDurationMs();
-  const lineStart = (durationMs * lineIndex) / lyricsLines.length;
-  const lineEnd = (durationMs * (lineIndex + 1)) / lyricsLines.length;
-  const wordStart = lineStart + ((lineEnd - lineStart) * wordIndex) / line.words.length;
-  const wordEnd = lineStart + ((lineEnd - lineStart) * (wordIndex + 1)) / line.words.length;
-  return { progress: (positionMs - wordStart) / (wordEnd - wordStart) };
+  lastNativePositionMs = nativePositionMs;
 }
 
 function renderAll() {
@@ -822,22 +658,43 @@ function renderAll() {
 }
 
 function renderChrome() {
-  const source = document.querySelector("#source")!;
+  const nextChromeKey = [
+    currentMedia.hasSession,
+    currentMedia.title,
+    currentMedia.artist,
+    settings.clickThrough,
+  ].join("|");
+  if (nextChromeKey === renderedChromeKey) {
+    return;
+  }
+
+  renderedChromeKey = nextChromeKey;
   const title = document.querySelector("#title")!;
   const artist = document.querySelector("#artist")!;
-  const pinToggle = document.querySelector("#pin-toggle")!;
+  const lockToggle = document.querySelector("#lock-toggle")!;
 
-  title.textContent = currentMedia.hasSession
+  const titleText = currentMedia.hasSession
     ? currentMedia.title || "Unknown track"
     : "No media session";
-  artist.textContent = currentMedia.hasSession
+  const artistText = currentMedia.hasSession
     ? currentMedia.artist || "Unknown artist"
     : "Play something";
-  source.textContent = currentMedia.sourceApp || currentMedia.status || "Windows media session";
-  pinToggle.innerHTML = settings.alwaysOnTop
-    ? `<i data-lucide="pin"></i>`
-    : `<i data-lucide="pin-off"></i>`;
-  createIcons({ icons: { Pin, PinOff } });
+  title.textContent = titleText;
+  title.setAttribute("title", titleText);
+  artist.textContent = artistText;
+  artist.setAttribute("title", artistText);
+  lockToggle.innerHTML = settings.clickThrough
+    ? `<i data-lucide="lock"></i>`
+    : `<i data-lucide="unlock"></i>`;
+  lockToggle.setAttribute(
+    "title",
+    settings.clickThrough ? "Disable click-through lock" : "Enable click-through lock",
+  );
+  lockToggle.setAttribute(
+    "aria-label",
+    settings.clickThrough ? "Disable click-through lock" : "Enable click-through lock",
+  );
+  createIcons({ icons: { Lock, Unlock } });
 }
 
 function renderLyrics() {
@@ -864,24 +721,16 @@ function renderLyrics() {
   list.innerHTML = lyricsLines
     .map((line, index) => {
       const distance = Math.abs(index - activeLineIndex);
+      const showNeighborFocus = lyricsMode !== "synced";
       const className = [
         "lyric-line",
         index === activeLineIndex ? "active" : "",
-        distance === 1 ? "near" : "",
+        showNeighborFocus && distance === 1 ? "near" : "",
         distance > 4 ? "far" : "",
       ]
         .filter(Boolean)
         .join(" ");
-      const words =
-        line.words.length > 0
-          ? line.words
-              .map(
-                (word, wordIndex) =>
-                  `<span class="lyric-word" data-word-index="${wordIndex}" style="--word-progress: 0">${escapeHtml(word.text)}</span>`,
-              )
-              .join(" ")
-          : escapeHtml(line.text);
-      return `<p class="${className}" data-line-index="${index}" style="--line-progress: 0">${words}</p>`;
+      return `<p class="${className}" data-line-index="${index}">${escapeHtml(line.text)}</p>`;
     })
     .join("");
 
@@ -898,12 +747,15 @@ function startSyncLoop() {
 }
 
 function updateSyncFrame() {
+  const previousActiveLineIndex = activeLineIndex;
   const positionMs = getSyncedPositionMs();
   updateActiveLine(positionMs);
-  updateLyricDom(positionMs);
+  if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
+    updateLyricDom();
+  }
 }
 
-function updateLyricDom(positionMs: number) {
+function updateLyricDom() {
   const list = document.querySelector<HTMLDivElement>("#lyrics-list");
   if (!list || lyricsLines.length === 0) {
     return;
@@ -914,28 +766,12 @@ function updateLyricDom(positionMs: number) {
     const lineIndex = Number(lineElement.dataset.lineIndex);
     const line = lyricsLines[lineIndex];
     const distance = Math.abs(lineIndex - activeLineIndex);
+    const showNeighborFocus = lyricsMode !== "synced";
 
     lineElement.classList.toggle("active", lineIndex === activeLineIndex);
-    lineElement.classList.toggle("near", distance === 1);
+    lineElement.classList.toggle("near", showNeighborFocus && distance === 1);
     lineElement.classList.toggle("far", distance > 4);
     lineElement.classList.toggle("emulated", Boolean(line?.emulated));
-    lineElement.style.setProperty("--line-progress", String(getLineProgress(line, positionMs)));
-
-    const wordElements = lineElement.querySelectorAll<HTMLElement>(".lyric-word");
-    wordElements.forEach((wordElement) => {
-      const wordIndex = Number(wordElement.dataset.wordIndex);
-      const state = getWordState(line, lineIndex, wordIndex, positionMs);
-
-      wordElement.classList.toggle("past", state.progress >= 1);
-      wordElement.classList.toggle(
-        "active",
-        lineIndex === activeLineIndex && wordIndex === activeWordIndex,
-      );
-      wordElement.classList.toggle("upcoming", state.progress <= 0);
-      wordElement.classList.toggle("exact", Boolean(line.words[wordIndex]?.exact));
-      wordElement.classList.toggle("emulated", Boolean(line.words[wordIndex]?.emulated));
-      wordElement.style.setProperty("--word-progress", String(clamp(state.progress, 0, 1)));
-    });
   });
 
   if (activeLineIndex !== lastScrolledLineIndex) {
@@ -986,10 +822,7 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#bg-saturation")!.value = String(settings.bgSaturation);
-  document.querySelector<HTMLInputElement>("#sync-offset")!.value = String(settings.syncOffsetMs);
-  document.querySelector<HTMLSelectElement>("#polling")!.value = String(settings.pollingIntervalMs);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
-  document.querySelector<HTMLInputElement>("#auto-spotify")!.checked = settings.autoShowOnSpotify;
 }
 
 function renderStatus() {
@@ -1024,22 +857,45 @@ function applySettings() {
   root.style.setProperty("--lyric-size", `${settings.fontSize}px`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
   root.style.setProperty("--bg-saturation", `${settings.bgSaturation}%`);
-  void applyAlwaysOnTop();
+  void applyOverlayInteractivity();
 }
 
-async function applyAlwaysOnTop() {
+async function applyOverlayInteractivity() {
   if (!appWindow) {
     return;
   }
   try {
-    await appWindow.setAlwaysOnTop(settings.alwaysOnTop);
+    await appWindow.setAlwaysOnTop(true);
   } catch {
-    await invoke("set_always_on_top", { enabled: settings.alwaysOnTop });
+    await safeInvoke("set_always_on_top", { enabled: true });
+  }
+
+  await safeWindowAction(() => appWindow.setIgnoreCursorEvents(settings.clickThrough));
+}
+
+async function safeWindowAction(action: () => Promise<void> | undefined) {
+  try {
+    await action();
+  } catch (error) {
+    showStatus(`Window action failed: ${String(error)}`);
+  }
+}
+
+async function safeInvoke(command: string, args?: Record<string, unknown>) {
+  try {
+    await invoke(command, args);
+  } catch (error) {
+    showStatus(`Window command failed: ${String(error)}`);
   }
 }
 
 function applyGradient() {
-  const hue = hashHue(`${currentMedia.artist}:${currentMedia.title}`);
+  const nextGradientKey = `${currentMedia.artist}:${currentMedia.title}`;
+  if (nextGradientKey === renderedGradientKey) {
+    return;
+  }
+  renderedGradientKey = nextGradientKey;
+  const hue = hashHue(nextGradientKey);
   document.documentElement.style.setProperty("--hue", String(hue));
   document.documentElement.style.setProperty("--hue-2", String((hue + 128) % 360));
 }
@@ -1050,6 +906,7 @@ function loadSettings(): SettingsState {
     const loaded = stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
     return {
       ...loaded,
+      clickThrough: Boolean(loaded.clickThrough),
       opacity: Math.max(0.98, loaded.opacity),
     };
   } catch {
@@ -1066,10 +923,6 @@ function trackKey(media: MediaState) {
     return "";
   }
   return `${media.artist.toLowerCase()}::${media.title.toLowerCase()}::${media.album.toLowerCase()}`;
-}
-
-function isSpotifySession(media: MediaState) {
-  return media.sourceApp.toLowerCase().includes("spotify");
 }
 
 function hashHue(input: string) {

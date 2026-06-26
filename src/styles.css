@@ -36,6 +36,7 @@ body,
   margin: 0;
   overflow: hidden;
   background: transparent;
+  user-select: none;
 }
 
 button,
@@ -76,26 +77,11 @@ button {
 }
 
 .chrome,
-.drag-surface,
 .status-strip,
 .lyrics-viewport,
 .settings-panel {
   position: relative;
   z-index: 1;
-}
-
-.drag-surface {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 3;
-  height: 58px;
-  cursor: grab;
-}
-
-.drag-surface:active {
-  cursor: grabbing;
 }
 
 .chrome {
@@ -105,7 +91,7 @@ button {
   left: 10px;
   z-index: 4;
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-height: 32px;
@@ -114,7 +100,12 @@ button {
   opacity: 0;
   pointer-events: none;
   user-select: none;
+  cursor: grab;
   transition: opacity 140ms ease;
+}
+
+.chrome:active {
+  cursor: grabbing;
 }
 
 .overlay.controls-visible .chrome,
@@ -129,7 +120,6 @@ button {
   min-width: 0;
 }
 
-.eyebrow,
 #artist {
   margin: 0;
   overflow: hidden;
@@ -151,10 +141,15 @@ button {
   white-space: nowrap;
 }
 
-.window-actions {
+.window-actions,
+.secondary-actions {
   display: grid;
   grid-auto-flow: column;
   gap: 4px;
+}
+
+.menu-toggle {
+  display: none;
 }
 
 .icon-button {
@@ -188,13 +183,59 @@ button {
   stroke-width: 2.1;
 }
 
-.icon-button.handle {
-  cursor: grab;
-}
-
 .icon-button.danger:hover {
   background: rgba(255, 89, 89, 0.2);
   border-color: rgba(255, 89, 89, 0.35);
+}
+
+@media (max-width: 460px) {
+  .chrome {
+    right: 6px;
+    left: 6px;
+    gap: 6px;
+  }
+
+  #title {
+    font-size: clamp(14px, 5cqw, 18px);
+  }
+
+  .window-actions {
+    position: relative;
+  }
+
+  .menu-toggle {
+    display: grid;
+  }
+
+  .secondary-actions {
+    position: absolute;
+    top: 34px;
+    right: 32px;
+    display: none;
+    grid-auto-flow: column;
+    padding: 4px;
+    background: rgba(10, 15, 18, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(10px);
+  }
+
+  .window-actions:hover .secondary-actions,
+  .window-actions:focus-within .secondary-actions {
+    display: grid;
+  }
+}
+
+@media (max-width: 360px) {
+  #artist {
+    display: none;
+  }
+
+  .icon-button {
+    width: 26px;
+    height: 26px;
+  }
 }
 
 .status-strip {
@@ -229,6 +270,13 @@ button {
   scrollbar-width: none;
 }
 
+.lyrics-viewport,
+.lyrics-list,
+.lyric-line {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .lyrics-list::-webkit-scrollbar {
   width: 0;
 }
@@ -249,23 +297,6 @@ button {
     transform 180ms ease;
 }
 
-.lyric-line::after {
-  position: absolute;
-  right: 20%;
-  bottom: -6px;
-  left: 20%;
-  height: 2px;
-  content: "";
-  background: linear-gradient(90deg, transparent, var(--accent), var(--accent-2), transparent);
-  border-radius: 999px;
-  opacity: 0;
-  transform: scaleX(var(--line-progress));
-  transform-origin: left center;
-  transition:
-    opacity 180ms ease,
-    transform 80ms linear;
-}
-
 .lyric-line.near {
   color: rgba(255, 255, 255, 0.63);
 }
@@ -279,84 +310,9 @@ button {
   animation: line-arrive 220ms ease-out;
 }
 
-.lyric-line.active::after {
-  opacity: 0.65;
-}
-
 .lyric-line.far {
   opacity: 0.42;
   filter: blur(0.2px);
-}
-
-.lyric-word {
-  display: inline-block;
-  position: relative;
-  color: transparent;
-  background: linear-gradient(
-    90deg,
-    #ffffff 0,
-    color-mix(in srgb, #ffffff 94%, var(--accent) 6%) calc(var(--word-progress) * 100%),
-    rgba(255, 255, 255, 0.38) calc(var(--word-progress) * 100%),
-    rgba(255, 255, 255, 0.38) 100%
-  );
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: saturate(1);
-  transform: translateY(0) scale(1);
-  transform-origin: center bottom;
-  transition:
-    background 90ms linear,
-    filter 180ms ease,
-    opacity 180ms ease,
-    text-shadow 180ms ease,
-    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: transform, filter;
-}
-
-.lyric-word.past {
-  opacity: 0.82;
-  filter: saturate(0.9);
-}
-
-.lyric-word.upcoming {
-  opacity: 0.72;
-}
-
-.lyric-word.active {
-  opacity: 1;
-  filter: saturate(1.22);
-  text-shadow:
-    0 0 18px color-mix(in srgb, var(--accent) 55%, transparent),
-    0 0 34px color-mix(in srgb, var(--accent-2) 35%, transparent);
-  transform: translateY(-1px) scale(1.035);
-  animation: word-arrive 360ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.lyric-word.active.emulated {
-  animation-duration: 420ms;
-}
-
-.lyric-word.active.exact {
-  animation-duration: 300ms;
-}
-
-@keyframes word-arrive {
-  0% {
-    filter: blur(1px) saturate(1.45);
-    opacity: 0.86;
-    transform: translateY(2px) scale(0.99);
-  }
-
-  55% {
-    transform: translateY(-1px) scale(1.045);
-  }
-
-  100% {
-    filter: blur(0) saturate(1.22);
-    opacity: 1;
-    transform: translateY(-1px) scale(1.035);
-  }
 }
 
 @keyframes line-arrive {
