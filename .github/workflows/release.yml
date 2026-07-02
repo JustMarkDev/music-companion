@@ -29,6 +29,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -40,7 +46,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: Music Companion v__VERSION__
           releaseBody: |
-            Prima release stabile di Music Companion per Windows.
+            Music Companion per Windows.
 
             Scarica l'installer NSIS (`.exe`) oppure il pacchetto MSI (`.msi`).
           releaseDraft: false

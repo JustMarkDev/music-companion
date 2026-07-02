@@ -440,8 +440,8 @@ mod lyrics {
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
-        album: &str,
-        duration_ms: Option<u64>,
+        _album: &str,
+        _duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
             .user_agent(concat!(
@@ -449,11 +449,11 @@ mod lyrics {
                 env!("CARGO_PKG_VERSION"),
                 " (https://github.com/JustMarkDev/Music-Companion)"
             ))
-            .timeout(std::time::Duration::from_secs(8))
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|error| error.to_string())?;
 
-        if let Some(found) = exact_match(&client, title, artist, album, duration_ms).await? {
+        if let Some(found) = exact_match(&client, title, artist).await? {
             return Ok(Some(found));
         }
 
@@ -464,25 +464,12 @@ mod lyrics {
         client: &reqwest::Client,
         title: &str,
         artist: &str,
-        album: &str,
-        duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
-        let duration = duration_ms.map(|value| (value as f64 / 1000.0).round() as u64);
-        let mut url = format!(
+        let url = format!(
             "https://lrclib.net/api/get?track_name={}&artist_name={}",
             urlencoding::encode(title),
             urlencoding::encode(artist)
         );
-
-        if !album.trim().is_empty() {
-            url.push_str("&album_name=");
-            url.push_str(&urlencoding::encode(album));
-        }
-
-        if let Some(seconds) = duration {
-            url.push_str("&duration=");
-            url.push_str(&seconds.to_string());
-        }
 
         let response = client
             .get(url)

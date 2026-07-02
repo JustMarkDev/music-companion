@@ -88,7 +88,7 @@ let currentMedia: MediaState = demoState;
 let currentTrackKey = "";
 let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
 let activeLineIndex = 2;
-let lyricsMode: "synced" | "plain" | "instrumental" | "missing" = "synced";
+let lyricsMode: "synced" | "plain" | "instrumental" | "searching" | "missing" | "error" = "synced";
 let settingsOpen = false;
 let pollTimer = 0;
 let animationFrame = 0;
@@ -358,8 +358,12 @@ async function syncStartAtLogin() {
 
 function schedulePolling() {
   window.clearInterval(pollTimer);
-  pollTimer = window.setInterval(() => void pollMedia(), POLLING_INTERVAL_MS);
-  void pollMedia();
+  window.requestAnimationFrame(() => {
+    window.setTimeout(() => {
+      void pollMedia();
+      pollTimer = window.setInterval(() => void pollMedia(), POLLING_INTERVAL_MS);
+    }, 0);
+  });
 }
 
 async function pollMedia() {
@@ -428,7 +432,13 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     return;
   }
 
-  showStatus("Fetching lyrics...");
+  if (currentTrackKey === key) {
+    lyricsLines = [];
+    lyricsMode = "searching";
+    invalidateLyricsRender();
+    renderLyrics();
+  }
+
   try {
     const result = await invoke<LyricsResult | null>("fetch_lyrics", {
       title: media.title,
@@ -440,10 +450,13 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     if (currentTrackKey === key) {
       applyLyrics(result);
     }
-  } catch {
-    lyricCache.set(key, null);
+  } catch (error) {
     if (currentTrackKey === key) {
-      applyLyrics(null);
+      lyricsLines = [];
+      lyricsMode = "error";
+      invalidateLyricsRender();
+      renderLyrics();
+      showStatus(`Lyrics search failed: ${String(error)}`);
     }
   }
 }
@@ -743,6 +756,19 @@ function renderLyrics() {
     return;
   }
 
+  if (lyricsMode === "searching") {
+    list.innerHTML = `
+      <p class="empty-state lyrics-searching" aria-label="Searching for lyrics">
+        <span>Searching for lyrics</span><span class="searching-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </p>`;
+    return;
+  }
+
+  if (lyricsMode === "error") {
+    list.innerHTML = `<p class="empty-state">Unable to search for lyrics.</p>`;
+    return;
+  }
+
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
     list.innerHTML = `<p class="empty-state">No lyrics found for this track.</p>`;
     return;
@@ -817,7 +843,11 @@ function getLyricsRenderKey() {
     return "no-session";
   }
 
-  if (lyricsMode === "missing" || lyricsLines.length === 0) {
+  if (lyricsMode === "searching" || lyricsMode === "missing" || lyricsMode === "error") {
+    return `${lyricsMode}:${currentTrackKey}`;
+  }
+
+  if (lyricsLines.length === 0) {
     return `missing:${currentTrackKey}`;
   }
 
