@@ -10,7 +10,7 @@
   --overlay-opacity: 0.99;
   --lyric-size: 28px;
   --line-spacing: 10px;
-  --bg-saturation: 74%;
+  --bg-saturation: 100%;
   --hue: 174;
   --hue-2: 4;
   --surface: hsla(210, 18%, 7%, var(--overlay-opacity));
@@ -86,15 +86,15 @@ button {
 
 .chrome {
   position: absolute;
-  top: 8px;
-  right: 10px;
-  left: 10px;
+  top: 4px;
+  right: 8px;
+  left: 8px;
   z-index: 4;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
-  min-height: 32px;
+  min-height: 28px;
   padding: 0;
   border-bottom: 0;
   opacity: 0;
@@ -130,17 +130,17 @@ button {
   margin: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.3;
+  font-size: 11px;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 #title {
-  margin: 1px 0 2px;
+  margin: 0 0 1px;
   overflow: hidden;
   color: var(--text);
-  font-size: clamp(16px, 5cqw, 21px);
+  font-size: clamp(15px, 4.5cqw, 19px);
   font-weight: 760;
   line-height: 1.15;
   text-overflow: ellipsis;
@@ -202,8 +202,8 @@ button {
 
 .icon-button {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   place-items: center;
   color: var(--text);
   background: rgba(255, 255, 255, 0.1);
@@ -261,7 +261,7 @@ button {
   }
 
   .status-strip {
-    top: 58px;
+    top: 48px;
   }
 }
 
@@ -274,7 +274,7 @@ button {
 
 .status-strip {
   position: absolute;
-  top: 58px;
+  top: 48px;
   right: 12px;
   left: 12px;
   margin: 0;
@@ -293,8 +293,8 @@ button {
 .lyrics-viewport {
   min-height: 0;
   overflow: hidden;
-  padding: 78px 28px 34px;
-  mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+  padding: 54px 28px 0;
+  mask-image: linear-gradient(to bottom, transparent, black 10%, black);
 }
 
 .lyrics-list {
@@ -362,8 +362,9 @@ button {
 }
 
 .empty-state {
+  position: absolute;
+  inset: 0;
   display: grid;
-  height: 100%;
   margin: 0;
   place-items: center;
   color: rgba(255, 255, 255, 0.72);
@@ -375,7 +376,7 @@ button {
 
 .lyrics-searching {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: center;
   gap: 0.16em;
 }
@@ -383,7 +384,6 @@ button {
 .searching-dots {
   display: inline-flex;
   align-items: center;
-  align-self: baseline;
   height: 1em;
   gap: 0.14em;
   transform: translateY(0.08em);
@@ -428,11 +428,11 @@ button {
 
 .settings-panel {
   position: absolute;
-  top: 58px;
+  top: 48px;
   right: 12px;
   display: grid;
   width: min(330px, calc(100% - 24px));
-  max-height: calc(100% - 104px);
+  max-height: calc(100% - 60px);
   gap: 12px;
   padding: 14px;
   overflow: auto;
@@ -503,16 +503,60 @@ input[type="checkbox"] {
   accent-color: var(--accent);
 }
 
+.save-settings {
+  min-height: 40px;
+  padding: 9px 14px;
+  color: #07110f;
+  font-weight: 750;
+  background: var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.save-settings:hover {
+  filter: brightness(1.08);
+}
+
+.settings-window {
+  background: #101417;
+}
+
+.settings-window .shell,
+.settings-window .overlay {
+  min-width: 0;
+  min-height: 100%;
+  overflow: auto;
+  background: #101417;
+}
+
+.settings-window .chrome,
+.settings-window .status-strip,
+.settings-window .lyrics-viewport {
+  display: none;
+}
+
+.settings-window .settings-panel {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: 100%;
+  max-height: none;
+  padding: 24px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 @media (max-width: 480px) {
   .lyrics-viewport {
     padding-right: 16px;
-    padding-bottom: 28px;
+    padding-bottom: 0;
     padding-left: 16px;
   }
 }
 
 .overlay.click-through .chrome {
-  top: 10px;
+  top: 6px;
   right: 12px;
   left: 12px;
   grid-template-columns: minmax(0, 1fr);
@@ -525,16 +569,25 @@ input[type="checkbox"] {
 }
 
 .overlay.click-through #title {
-  margin: 0 0 3px;
-  font-size: clamp(20px, 7cqw, 36px);
+  margin: 0 0 2px;
+  font-size: clamp(18px, 6cqw, 28px);
   line-height: 1.08;
 }
 
 .overlay.click-through #artist {
-  font-size: clamp(13px, 3.5cqw, 19px);
+  font-size: clamp(12px, 3cqw, 16px);
   line-height: 1.2;
 }
 
 .overlay.click-through .window-actions {
   display: none;
+}
+
+.overlay.click-through.hide-locked-title .chrome {
+  display: none;
+}
+
+.overlay.click-through.hide-locked-title .lyrics-viewport {
+  padding-top: 6px;
+  mask-image: none;
 }

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createIcons, Lock, Maximize2, Menu, Minus, Settings, Unlock, X } from "lucide";
 import "./styles.css";
@@ -31,10 +31,10 @@ type LyricsResult = {
 
 type SettingsState = {
   clickThrough: boolean;
+  showSongTitle: boolean;
   opacity: number;
   fontSize: number;
   lineSpacing: number;
-  bgSaturation: number;
   startAtLogin: boolean;
 };
 
@@ -48,13 +48,14 @@ type LyricLine = {
 
 const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
+  showSongTitle: false,
   opacity: 0.99,
   fontSize: 28,
   lineSpacing: 10,
-  bgSaturation: 74,
   startAtLogin: false,
 };
 
+const SETTINGS_STORAGE_KEY = "music-companion-settings";
 const POLLING_INTERVAL_MS = 100;
 const SYNC_OFFSET_MS = 0;
 const demoState: MediaState = {
@@ -81,6 +82,9 @@ const demoLyrics = `[00:00.00] Waiting for a song
 
 const tauriAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const appWindow = tauriAvailable ? getCurrentWindow() : null;
+const isSettingsWindow =
+  appWindow?.label === "settings" ||
+  new URLSearchParams(window.location.search).get("view") === "settings";
 const lyricCache = new Map<string, LyricsResult | null>();
 
 let settings = loadSettings();
@@ -168,27 +172,37 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <label for="line-spacing">Line spacing</label>
           <input id="line-spacing" type="range" min="2" max="26" step="1" />
         </div>
-        <div class="setting-row">
-          <label for="bg-saturation">Color</label>
-          <input id="bg-saturation" type="range" min="20" max="100" step="1" />
-        </div>
         <label class="switch-row" for="start-login">
           <span>Start at login</span>
           <input id="start-login" type="checkbox" />
         </label>
+        <label class="switch-row" for="show-song-title">
+          <span>Titolo della canzone</span>
+          <input id="show-song-title" type="checkbox" />
+        </label>
+        <button class="save-settings" id="settings-save">Salva e chiudi</button>
       </aside>
     </section>
   </main>
 `;
 
 createIcons({ icons: { Lock, Maximize2, Menu, Minus, Settings, Unlock, X } });
-wireUi();
-wireWindowEvents();
-applySettings();
-renderAll();
-void syncStartAtLogin();
-schedulePolling();
-startSyncLoop();
+if (isSettingsWindow) {
+  document.body.classList.add("settings-window");
+  settingsOpen = true;
+  wireUi();
+  wireWindowEvents();
+  applySettings();
+  renderSettings();
+} else {
+  wireUi();
+  wireWindowEvents();
+  applySettings();
+  renderAll();
+  void syncStartAtLogin();
+  schedulePolling();
+  startSyncLoop();
+}
 
 function wireUi() {
   const overlay = document.querySelector<HTMLElement>("#overlay");
@@ -215,25 +229,23 @@ function wireUi() {
   });
 
   document.querySelector("#lyrics-viewport")?.addEventListener("dblclick", () => {
-    settingsOpen = !settingsOpen;
-    renderSettings();
+    openSettings();
   });
 
   document.querySelector("#lyrics-viewport")?.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    settingsOpen = !settingsOpen;
-    renderSettings();
+    openSettings();
   });
 
   document.querySelector("#settings-toggle")?.addEventListener("click", () => {
-    settingsOpen = !settingsOpen;
-    renderSettings();
+    openSettings();
   });
 
   document.querySelector("#settings-close")?.addEventListener("click", () => {
-    settingsOpen = false;
-    renderSettings();
+    closeSettings();
   });
+
+  document.querySelector("#settings-save")?.addEventListener("click", closeSettings);
 
   document.querySelector("#lock-toggle")?.addEventListener("click", () => {
     toggleOverlayLock();
@@ -268,8 +280,7 @@ function wireUi() {
     setCompactMenuOpen(false);
     if (action === "lock") toggleOverlayLock();
     if (action === "settings") {
-      settingsOpen = !settingsOpen;
-      renderSettings();
+      openSettings();
     }
     if (action === "minimize") void safeWindowAction(() => appWindow?.minimize());
     if (action === "maximize") void safeWindowAction(() => appWindow?.toggleMaximize());
@@ -298,12 +309,6 @@ function wireUi() {
     applySettings();
   });
 
-  bindRange("bg-saturation", (value) => {
-    settings.bgSaturation = value;
-    saveSettings();
-    applySettings();
-  });
-
   document
     .querySelector<HTMLInputElement>("#start-login")
     ?.addEventListener("change", async (event) => {
@@ -313,10 +318,26 @@ function wireUi() {
         await invoke("set_start_at_login", { enabled: settings.startAtLogin });
       }
     });
+
+  document
+    .querySelector<HTMLInputElement>("#show-song-title")
+    ?.addEventListener("change", (event) => {
+      settings.showSongTitle = (event.currentTarget as HTMLInputElement).checked;
+      saveSettings();
+      applySettings();
+    });
 }
 
 function wireWindowEvents() {
   if (!tauriAvailable) {
+    return;
+  }
+  if (isSettingsWindow) {
+    void listen("settings-window-opened", () => {
+      settings = loadSettings();
+      applySettings();
+      renderSettings();
+    });
     return;
   }
 
@@ -327,6 +348,29 @@ function wireWindowEvents() {
     renderChrome();
   });
   void listen("toggle-overlay-lock", toggleOverlayLock);
+  void listen<SettingsState>("settings-updated", () => {
+    settings = loadSettings();
+    applySettings();
+    renderSettings();
+  });
+}
+
+function openSettings() {
+  if (tauriAvailable && !isSettingsWindow) {
+    void safeInvoke("show_settings_window");
+    return;
+  }
+  settingsOpen = true;
+  renderSettings();
+}
+
+function closeSettings() {
+  if (isSettingsWindow && appWindow) {
+    void safeWindowAction(() => appWindow.hide());
+    return;
+  }
+  settingsOpen = false;
+  renderSettings();
 }
 
 function toggleOverlayLock() {
@@ -770,7 +814,7 @@ function renderLyrics() {
   }
 
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
-    list.innerHTML = `<p class="empty-state">No lyrics found for this track.</p>`;
+    list.innerHTML = `<p class="empty-state">No lyrics found.</p>`;
     return;
   }
 
@@ -881,8 +925,8 @@ function renderSettings() {
   );
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
-  document.querySelector<HTMLInputElement>("#bg-saturation")!.value = String(settings.bgSaturation);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  document.querySelector<HTMLInputElement>("#show-song-title")!.checked = settings.showSongTitle;
 }
 
 function renderStatus() {
@@ -917,8 +961,8 @@ function applySettings() {
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
   root.style.setProperty("--lyric-size", `${settings.fontSize}px`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
-  root.style.setProperty("--bg-saturation", `${settings.bgSaturation}%`);
   overlay?.classList.toggle("click-through", settings.clickThrough);
+  overlay?.classList.toggle("hide-locked-title", !settings.showSongTitle);
   if (settings.clickThrough) {
     overlay?.classList.remove("controls-visible");
   }
@@ -926,7 +970,7 @@ function applySettings() {
 }
 
 async function applyOverlayInteractivity() {
-  if (!appWindow) {
+  if (!appWindow || isSettingsWindow) {
     return;
   }
   try {
@@ -967,20 +1011,38 @@ function applyGradient() {
 
 function loadSettings(): SettingsState {
   try {
-    const stored = localStorage.getItem("music-companion-settings");
-    const loaded = stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const loaded = stored ? JSON.parse(stored) : {};
     return {
-      ...loaded,
       clickThrough: Boolean(loaded.clickThrough),
-      opacity: Math.max(0.98, loaded.opacity),
+      showSongTitle:
+        typeof loaded.showSongTitle === "boolean"
+          ? loaded.showSongTitle
+          : DEFAULT_SETTINGS.showSongTitle,
+      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0.8, 1),
+      fontSize: loadNumericSetting(loaded.fontSize, DEFAULT_SETTINGS.fontSize, 18, 48),
+      lineSpacing: loadNumericSetting(loaded.lineSpacing, DEFAULT_SETTINGS.lineSpacing, 2, 26),
+      startAtLogin:
+        typeof loaded.startAtLogin === "boolean"
+          ? loaded.startAtLogin
+          : DEFAULT_SETTINGS.startAtLogin,
     };
   } catch {
-    return DEFAULT_SETTINGS;
+    return { ...DEFAULT_SETTINGS };
   }
 }
 
 function saveSettings() {
-  localStorage.setItem("music-companion-settings", JSON.stringify(settings));
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  if (tauriAvailable && isSettingsWindow) {
+    void emit("settings-updated", settings);
+  }
+}
+
+function loadNumericSetting(value: unknown, fallback: number, minimum: number, maximum: number) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clamp(value, minimum, maximum)
+    : fallback;
 }
 
 function trackKey(media: MediaState) {

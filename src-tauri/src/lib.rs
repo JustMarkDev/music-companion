@@ -149,6 +149,18 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or_else(|| "Settings window is unavailable".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    window
+        .emit("settings-window-opened", ())
+        .map_err(|error| error.to_string())
+}
+
 pub fn run() {
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
     use tauri_plugin_window_state::StateFlags;
@@ -178,7 +190,8 @@ pub fn run() {
             fetch_lyrics,
             get_start_at_login,
             set_start_at_login,
-            set_always_on_top
+            set_always_on_top,
+            show_settings_window
         ])
         .setup(|app| {
             build_tray(app)?;
