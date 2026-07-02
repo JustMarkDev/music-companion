@@ -1,5 +1,7 @@
 # Music Companion
 
+Current version: **1.0.0**
+
 A Windows-only Tauri + Vite+ lyrics overlay inspired by Lyric Overlay and LyPy. It reads the active media session from Windows Media Transport Controls, fetches synced lyrics from LRCLIB, and displays them in a transparent always-on-top desktop overlay.
 
 ## Features
@@ -40,6 +42,14 @@ npm run tauri:build
 ```
 
 The Windows installer output is created under `src-tauri/target/release/bundle/`.
+
+## Releases
+
+Version tags matching `vX.Y.Z` trigger the GitHub Actions release workflow. It
+builds and publishes both Windows installer formats:
+
+- NSIS setup (`.exe`)
+- Windows Installer (`.msi`)
 
 ## Vite+ Commands
 

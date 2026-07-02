@@ -1,6 +1,6 @@
 [package]
 name = "music-companion"
-version = "0.1.0"
+version = "1.0.0"
 description = "Windows lyrics overlay built with Tauri"
 authors = ["Music Companion"]
 edition = "2021"
@@ -20,7 +20,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 urlencoding = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-window-state = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Foundation", "Foundation_Collections", "Media_Control"] }
+windows = { version = "0.58", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Media_Control",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
 winreg = "0.52"

@@ -150,6 +150,7 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
 
 pub fn run() {
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_window_state::StateFlags;
 
     let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
     let shortcut_for_handler = lock_shortcut.clone();
@@ -164,6 +165,11 @@ pub fn run() {
         .build();
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                .build(),
+        )
         .plugin(shortcut_plugin)
         .invoke_handler(tauri::generate_handler![
             get_media_state,
@@ -174,6 +180,9 @@ pub fn run() {
         ])
         .setup(|app| {
             build_tray(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                overlay_z_order::start_monitor(window);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -230,6 +239,135 @@ fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("overlay-unlocked", ());
+}
+
+#[cfg(target_os = "windows")]
+mod overlay_z_order {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+    use tauri::WebviewWindow;
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowLongPtrW, IsWindowVisible, SetWindowPos, GWL_EXSTYLE,
+            HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, WS_EX_TOPMOST,
+        },
+    };
+
+    const MONITOR_INTERVAL: Duration = Duration::from_millis(500);
+    const REASSERT_FLAGS: SET_WINDOW_POS_FLAGS =
+        SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOACTIVATE.0 | SWP_ASYNCWINDOWPOS.0);
+
+    pub fn start_monitor(window: WebviewWindow) {
+        tauri::async_runtime::spawn(async move {
+            let mut reported_handle_error = false;
+            let reassert_error_reported = AtomicBool::new(false);
+
+            loop {
+                tokio::time::sleep(MONITOR_INTERVAL).await;
+
+                let overlay_hwnd = match window.hwnd() {
+                    Ok(hwnd) => {
+                        reported_handle_error = false;
+                        HWND(hwnd.0)
+                    }
+                    Err(error) => {
+                        if !reported_handle_error {
+                            eprintln!("Unable to inspect the overlay window handle: {error}");
+                            reported_handle_error = true;
+                        }
+                        continue;
+                    }
+                };
+
+                if let Err(error) = reassert_if_needed(overlay_hwnd) {
+                    if !reassert_error_reported.swap(true, Ordering::Relaxed) {
+                        eprintln!("Unable to restore the overlay Z-order: {error}");
+                    }
+                }
+            }
+        });
+    }
+
+    fn reassert_if_needed(overlay_hwnd: HWND) -> windows::core::Result<()> {
+        // SAFETY: The handles are obtained from Tauri and the Windows foreground-window API.
+        // Every operation is observational except SetWindowPos, which preserves position, size,
+        // and activation so the foreground application keeps receiving input.
+        unsafe {
+            let foreground_hwnd = GetForegroundWindow();
+            let foreground_exists = !foreground_hwnd.is_invalid();
+            let overlay_visible = IsWindowVisible(overlay_hwnd).as_bool();
+            let foreground_visible =
+                foreground_exists && IsWindowVisible(foreground_hwnd).as_bool();
+            let foreground_is_overlay = foreground_exists && foreground_hwnd == overlay_hwnd;
+            let foreground_is_topmost = foreground_exists
+                && GetWindowLongPtrW(foreground_hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
+
+            if should_reassert_overlay(
+                overlay_visible,
+                foreground_exists,
+                foreground_is_overlay,
+                foreground_visible,
+                foreground_is_topmost,
+            ) {
+                SetWindowPos(overlay_hwnd, HWND_TOPMOST, 0, 0, 0, 0, REASSERT_FLAGS)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn should_reassert_overlay(
+        overlay_visible: bool,
+        foreground_exists: bool,
+        foreground_is_overlay: bool,
+        foreground_visible: bool,
+        foreground_is_topmost: bool,
+    ) -> bool {
+        overlay_visible
+            && foreground_exists
+            && !foreground_is_overlay
+            && foreground_visible
+            && foreground_is_topmost
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::should_reassert_overlay;
+
+        #[test]
+        fn reasserts_over_visible_topmost_foreground_window() {
+            assert!(should_reassert_overlay(true, true, false, true, true));
+        }
+
+        #[test]
+        fn ignores_normal_foreground_window() {
+            assert!(!should_reassert_overlay(true, true, false, true, false));
+        }
+
+        #[test]
+        fn ignores_hidden_overlay() {
+            assert!(!should_reassert_overlay(false, true, false, true, true));
+        }
+
+        #[test]
+        fn ignores_overlay_as_foreground_window() {
+            assert!(!should_reassert_overlay(true, true, true, true, true));
+        }
+
+        #[test]
+        fn ignores_missing_foreground_window() {
+            assert!(!should_reassert_overlay(true, false, false, false, false));
+        }
+
+        #[test]
+        fn ignores_hidden_foreground_window() {
+            assert!(!should_reassert_overlay(true, true, false, false, true));
+        }
+    }
 }
 
 mod media {
@@ -306,7 +444,11 @@ mod lyrics {
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
-            .user_agent("MusicCompanion/0.1.0 (https://github.com/local/music-companion)")
+            .user_agent(concat!(
+                "MusicCompanion/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/JustMarkDev/Music-Companion)"
+            ))
             .timeout(std::time::Duration::from_secs(8))
             .build()
             .map_err(|error| error.to_string())?;
