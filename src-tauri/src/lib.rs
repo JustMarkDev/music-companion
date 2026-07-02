@@ -14,6 +14,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,6 +166,7 @@ pub fn run() {
         .build();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
@@ -183,6 +185,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 overlay_z_order::start_monitor(window);
             }
+            start_automatic_update(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -193,6 +196,28 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Music Companion");
+}
+
+fn start_automatic_update(app: tauri::AppHandle) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = update_and_restart(app).await {
+            eprintln!("Automatic update failed: {error}");
+        }
+    });
+}
+
+async fn update_and_restart(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
+    let Some(update) = app.updater()?.check().await? else {
+        return Ok(());
+    };
+
+    println!("Downloading Music Companion {}", update.version);
+    update.download_and_install(|_, _| {}, || {}).await?;
+    app.restart();
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {

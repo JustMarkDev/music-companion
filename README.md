@@ -51,6 +51,15 @@ builds and publishes both Windows installer formats:
 - NSIS setup (`.exe`)
 - Windows Installer (`.msi`)
 
+The installed app checks the latest GitHub release on every production launch.
+When a newer signed version exists, it downloads and installs it without user
+input, then restarts automatically. The release workflow generates and publishes
+the signed updater metadata (`latest.json`) together with the installers.
+
+Updater signing uses the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret. The
+matching private key must be backed up securely; losing it prevents future
+updates for existing installations.
+
 ## Vite+ Commands
 
 ```powershell
