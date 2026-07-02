@@ -1,6 +1,7 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("Music Companion is currently Windows-only.");
 
+use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -8,7 +9,6 @@ use std::{
     },
     time::Duration,
 };
-use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -108,7 +108,11 @@ async fn get_media_state() -> Result<MediaState, String> {
 }
 
 fn cached_media_state() -> Option<MediaState> {
-    MEDIA_CACHE.get_or_init(|| Mutex::new(None)).lock().ok()?.clone()
+    MEDIA_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()?
+        .clone()
 }
 
 fn store_media_state(state: MediaState) {
@@ -145,7 +149,22 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
 }
 
 pub fn run() {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
+    let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
+    let shortcut_for_handler = lock_shortcut.clone();
+    let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut(lock_shortcut)
+        .expect("failed to register Ctrl+Shift+L")
+        .with_handler(move |app, shortcut, event| {
+            if shortcut == &shortcut_for_handler && event.state() == ShortcutState::Pressed {
+                let _ = app.emit("toggle-overlay-lock", ());
+            }
+        })
+        .build();
+
     tauri::Builder::default()
+        .plugin(shortcut_plugin)
         .invoke_handler(tauri::generate_handler![
             get_media_state,
             fetch_lyrics,
@@ -231,7 +250,9 @@ mod media {
         for index in 0..sessions.Size()? {
             let session = sessions.GetAt(index)?;
             let playback = session.GetPlaybackInfo()?;
-            if playback.PlaybackStatus()? == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+            if playback.PlaybackStatus()?
+                == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
+            {
                 playing_count += 1;
                 selected = Some(session);
             }
@@ -349,7 +370,10 @@ mod lyrics {
         artist: &str,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{artist} {title}");
-        let url = format!("https://lrclib.net/api/search?q={}", urlencoding::encode(&query));
+        let url = format!(
+            "https://lrclib.net/api/search?q={}",
+            urlencoding::encode(&query)
+        );
         let response = client
             .get(url)
             .send()
@@ -423,7 +447,9 @@ mod startup {
 
     pub fn get_start_at_login() -> Result<bool, String> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run = hkcu.open_subkey(RUN_KEY).map_err(|error| error.to_string())?;
+        let run = hkcu
+            .open_subkey(RUN_KEY)
+            .map_err(|error| error.to_string())?;
         Ok(run.get_value::<String, _>(APP_NAME).is_ok())
     }
 

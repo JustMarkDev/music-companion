@@ -11,6 +11,7 @@ A Windows-only Tauri + Vite+ lyrics overlay inspired by Lyric Overlay and LyPy. 
 - Live line and word highlighting with smooth scrolling and animated word transitions.
 - Settings for opacity, lyric size, spacing, saturation, polling interval, start at login, and Spotify-focused auto-show behavior.
 - Tray support: close hides the overlay, tray menu can show or quit the app.
+- Global `Ctrl+Shift+L` hotkey to lock or unlock click-through mode.
 
 ## Prerequisites
 

@@ -1,16 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  createIcons,
-  Lock,
-  Maximize2,
-  Minimize,
-  MoreHorizontal,
-  Settings,
-  Unlock,
-  X,
-} from "lucide";
+import { createIcons, Lock, Maximize2, Menu, Minus, Settings, Unlock, X } from "lucide";
 import "./styles.css";
 
 type MediaState = {
@@ -66,7 +57,6 @@ const DEFAULT_SETTINGS: SettingsState = {
 
 const POLLING_INTERVAL_MS = 100;
 const SYNC_OFFSET_MS = 0;
-
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -131,18 +121,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <i data-lucide="settings"></i>
             </button>
             <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
-              <i data-lucide="minimize"></i>
+              <i data-lucide="minus"></i>
             </button>
             <button class="icon-button" id="maximize" title="Maximize" aria-label="Maximize">
               <i data-lucide="maximize-2"></i>
             </button>
           </div>
-          <button class="icon-button menu-toggle" title="Window actions" aria-label="Window actions">
-            <i data-lucide="more-horizontal"></i>
-          </button>
           <button class="icon-button danger" id="close" title="Hide" aria-label="Hide">
             <i data-lucide="x"></i>
           </button>
+          <button class="icon-button compact-menu-toggle" id="compact-menu-toggle" title="Window menu" aria-label="Window menu" aria-expanded="false">
+            <i data-lucide="menu"></i>
+          </button>
+          <div class="compact-menu" id="compact-menu" hidden>
+            <button data-action="lock">Click through <span>Ctrl+Shift+L</span></button>
+            <button data-action="settings">Settings</button>
+            <button data-action="minimize">Minimize</button>
+            <button data-action="maximize">Maximize</button>
+            <button class="danger" data-action="close">Hide</button>
+          </div>
         </div>
       </header>
 
@@ -184,7 +181,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </main>
 `;
 
-createIcons({ icons: { Lock, Maximize2, Minimize, MoreHorizontal, Settings, Unlock, X } });
+createIcons({ icons: { Lock, Maximize2, Menu, Minus, Settings, Unlock, X } });
 wireUi();
 wireWindowEvents();
 applySettings();
@@ -239,10 +236,7 @@ function wireUi() {
   });
 
   document.querySelector("#lock-toggle")?.addEventListener("click", () => {
-    settings.clickThrough = !settings.clickThrough;
-    saveSettings();
-    applySettings();
-    renderChrome();
+    toggleOverlayLock();
   });
 
   document.querySelector("#minimize")?.addEventListener("click", () => {
@@ -255,6 +249,34 @@ function wireUi() {
 
   document.querySelector("#close")?.addEventListener("click", () => {
     void safeWindowAction(() => appWindow?.hide());
+  });
+
+  const compactMenu = document.querySelector<HTMLElement>("#compact-menu");
+  const compactMenuToggle = document.querySelector<HTMLButtonElement>("#compact-menu-toggle");
+  const setCompactMenuOpen = (open: boolean) => {
+    if (compactMenu) compactMenu.hidden = !open;
+    compactMenuToggle?.setAttribute("aria-expanded", String(open));
+  };
+  compactMenuToggle?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setCompactMenuOpen(compactMenu?.hidden ?? true);
+  });
+  compactMenu?.addEventListener("click", (event) => {
+    const action = (event.target as Element).closest<HTMLButtonElement>("[data-action]")?.dataset
+      .action;
+    if (!action) return;
+    setCompactMenuOpen(false);
+    if (action === "lock") toggleOverlayLock();
+    if (action === "settings") {
+      settingsOpen = !settingsOpen;
+      renderSettings();
+    }
+    if (action === "minimize") void safeWindowAction(() => appWindow?.minimize());
+    if (action === "maximize") void safeWindowAction(() => appWindow?.toggleMaximize());
+    if (action === "close") void safeWindowAction(() => appWindow?.hide());
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!(event.target as Element).closest(".window-actions")) setCompactMenuOpen(false);
   });
 
   bindRange("opacity", (value) => {
@@ -304,6 +326,14 @@ function wireWindowEvents() {
     applySettings();
     renderChrome();
   });
+  void listen("toggle-overlay-lock", toggleOverlayLock);
+}
+
+function toggleOverlayLock() {
+  settings.clickThrough = !settings.clickThrough;
+  saveSettings();
+  applySettings();
+  renderChrome();
 }
 
 function bindRange(id: string, onChange: (value: number) => void) {
@@ -853,10 +883,15 @@ function showStatus(message: string) {
 
 function applySettings() {
   const root = document.documentElement;
+  const overlay = document.querySelector<HTMLElement>("#overlay");
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
   root.style.setProperty("--lyric-size", `${settings.fontSize}px`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
   root.style.setProperty("--bg-saturation", `${settings.bgSaturation}%`);
+  overlay?.classList.toggle("click-through", settings.clickThrough);
+  if (settings.clickThrough) {
+    overlay?.classList.remove("controls-visible");
+  }
   void applyOverlayInteractivity();
 }
 

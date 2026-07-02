@@ -62,8 +62,8 @@ button {
   grid-template-rows: 1fr;
   width: 100%;
   height: 100%;
-  min-width: 360px;
-  min-height: 420px;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
   color: var(--text);
   border: 0;
@@ -108,12 +108,18 @@ button {
   cursor: grabbing;
 }
 
+.overlay:not(.click-through) .chrome,
 .overlay.controls-visible .chrome,
 .chrome:hover,
 .chrome:focus-within,
 .overlay.settings-open .chrome {
   opacity: 1;
   pointer-events: auto;
+}
+
+.overlay.click-through .chrome {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .track-meta {
@@ -143,13 +149,55 @@ button {
 
 .window-actions,
 .secondary-actions {
-  display: grid;
-  grid-auto-flow: column;
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
 
-.menu-toggle {
+.icon-button.compact-menu-toggle,
+.compact-menu {
   display: none;
+}
+
+.compact-menu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 8;
+  width: 172px;
+  padding: 5px;
+  background: var(--surface-strong);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+}
+
+.compact-menu[hidden] {
+  display: none;
+}
+
+.compact-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.compact-menu button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.compact-menu button span {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .icon-button {
@@ -188,50 +236,36 @@ button {
   border-color: rgba(255, 89, 89, 0.35);
 }
 
-@media (max-width: 460px) {
+@media (max-width: 520px) {
   .chrome {
     right: 6px;
     left: 6px;
-    gap: 6px;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   #title {
-    font-size: clamp(14px, 5cqw, 18px);
+    font-size: clamp(15px, 5cqw, 19px);
   }
 
-  .window-actions {
-    position: relative;
-  }
-
-  .menu-toggle {
-    display: grid;
-  }
-
-  .secondary-actions {
-    position: absolute;
-    top: 34px;
-    right: 32px;
+  .secondary-actions,
+  #close {
     display: none;
-    grid-auto-flow: column;
-    padding: 4px;
-    background: rgba(10, 15, 18, 0.94);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 10px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
-    backdrop-filter: blur(10px);
   }
 
-  .window-actions:hover .secondary-actions,
-  .window-actions:focus-within .secondary-actions {
+  .icon-button.compact-menu-toggle {
     display: grid;
+  }
+
+  .compact-menu:not([hidden]) {
+    display: block;
+  }
+
+  .status-strip {
+    top: 58px;
   }
 }
 
-@media (max-width: 360px) {
-  #artist {
-    display: none;
-  }
-
+@media (max-width: 280px) {
   .icon-button {
     width: 26px;
     height: 26px;
@@ -417,25 +451,37 @@ input[type="checkbox"] {
 }
 
 @media (max-width: 480px) {
-  .shell {
-    padding: 0;
-  }
-
-  .overlay {
-    min-width: 300px;
-  }
-
-  .chrome {
-    grid-template-columns: 34px minmax(0, 1fr);
-  }
-
-  .window-actions {
-    grid-column: 1 / -1;
-    grid-auto-columns: 34px;
-    justify-content: end;
-  }
-
   .lyrics-viewport {
-    padding: 78px 16px 28px;
+    padding-right: 16px;
+    padding-bottom: 28px;
+    padding-left: 16px;
   }
+}
+
+.overlay.click-through .chrome {
+  top: 10px;
+  right: 12px;
+  left: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  opacity: 1;
+}
+
+.overlay.click-through .track-meta {
+  width: 100%;
+  text-align: center;
+}
+
+.overlay.click-through #title {
+  margin: 0 0 3px;
+  font-size: clamp(20px, 7cqw, 36px);
+  line-height: 1.08;
+}
+
+.overlay.click-through #artist {
+  font-size: clamp(13px, 3.5cqw, 19px);
+  line-height: 1.2;
+}
+
+.overlay.click-through .window-actions {
+  display: none;
 }
