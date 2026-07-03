@@ -937,14 +937,6 @@ function renderStatus() {
     messages.push("Multiple players are active");
   }
 
-  if (currentMedia.hasSession && !currentMedia.isPlaying) {
-    messages.push(currentMedia.status);
-  }
-
-  if (lyricsMode === "plain") {
-    messages.push("Plain lyrics");
-  }
-
   status.textContent = messages.join("  |  ");
   status.hidden = messages.length === 0;
 }
