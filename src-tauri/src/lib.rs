@@ -410,18 +410,26 @@ mod overlay_z_order {
 
 mod media {
     use super::MediaState;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use windows::Media::Control::{
-        GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus,
     };
+
+    const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
         let sessions = manager.GetSessions()?;
         let mut playing_count = 0;
-        let mut selected: Option<GlobalSystemMediaTransportControlsSession> =
-            manager.GetCurrentSession().ok();
+        let current = manager.GetCurrentSession().ok();
+        let current_is_playing = current
+            .as_ref()
+            .and_then(|session| session.GetPlaybackInfo().ok())
+            .and_then(|playback| playback.PlaybackStatus().ok())
+            == Some(GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing);
+        let mut selected = current;
+        let mut selected_is_playing = current_is_playing;
 
         for index in 0..sessions.Size()? {
             let session = sessions.GetAt(index)?;
@@ -430,7 +438,10 @@ mod media {
                 == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
             {
                 playing_count += 1;
-                selected = Some(session);
+                if !selected_is_playing {
+                    selected = Some(session);
+                    selected_is_playing = true;
+                }
             }
         }
 
@@ -442,12 +453,20 @@ mod media {
         let status = playback.PlaybackStatus()?;
         let properties = session.TryGetMediaPropertiesAsync()?.get()?;
         let timeline = session.GetTimelineProperties()?;
-        let position_ms = timespan_to_ms(timeline.Position()?);
+        let timeline_position_ms = timespan_to_ms(timeline.Position()?);
         let end_ms = timespan_to_ms(timeline.EndTime()?);
         let playback_rate = playback
             .PlaybackRate()
             .ok()
             .and_then(|value| value.Value().ok());
+        let position_ms = current_timeline_position(
+            timeline_position_ms,
+            end_ms,
+            timeline.LastUpdatedTime()?.UniversalTime,
+            windows_now_ms(),
+            playback_rate.unwrap_or(1.0),
+            status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
+        );
 
         Ok(MediaState {
             has_session: true,
@@ -470,6 +489,71 @@ mod media {
         }
         (value.Duration / 10_000) as u64
     }
+
+    fn windows_now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
+            .saturating_add(WINDOWS_EPOCH_OFFSET_MS)
+    }
+
+    fn current_timeline_position(
+        position_ms: u64,
+        duration_ms: u64,
+        last_updated_ticks: i64,
+        now_ms: u64,
+        playback_rate: f64,
+        is_playing: bool,
+    ) -> u64 {
+        if !is_playing
+            || last_updated_ticks <= 0
+            || !playback_rate.is_finite()
+            || playback_rate <= 0.0
+        {
+            return position_ms;
+        }
+
+        let last_updated_ms = last_updated_ticks as u64 / 10_000;
+        let elapsed_ms = now_ms.saturating_sub(last_updated_ms);
+        let position_ms =
+            position_ms.saturating_add((elapsed_ms as f64 * playback_rate).round() as u64);
+
+        if duration_ms > 0 {
+            position_ms.min(duration_ms)
+        } else {
+            position_ms
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::current_timeline_position;
+
+        #[test]
+        fn advances_the_position_while_playing() {
+            assert_eq!(
+                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, 1.0, true),
+                62_500
+            );
+        }
+
+        #[test]
+        fn keeps_the_reported_position_while_paused() {
+            assert_eq!(
+                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, 1.0, false),
+                60_000
+            );
+        }
+
+        #[test]
+        fn clamps_the_position_to_the_track_duration() {
+            assert_eq!(
+                current_timeline_position(179_000, 180_000, 1_000_000_000, 105_000, 1.0, true),
+                180_000
+            );
+        }
+    }
 }
 
 mod lyrics {
@@ -478,7 +562,7 @@ mod lyrics {
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
-        _album: &str,
+        album: &str,
         _duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
@@ -491,23 +575,28 @@ mod lyrics {
             .build()
             .map_err(|error| error.to_string())?;
 
-        if let Some(found) = exact_match(&client, title, artist).await? {
+        if let Some(found) = exact_match(&client, title, artist, album).await? {
             return Ok(Some(found));
         }
 
-        search(&client, title, artist).await
+        search(&client, title, artist, album).await
     }
 
     async fn exact_match(
         client: &reqwest::Client,
         title: &str,
         artist: &str,
+        album: &str,
     ) -> Result<Option<LyricsResult>, String> {
-        let url = format!(
+        let mut url = format!(
             "https://lrclib.net/api/get?track_name={}&artist_name={}",
             urlencoding::encode(title),
             urlencoding::encode(artist)
         );
+        if !album.is_empty() {
+            url.push_str("&album_name=");
+            url.push_str(&urlencoding::encode(album));
+        }
 
         let response = client
             .get(url)
@@ -535,6 +624,7 @@ mod lyrics {
         client: &reqwest::Client,
         title: &str,
         artist: &str,
+        album: &str,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{artist} {title}");
         let url = format!(
@@ -558,10 +648,12 @@ mod lyrics {
 
         let normalized_title = normalize(title);
         let normalized_artist = normalize(artist);
+        let normalized_album = normalize(album);
         results.sort_by_key(|item| {
             let track_score = score(item.track_name.as_deref(), &normalized_title);
             let artist_score = score(item.artist_name.as_deref(), &normalized_artist);
-            std::cmp::Reverse(track_score + artist_score)
+            let album_score = score(item.album_name.as_deref(), &normalized_album);
+            std::cmp::Reverse(track_score * 4 + artist_score * 3 + album_score)
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
@@ -576,6 +668,10 @@ mod lyrics {
     }
 
     fn score(value: Option<&str>, expected: &str) -> u8 {
+        if expected.is_empty() {
+            return 0;
+        }
+
         let Some(value) = value else {
             return 0;
         };

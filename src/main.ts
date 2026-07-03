@@ -98,7 +98,6 @@ let pollTimer = 0;
 let animationFrame = 0;
 let mediaSampledAtMs = performance.now();
 let mediaPositionAnchorMs = demoState.positionMs;
-let lastNativePositionMs = demoState.positionMs;
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
@@ -713,27 +712,24 @@ function syncMediaClock(media: MediaState, sampledAtMs: number, trackChanged: bo
   if (!media.hasSession) {
     mediaSampledAtMs = sampledAtMs;
     mediaPositionAnchorMs = 0;
-    lastNativePositionMs = 0;
     return;
   }
 
   const nativePositionMs = media.positionMs;
-  const nativeDeltaMs = Math.abs(nativePositionMs - lastNativePositionMs);
-  const seekThresholdMs = Math.max(500, POLLING_INTERVAL_MS * 2);
-  const nativePositionJumped = nativeDeltaMs > seekThresholdMs;
+  const expectedPositionMs = getEstimatedMediaPositionMs(sampledAtMs);
+  const clockErrorMs = Math.abs(nativePositionMs - expectedPositionMs);
+  const seekThresholdMs = Math.max(350, POLLING_INTERVAL_MS * 3);
   const shouldReanchor =
     trackChanged ||
     !currentMedia.hasSession ||
     currentMedia.isPlaying !== media.isPlaying ||
     !media.isPlaying ||
-    nativePositionJumped;
+    clockErrorMs > seekThresholdMs;
 
   if (shouldReanchor) {
     mediaSampledAtMs = sampledAtMs;
     mediaPositionAnchorMs = nativePositionMs;
   }
-
-  lastNativePositionMs = nativePositionMs;
 }
 
 function renderAll() {
