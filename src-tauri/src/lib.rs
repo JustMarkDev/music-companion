@@ -500,7 +500,7 @@ mod media {
 
     fn current_timeline_position(
         position_ms: u64,
-        duration_ms: u64,
+        _duration_ms: u64,
         last_updated_ticks: i64,
         now_ms: u64,
         playback_rate: f64,
@@ -519,11 +519,10 @@ mod media {
         let position_ms =
             position_ms.saturating_add((elapsed_ms as f64 * playback_rate).round() as u64);
 
-        if duration_ms > 0 {
-            position_ms.min(duration_ms)
-        } else {
-            position_ms
-        }
+        // A number of WMTC providers publish stale EndTime values during
+        // playback. The caller still receives that duration as metadata, but
+        // the live clock must remain monotonic instead of freezing at it.
+        position_ms
     }
 
     #[cfg(test)]
@@ -547,10 +546,10 @@ mod media {
         }
 
         #[test]
-        fn clamps_the_position_to_the_track_duration() {
+        fn keeps_advancing_past_a_stale_track_duration() {
             assert_eq!(
                 current_timeline_position(179_000, 180_000, 1_000_000_000, 105_000, 1.0, true),
-                180_000
+                184_000
             );
         }
     }

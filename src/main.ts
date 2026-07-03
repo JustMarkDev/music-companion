@@ -98,6 +98,7 @@ let pollTimer = 0;
 let animationFrame = 0;
 let mediaSampledAtMs = performance.now();
 let mediaPositionAnchorMs = demoState.positionMs;
+let suppressingPositionReset = false;
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
@@ -691,7 +692,12 @@ function getSyncedPositionMs() {
 
   const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
   const durationMs = currentMedia.durationMs ?? lyricDurationMs;
-  return durationMs ? clamp(position, 0, durationMs) : Math.max(0, position);
+  // WMTC duration metadata can be stale while a track is playing. Clamping an
+  // advancing clock to it freezes lyric synchronization until the session is
+  // refreshed (for example, by pausing and resuming).
+  return durationMs && !currentMedia.isPlaying
+    ? clamp(position, 0, durationMs)
+    : Math.max(0, position);
 }
 
 function getEstimatedMediaPositionMs(nowMs: number) {
@@ -712,6 +718,7 @@ function syncMediaClock(media: MediaState, sampledAtMs: number, trackChanged: bo
   if (!media.hasSession) {
     mediaSampledAtMs = sampledAtMs;
     mediaPositionAnchorMs = 0;
+    suppressingPositionReset = false;
     return;
   }
 
@@ -719,12 +726,31 @@ function syncMediaClock(media: MediaState, sampledAtMs: number, trackChanged: bo
   const expectedPositionMs = getEstimatedMediaPositionMs(sampledAtMs);
   const clockErrorMs = Math.abs(nativePositionMs - expectedPositionMs);
   const seekThresholdMs = Math.max(350, POLLING_INTERVAL_MS * 3);
+  const playbackChanged = currentMedia.isPlaying !== media.isPlaying;
+  const looksLikeSpuriousReset =
+    !trackChanged &&
+    currentMedia.hasSession &&
+    currentMedia.isPlaying &&
+    media.isPlaying &&
+    expectedPositionMs > 30_000 &&
+    nativePositionMs < 5_000 &&
+    expectedPositionMs - nativePositionMs > 10_000;
+
+  if (looksLikeSpuriousReset) {
+    suppressingPositionReset = true;
+  } else if (
+    suppressingPositionReset &&
+    (trackChanged || playbackChanged || clockErrorMs <= seekThresholdMs)
+  ) {
+    suppressingPositionReset = false;
+  }
+
   const shouldReanchor =
     trackChanged ||
     !currentMedia.hasSession ||
-    currentMedia.isPlaying !== media.isPlaying ||
+    playbackChanged ||
     !media.isPlaying ||
-    clockErrorMs > seekThresholdMs;
+    (clockErrorMs > seekThresholdMs && !suppressingPositionReset);
 
   if (shouldReanchor) {
     mediaSampledAtMs = sampledAtMs;
