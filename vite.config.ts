@@ -3,9 +3,12 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   clearScreen: false,
   server: {
-    port: 1420,
+    port: 1421,
     strictPort: true,
     host: "127.0.0.1",
+    watch: {
+      ignored: ["**/src-tauri/target/**"],
+    },
   },
   preview: {
     port: 1421,
