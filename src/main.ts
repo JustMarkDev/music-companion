@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS: SettingsState = {
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
 const POLLING_INTERVAL_MS = 100;
 const SYNC_OFFSET_MS = 0;
+const LOOP_DETECTION_GRACE_MS = 1_000;
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -99,7 +100,6 @@ let pollTimer = 0;
 let animationFrame = 0;
 let mediaSampledAtMs = performance.now();
 let mediaPositionAnchorMs = demoState.positionMs;
-let suppressingPositionReset = false;
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
@@ -433,8 +433,7 @@ async function pollMedia() {
     const nextMedia = await invoke<MediaState>("get_media_state");
     const sampledAtMs = performance.now();
     const nextTrackKey = trackKey(nextMedia);
-    const trackChanged = Boolean(nextTrackKey && nextTrackKey !== currentTrackKey);
-    syncMediaClock(nextMedia, sampledAtMs, trackChanged);
+    syncMediaClock(nextMedia, sampledAtMs);
     currentMedia = nextMedia;
 
     if (nextTrackKey && nextTrackKey !== currentTrackKey) {
@@ -693,7 +692,14 @@ function getSyncedPositionMs() {
   }
 
   const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
-  const durationMs = currentMedia.durationMs ?? lyricDurationMs;
+  const durationMs = lyricDurationMs ?? currentMedia.durationMs;
+  if (
+    currentMedia.isPlaying &&
+    durationMs &&
+    position >= durationMs + LOOP_DETECTION_GRACE_MS
+  ) {
+    return position % durationMs;
+  }
   // WMTC duration metadata can be stale while a track is playing. Clamping an
   // advancing clock to it freezes lyric synchronization until the session is
   // refreshed (for example, by pausing and resuming).
@@ -716,48 +722,19 @@ function getPlaybackRate() {
   return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : 1;
 }
 
-function syncMediaClock(media: MediaState, sampledAtMs: number, trackChanged: boolean) {
+function syncMediaClock(media: MediaState, sampledAtMs: number) {
   if (!media.hasSession) {
     mediaSampledAtMs = sampledAtMs;
     mediaPositionAnchorMs = 0;
-    suppressingPositionReset = false;
     return;
   }
 
-  const nativePositionMs = media.positionMs;
-  const expectedPositionMs = getEstimatedMediaPositionMs(sampledAtMs);
-  const clockErrorMs = Math.abs(nativePositionMs - expectedPositionMs);
-  const seekThresholdMs = Math.max(350, POLLING_INTERVAL_MS * 3);
-  const playbackChanged = currentMedia.isPlaying !== media.isPlaying;
-  const looksLikeSpuriousReset =
-    !trackChanged &&
-    currentMedia.hasSession &&
-    currentMedia.isPlaying &&
-    media.isPlaying &&
-    expectedPositionMs > 30_000 &&
-    nativePositionMs < 5_000 &&
-    expectedPositionMs - nativePositionMs > 10_000;
-
-  if (looksLikeSpuriousReset) {
-    suppressingPositionReset = true;
-  } else if (
-    suppressingPositionReset &&
-    (trackChanged || playbackChanged || clockErrorMs <= seekThresholdMs)
-  ) {
-    suppressingPositionReset = false;
-  }
-
-  const shouldReanchor =
-    trackChanged ||
-    !currentMedia.hasSession ||
-    playbackChanged ||
-    !media.isPlaying ||
-    (clockErrorMs > seekThresholdMs && !suppressingPositionReset);
-
-  if (shouldReanchor) {
-    mediaSampledAtMs = sampledAtMs;
-    mediaPositionAnchorMs = nativePositionMs;
-  }
+  // The backend has already converted WMTC Position + LastUpdatedTime +
+  // PlaybackRate into the position at sampling time. Treat every sample as
+  // authoritative. This naturally handles forward seeks, backward seeks and
+  // repeat-one without trying to infer which kind of discontinuity occurred.
+  mediaSampledAtMs = sampledAtMs;
+  mediaPositionAnchorMs = media.positionMs;
 }
 
 function renderAll() {
@@ -900,6 +877,10 @@ function updateLyricDom() {
 
   if (activeLineIndex !== lastScrolledLineIndex) {
     lastScrolledLineIndex = activeLineIndex;
+    if (activeLineIndex < 0) {
+      list.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
     list
       .querySelector<HTMLElement>(`.lyric-line[data-line-index="${activeLineIndex}"]`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1065,7 +1046,13 @@ function trackKey(media: MediaState) {
   if (!media.hasSession || !media.title) {
     return "";
   }
-  return `${media.artist.toLowerCase()}::${media.title.toLowerCase()}::${media.album.toLowerCase()}`;
+  // Album metadata is not stable across all WMTC providers and may briefly
+  // disappear during a seek. It must not make the same track look new.
+  return `${normalizeTrackField(media.artist)}::${normalizeTrackField(media.title)}`;
+}
+
+function normalizeTrackField(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function hashHue(input: string) {
