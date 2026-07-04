@@ -567,37 +567,18 @@ input[type="checkbox"] {
 }
 
 .overlay.click-through .chrome {
-  top: 6px;
-  right: 12px;
-  left: 12px;
-  grid-template-columns: minmax(0, 1fr);
-  opacity: 1;
+  display: none !important;
 }
 
-.overlay.click-through .track-meta {
-  width: 100%;
-  text-align: center;
+.overlay.click-through .lyrics-viewport {
+  position: absolute;
+  inset: 0;
+  padding: 0 28px;
 }
 
-.overlay.click-through #title {
-  margin: 0 0 2px;
-  font-size: clamp(18px, 6cqw, 28px);
-  line-height: 1.08;
-}
-
-.overlay.click-through #artist {
-  font-size: clamp(12px, 3cqw, 16px);
-  line-height: 1.2;
-}
-
-.overlay.click-through .window-actions {
-  display: none;
-}
-
-.overlay.click-through.hide-locked-title .chrome {
-  display: none;
-}
-
-.overlay.click-through.hide-locked-title .lyrics-viewport {
-  padding-top: 6px;
+@media (max-width: 480px) {
+  .overlay.click-through .lyrics-viewport {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
 }
