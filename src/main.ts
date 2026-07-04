@@ -692,7 +692,7 @@ function getSyncedPositionMs() {
   }
 
   const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
-  const durationMs = lyricDurationMs ?? currentMedia.durationMs;
+  const durationMs = getReliableLoopDurationMs();
   if (
     currentMedia.isPlaying &&
     durationMs &&
@@ -706,6 +706,19 @@ function getSyncedPositionMs() {
   return durationMs && !currentMedia.isPlaying
     ? clamp(position, 0, durationMs)
     : Math.max(0, position);
+}
+
+function getReliableLoopDurationMs() {
+  const durationMs = currentMedia.durationMs;
+  if (!durationMs) {
+    return null;
+  }
+
+  const lastTimedLineMs = lyricsLines.reduce(
+    (latest, line) => Math.max(latest, line.timeMs ?? 0),
+    0,
+  );
+  return durationMs >= lastTimedLineMs ? durationMs : null;
 }
 
 function getEstimatedMediaPositionMs(nowMs: number) {
