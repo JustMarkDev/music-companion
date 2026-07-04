@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createIcons, Lock, Maximize2, Menu, Minus, Settings, Unlock, X } from "lucide";
+import packageJson from "../package.json";
 import "./styles.css";
 
 type MediaState = {
@@ -181,6 +182,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <input id="show-song-title" type="checkbox" />
         </label>
         <button class="save-settings" id="settings-save">Salva e chiudi</button>
+        <p class="app-version">Versione ${packageJson.version}</p>
       </aside>
     </section>
   </main>

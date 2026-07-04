@@ -1,6 +1,6 @@
 [package]
 name = "music-companion"
-version = "1.0.3"
+version = "1.0.4"
 description = "Windows lyrics overlay built with Tauri"
 authors = ["Music Companion"]
 edition = "2021"

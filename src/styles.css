@@ -517,6 +517,14 @@ input[type="checkbox"] {
   filter: brightness(1.08);
 }
 
+.app-version {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .settings-window {
   background: #101417;
 }
