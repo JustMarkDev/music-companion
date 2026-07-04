@@ -8,7 +8,7 @@
     BlinkMacSystemFont,
     sans-serif;
   --overlay-opacity: 0.99;
-  --lyric-size: 28px;
+  --lyric-size: 1.5rem;
   --line-spacing: 10px;
   --bg-saturation: 100%;
   --hue: 174;
@@ -120,6 +120,10 @@ button {
 .overlay.click-through .chrome {
   opacity: 0;
   pointer-events: none;
+}
+
+.overlay.click-through .status-strip {
+  display: none;
 }
 
 .track-meta {
@@ -294,7 +298,6 @@ button {
   min-height: 0;
   overflow: hidden;
   padding: 54px 28px 0;
-  mask-image: linear-gradient(to bottom, transparent, black 10%, black);
 }
 
 .lyrics-list {
@@ -597,5 +600,4 @@ input[type="checkbox"] {
 
 .overlay.click-through.hide-locked-title .lyrics-viewport {
   padding-top: 6px;
-  mask-image: none;
 }

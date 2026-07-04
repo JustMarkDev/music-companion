@@ -51,7 +51,7 @@ const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
   showSongTitle: false,
   opacity: 0.99,
-  fontSize: 28,
+  fontSize: 1.5,
   lineSpacing: 10,
   startAtLogin: false,
 };
@@ -166,8 +166,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <input id="opacity" type="range" min="80" max="100" step="1" />
         </div>
         <div class="setting-row">
-          <label for="font-size">Lyric size</label>
-          <input id="font-size" type="range" min="18" max="48" step="1" />
+          <label for="font-size">Lyric size (rem)</label>
+          <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
         </div>
         <div class="setting-row">
           <label for="line-spacing">Line spacing</label>
@@ -969,7 +969,7 @@ function applySettings() {
   const root = document.documentElement;
   const overlay = document.querySelector<HTMLElement>("#overlay");
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
-  root.style.setProperty("--lyric-size", `${settings.fontSize}px`);
+  root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
   overlay?.classList.toggle("click-through", settings.clickThrough);
   overlay?.classList.toggle("hide-locked-title", !settings.showSongTitle);
@@ -1030,7 +1030,7 @@ function loadSettings(): SettingsState {
           ? loaded.showSongTitle
           : DEFAULT_SETTINGS.showSongTitle,
       opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0.8, 1),
-      fontSize: loadNumericSetting(loaded.fontSize, DEFAULT_SETTINGS.fontSize, 18, 48),
+      fontSize: loadFontSizeSetting(loaded.fontSize),
       lineSpacing: loadNumericSetting(loaded.lineSpacing, DEFAULT_SETTINGS.lineSpacing, 2, 26),
       startAtLogin:
         typeof loaded.startAtLogin === "boolean"
@@ -1053,6 +1053,16 @@ function loadNumericSetting(value: unknown, fallback: number, minimum: number, m
   return typeof value === "number" && Number.isFinite(value)
     ? clamp(value, minimum, maximum)
     : fallback;
+}
+
+function loadFontSizeSetting(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.fontSize;
+  }
+
+  // Migrate values saved by versions that stored the lyric size in pixels.
+  const remValue = value > 3 ? value / 16 : value;
+  return clamp(remValue, 0.5, 3);
 }
 
 function trackKey(media: MediaState) {
