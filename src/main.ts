@@ -488,7 +488,6 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     const result = await invoke<LyricsResult | null>("fetch_lyrics", {
       title: media.title,
       artist: media.artist,
-      album: media.album,
       durationMs: media.durationMs,
     });
     lyricCache.set(key, result);

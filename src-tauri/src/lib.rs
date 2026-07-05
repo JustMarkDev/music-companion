@@ -126,10 +126,9 @@ fn store_media_state(state: MediaState) {
 async fn fetch_lyrics(
     title: String,
     artist: String,
-    album: String,
     duration_ms: Option<u64>,
 ) -> Result<Option<LyricsResult>, String> {
-    lyrics::fetch_lyrics(&title, &artist, &album, duration_ms).await
+    lyrics::fetch_lyrics(&title, &artist, duration_ms).await
 }
 
 #[tauri::command]
@@ -596,7 +595,6 @@ mod lyrics {
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
-        album: &str,
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
@@ -609,62 +607,13 @@ mod lyrics {
             .build()
             .map_err(|error| error.to_string())?;
 
-        if let Some(duration_ms) = duration_ms {
-            if !album.trim().is_empty() {
-                if let Some(found) =
-                    exact_match(&client, title, artist, album, duration_ms).await?
-                {
-                    return Ok(Some(found));
-                }
-            }
-        }
-
-        search(&client, title, artist, album, duration_ms).await
-    }
-
-    async fn exact_match(
-        client: &reqwest::Client,
-        title: &str,
-        artist: &str,
-        album: &str,
-        duration_ms: u64,
-    ) -> Result<Option<LyricsResult>, String> {
-        let duration_seconds = (duration_ms + 500) / 1_000;
-        let url = format!(
-            "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
-            urlencoding::encode(title),
-            urlencoding::encode(artist),
-            urlencoding::encode(album),
-            duration_seconds,
-        );
-
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-
-        if response.status().as_u16() == 404 {
-            return Ok(None);
-        }
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let payload = response
-            .json::<LrclibLyrics>()
-            .await
-            .map_err(|error| error.to_string())?;
-
-        Ok(Some(payload.into_result()))
+        search(&client, title, artist, duration_ms).await
     }
 
     async fn search(
         client: &reqwest::Client,
         title: &str,
         artist: &str,
-        album: &str,
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{artist} {title}");
@@ -689,15 +638,16 @@ mod lyrics {
 
         let normalized_title = normalize(title);
         let normalized_artist = normalize(artist);
-        let normalized_album = normalize(album);
         results.sort_by_key(|item| {
             let track_score = score(item.track_name.as_deref(), &normalized_title);
             let artist_score = score(item.artist_name.as_deref(), &normalized_artist);
-            let album_score = score(item.album_name.as_deref(), &normalized_album);
+            let metadata_score = track_score * 4 + artist_score * 3;
+            let is_synced = has_synced_lyrics(item);
             let duration_difference = duration_difference_ms(item.duration, duration_ms);
             (
-                std::cmp::Reverse(track_score * 4 + artist_score * 3 + album_score),
+                std::cmp::Reverse(is_synced),
                 duration_difference,
+                std::cmp::Reverse(metadata_score),
             )
         });
 
@@ -741,6 +691,14 @@ mod lyrics {
 
         let candidate_ms = (candidate_seconds.max(0.0) * 1_000.0).round() as u64;
         candidate_ms.abs_diff(expected_ms)
+    }
+
+    fn has_synced_lyrics(candidate: &LrclibLyrics) -> bool {
+        candidate.instrumental || has_lyrics(candidate.synced_lyrics.as_deref())
+    }
+
+    fn has_lyrics(lyrics: Option<&str>) -> bool {
+        lyrics.is_some_and(|value| !value.trim().is_empty())
     }
 
     impl LrclibLyrics {
