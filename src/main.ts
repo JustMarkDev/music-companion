@@ -832,6 +832,11 @@ function renderLyrics() {
     return;
   }
 
+  if (lyricsMode === "instrumental") {
+    list.innerHTML = `<p class="empty-state">Instrumental</p>`;
+    return;
+  }
+
   list.innerHTML = lyricsLines
     .map((line, index) => {
       const distance = Math.abs(index - activeLineIndex);
