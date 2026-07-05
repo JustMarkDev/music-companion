@@ -9,6 +9,7 @@
     sans-serif;
   --overlay-opacity: 0.99;
   --lyric-size: 1.5rem;
+  --active-lyric-scale: 1.075;
   --line-spacing: 10px;
   --bg-saturation: 100%;
   --hue: 174;
@@ -345,7 +346,7 @@ button {
   text-shadow:
     0 0 22px color-mix(in srgb, var(--accent) 45%, transparent),
     0 1px 16px rgba(0, 0, 0, 0.5);
-  transform: scale(1.075);
+  transform: scale(var(--active-lyric-scale));
   animation: line-arrive 220ms ease-out;
 }
 
@@ -362,7 +363,7 @@ button {
 
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1.075);
+    transform: translateY(0) scale(var(--active-lyric-scale));
   }
 }
 
@@ -373,10 +374,11 @@ button {
   margin: 0;
   place-items: center;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 20px;
+  font-size: var(--lyric-size);
   font-weight: 650;
   line-height: 1.3;
   text-align: center;
+  transform: scale(var(--active-lyric-scale));
 }
 
 .lyrics-searching {
