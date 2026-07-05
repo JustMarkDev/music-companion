@@ -1,6 +1,6 @@
 # Music Companion
 
-Current version: **1.0.5**
+Current version: **1.0.6**
 
 A Windows-only Tauri + Vite+ lyrics overlay inspired by Lyric Overlay and LyPy. It reads the active media session from Windows Media Transport Controls, fetches synced lyrics from LRCLIB, and displays them in a transparent always-on-top desktop overlay.
 
