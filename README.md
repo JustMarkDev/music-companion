@@ -2,83 +2,190 @@
 
 Current version: **1.0.6**
 
-A Windows-only Tauri + Vite+ lyrics overlay inspired by Lyric Overlay and LyPy. It reads the active media session from Windows Media Transport Controls, fetches synced lyrics from LRCLIB, and displays them in a transparent always-on-top desktop overlay.
+Music Companion is a Windows-only desktop lyrics overlay built with Tauri,
+TypeScript, and Rust. It reads the active media session through Windows Media
+Transport Controls (WMTC), fetches lyrics from
+[LRCLIB](https://lrclib.net/), and displays them in a transparent,
+always-on-top window.
 
 ## Features
 
-- Windows Media Transport Controls support for Spotify, Apple Music, YouTube Music, browsers, VLC, and other compatible players.
-- LRCLIB synced lyrics, with plain-lyrics fallback.
-- Enhanced LRC word timing when available, plus smooth per-word interpolation for line-timed lyrics.
-- Transparent, resizable, always-on-top overlay.
-- Live line and word highlighting with smooth scrolling and animated word transitions.
-- Settings for opacity, lyric size, spacing, saturation, polling interval, start at login, and Spotify-focused auto-show behavior.
-- Tray support: close hides the overlay, tray menu can show or quit the app.
-- Global `Ctrl+Shift+L` hotkey to lock or unlock click-through mode.
+- Works with Spotify, Apple Music, YouTube Music, browsers, VLC, and other
+  WMTC-compatible players.
+- Displays synced LRCLIB lyrics with a plain-lyrics fallback.
+- Supports enhanced LRC word timing and smooth interpolation for line-timed
+  lyrics.
+- Provides live line and word highlighting with animated scrolling.
+- Offers a transparent, resizable, always-on-top overlay.
+- Includes configurable opacity, lyric size, line spacing, song-title
+  visibility, and start-at-login behavior.
+- Hides to the system tray instead of closing.
+- Supports click-through mode from the UI or with `Ctrl+Shift+L`.
 
-## Prerequisites
+## Install
+
+Music Companion supports Windows 10 and Windows 11.
+
+1. Open the
+   [latest GitHub release](https://github.com/JustMarkDev/music-companion/releases/latest).
+2. Download either:
+   - The NSIS `.exe` installer for the usual guided installation experience.
+   - The `.msi` package for Windows Installer-based deployment.
+3. Run the downloaded installer and start Music Companion.
+
+Release builds check for signed updates when they launch. When a newer version
+is available, the app downloads and installs it automatically, then restarts.
+End users do not need Node.js, Rust, or Python.
+
+## How to use it
+
+1. Start Music Companion.
+2. Play a track in a WMTC-compatible media player.
+3. Wait for the player to publish track information. The overlay retrieves and
+   displays the best available lyrics from LRCLIB.
+4. Drag the top area to move the window, or use its edges to resize it.
+5. Use the title-bar controls to open settings, minimize, maximize, or hide the
+   overlay.
+
+Closing the window hides it instead of quitting the application. Left-click the
+Music Companion tray icon to show and unlock the overlay again. The tray menu
+also provides **Unlock overlay** and **Quit** actions.
+
+### Click-through mode
+
+Click-through mode allows mouse input to pass through the overlay to windows
+underneath it. Toggle it using the lock button, the compact window menu, or the
+global `Ctrl+Shift+L` shortcut.
+
+If the overlay is locked or hidden and cannot be selected, left-click its tray
+icon to show and unlock it.
+
+### Settings
+
+Open the gear button to configure:
+
+- Overlay opacity.
+- Lyric text size.
+- Space between lyric lines.
+- Whether the song title remains visible while the overlay is locked.
+- Whether Music Companion starts when you sign in to Windows.
+
+Window position and size are restored between sessions.
+
+## Troubleshooting
+
+### No media session is detected
+
+- Confirm that a track is actively playing or paused in a WMTC-compatible
+  player.
+- Try changing tracks or restarting the media player so it republishes its
+  metadata.
+- For browser playback, ensure the browser exposes media controls to Windows.
+  Some tabs do not publish metadata until playback has started.
+
+### Multiple players are detected
+
+If more than one media application is playing, Music Companion warns that the
+active source is ambiguous. Pause the players you do not want to follow.
+
+### Lyrics are missing or out of sync
+
+Lyrics depend on the artist, title, duration, and data available from LRCLIB.
+Some tracks have only plain lyrics, inaccurate timestamps, or no matching entry.
+Track variants such as live, instrumental, slowed, or remixed versions may not
+match the original recording.
+
+### The app does not open correctly
+
+- Confirm that you are using Windows 10 or 11; other operating systems are not
+  supported.
+- Install or repair the
+  [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+  if the window cannot render.
+- Use the tray icon if the overlay is running but hidden off-screen or locked.
+
+## Development
+
+### Prerequisites
 
 - Windows 10 or 11.
-- For development from source:
-  - Node.js 20+.
-  - Vite+ CLI is optional globally; the repo includes a local `vite-plus` dependency and npm scripts call `vp`.
-  - Rust stable with the MSVC Windows toolchain.
-  - Microsoft WebView2 Runtime, which is included on most Windows 10/11 installs.
+- Node.js 20 or newer and npm.
+- Rust stable with the MSVC Windows toolchain.
+- Microsoft WebView2 Runtime, included with most current Windows installations.
 
-End-user release builds do not require Node.js, Rust, or Python.
+The repository includes Vite+ locally; a global Vite+ installation is not
+required.
 
-## Setup
+### Setup and run
 
 ```powershell
-npm install
+npm ci
 npm run tauri:dev
 ```
 
-The Tauri dev command starts `npm run dev`, which runs `vp dev` on the Vite+ toolchain.
+The Tauri development command starts `npm run dev`, which runs the frontend at
+`http://127.0.0.1:1421`.
 
-## Build
+### Validation and build commands
 
 ```powershell
+npm run check
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run build
+npm run preview
 npm run tauri:build
 ```
 
-The Windows installer output is created under `src-tauri/target/release/bundle/`.
+- `npm run check` runs the Vite+ project checks.
+- The Cargo command runs the Rust unit tests.
+- `npm run build` creates the frontend production bundle in `dist/`.
+- `npm run preview` serves the frontend production build locally.
+- `npm run tauri:build` creates Windows installers under
+  `src-tauri/target/release/bundle/`.
+
+## Architecture
+
+1. The Rust backend reads the current Windows media session through WMTC.
+2. When the active track changes, it queries LRCLIB over HTTPS.
+3. The TypeScript frontend parses line and enhanced-word timestamps.
+4. A local playback clock interpolates between WMTC samples for smooth
+   highlighting.
+5. For line-timed LRC, the frontend estimates timing across individual words.
+
+The main implementation files are:
+
+- `src/main.ts` — overlay UI, settings, lyric parsing, and synchronization.
+- `src/styles.css` — overlay and settings presentation.
+- `src-tauri/src/lib.rs` — WMTC integration, LRCLIB requests, tray behavior,
+  updater, and Tauri commands.
+- `src-tauri/tauri.conf.json` — windows, bundling, and updater configuration.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before starting. Discuss substantial
+features, architectural changes, and broad refactors in an issue first.
 
 ## Releases
 
-Version tags matching `vX.Y.Z` trigger the GitHub Actions release workflow. It
-builds and publishes both Windows installer formats:
+Tags matching `vX.Y.Z` trigger the Windows release workflow, which publishes
+both NSIS (`.exe`) and Windows Installer (`.msi`) packages together with signed
+updater metadata.
 
-- NSIS setup (`.exe`)
-- Windows Installer (`.msi`)
+Before a release, keep the version synchronized in:
 
-The installed app checks the latest GitHub release on every production launch.
-When a newer signed version exists, it downloads and installs it without user
-input, then restarts automatically. The release workflow generates and publishes
-the signed updater metadata (`latest.json`) together with the installers.
+- `package.json`
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
 
-Updater signing uses the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret. The
-matching private key must be backed up securely; losing it prevents future
-updates for existing installations.
+Updater signing uses the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret. Its
+private key must remain confidential and securely backed up. Losing it prevents
+future signed updates for existing installations.
 
-## Vite+ Commands
+## License
 
-```powershell
-npm run dev      # vp dev
-npm run build    # vp build
-npm run check    # vp check
-npm run preview  # vp preview
-```
+This project has not selected a license. No permission to use, copy, modify, or
+redistribute the code should be assumed from its public availability.
 
-## How It Works
-
-1. The Rust backend asks Windows for the current media session through WMTC.
-2. When the active track changes, the app queries LRCLIB over HTTPS.
-3. The frontend parses line timestamps and enhanced word timestamps when present.
-4. A local playback clock extrapolates between WMTC samples so highlighting stays smooth between polls.
-5. When a track only has line-level LRC, the app estimates per-word timing across each line.
-
-## Notes
-
-- If multiple media apps are playing, the overlay warns so you can pause extras.
-- Some browser tabs do not publish WMTC metadata until media controls are enabled by the browser.
-- The app is not affiliated with Spotify, LRCLIB, Apple, YouTube, Microsoft, or Lyric Overlay.
+Music Companion is not affiliated with Spotify, LRCLIB, Apple, YouTube,
+Microsoft, VLC, or Lyric Overlay.
