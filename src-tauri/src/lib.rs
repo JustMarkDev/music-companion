@@ -597,7 +597,7 @@ mod lyrics {
         title: &str,
         artist: &str,
         album: &str,
-        _duration_ms: Option<u64>,
+        duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let client = reqwest::Client::builder()
             .user_agent(concat!(
@@ -609,11 +609,17 @@ mod lyrics {
             .build()
             .map_err(|error| error.to_string())?;
 
-        if let Some(found) = exact_match(&client, title, artist, album).await? {
-            return Ok(Some(found));
+        if let Some(duration_ms) = duration_ms {
+            if !album.trim().is_empty() {
+                if let Some(found) =
+                    exact_match(&client, title, artist, album, duration_ms).await?
+                {
+                    return Ok(Some(found));
+                }
+            }
         }
 
-        search(&client, title, artist, album).await
+        search(&client, title, artist, album, duration_ms).await
     }
 
     async fn exact_match(
@@ -621,16 +627,16 @@ mod lyrics {
         title: &str,
         artist: &str,
         album: &str,
+        duration_ms: u64,
     ) -> Result<Option<LyricsResult>, String> {
-        let mut url = format!(
-            "https://lrclib.net/api/get?track_name={}&artist_name={}",
+        let duration_seconds = (duration_ms + 500) / 1_000;
+        let url = format!(
+            "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
             urlencoding::encode(title),
-            urlencoding::encode(artist)
+            urlencoding::encode(artist),
+            urlencoding::encode(album),
+            duration_seconds,
         );
-        if !album.is_empty() {
-            url.push_str("&album_name=");
-            url.push_str(&urlencoding::encode(album));
-        }
 
         let response = client
             .get(url)
@@ -659,6 +665,7 @@ mod lyrics {
         title: &str,
         artist: &str,
         album: &str,
+        duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{artist} {title}");
         let url = format!(
@@ -687,7 +694,11 @@ mod lyrics {
             let track_score = score(item.track_name.as_deref(), &normalized_title);
             let artist_score = score(item.artist_name.as_deref(), &normalized_artist);
             let album_score = score(item.album_name.as_deref(), &normalized_album);
-            std::cmp::Reverse(track_score * 4 + artist_score * 3 + album_score)
+            let duration_difference = duration_difference_ms(item.duration, duration_ms);
+            (
+                std::cmp::Reverse(track_score * 4 + artist_score * 3 + album_score),
+                duration_difference,
+            )
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
@@ -718,6 +729,18 @@ mod lyrics {
         } else {
             0
         }
+    }
+
+    fn duration_difference_ms(candidate_seconds: Option<f64>, expected_ms: Option<u64>) -> u64 {
+        let Some(expected_ms) = expected_ms else {
+            return 0;
+        };
+        let Some(candidate_seconds) = candidate_seconds.filter(|value| value.is_finite()) else {
+            return u64::MAX;
+        };
+
+        let candidate_ms = (candidate_seconds.max(0.0) * 1_000.0).round() as u64;
+        candidate_ms.abs_diff(expected_ms)
     }
 
     impl LrclibLyrics {
