@@ -410,26 +410,24 @@ mod overlay_z_order {
 
 mod media {
     use super::MediaState;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::{Mutex, OnceLock},
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use windows::Media::Control::{
+        GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus,
     };
 
     const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
+    static SELECTED_SESSION: OnceLock<Mutex<Option<GlobalSystemMediaTransportControlsSession>>> =
+        OnceLock::new();
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
         let sessions = manager.GetSessions()?;
         let mut playing_count = 0;
-        let current = manager.GetCurrentSession().ok();
-        let current_is_playing = current
-            .as_ref()
-            .and_then(|session| session.GetPlaybackInfo().ok())
-            .and_then(|playback| playback.PlaybackStatus().ok())
-            == Some(GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing);
-        let mut selected = current;
-        let mut selected_is_playing = current_is_playing;
 
         for index in 0..sessions.Size()? {
             let session = sessions.GetAt(index)?;
@@ -438,16 +436,30 @@ mod media {
                 == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
             {
                 playing_count += 1;
-                if !selected_is_playing {
-                    selected = Some(session);
-                    selected_is_playing = true;
-                }
             }
         }
 
+        let retained = selected_session().filter(session_is_playing);
+        let current = manager.GetCurrentSession().ok();
+        let current_is_playing = current.as_ref().is_some_and(session_is_playing);
+        let mut selected = retained.or(current);
+
+        if !current_is_playing
+            && selected
+                .as_ref()
+                .is_none_or(|session| !session_is_playing(session))
+        {
+            selected = (0..sessions.Size()?).find_map(|index| {
+                let session = sessions.GetAt(index).ok()?;
+                session_is_playing(&session).then_some(session)
+            });
+        }
+
         let Some(session) = selected else {
+            store_selected_session(None);
             return Ok(MediaState::no_session("No session"));
         };
+        store_selected_session(Some(session.clone()));
 
         let playback = session.GetPlaybackInfo()?;
         let status = playback.PlaybackStatus()?;
@@ -481,6 +493,29 @@ mod media {
             playback_rate,
             playing_session_count: playing_count,
         })
+    }
+
+    fn selected_session() -> Option<GlobalSystemMediaTransportControlsSession> {
+        SELECTED_SESSION
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .ok()?
+            .clone()
+    }
+
+    fn store_selected_session(session: Option<GlobalSystemMediaTransportControlsSession>) {
+        if let Ok(mut selected) = SELECTED_SESSION.get_or_init(|| Mutex::new(None)).lock() {
+            *selected = session;
+        }
+    }
+
+    fn session_is_playing(session: &GlobalSystemMediaTransportControlsSession) -> bool {
+        session
+            .GetPlaybackInfo()
+            .and_then(|playback| playback.PlaybackStatus())
+            .is_ok_and(|status| {
+                status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
+            })
     }
 
     fn timespan_to_ms(value: windows::Foundation::TimeSpan) -> u64 {

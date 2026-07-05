@@ -302,6 +302,8 @@ button {
 
 .lyrics-list {
   height: 100%;
+  padding-right: 3.5%;
+  padding-left: 3.5%;
   overflow: hidden auto;
   scroll-behavior: smooth;
   scrollbar-width: none;
@@ -343,7 +345,7 @@ button {
   text-shadow:
     0 0 22px color-mix(in srgb, var(--accent) 45%, transparent),
     0 1px 16px rgba(0, 0, 0, 0.5);
-  transform: scale(1.012);
+  transform: scale(1.075);
   animation: line-arrive 220ms ease-out;
 }
 
@@ -360,7 +362,7 @@ button {
 
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1.012);
+    transform: translateY(0) scale(1.075);
   }
 }
 
