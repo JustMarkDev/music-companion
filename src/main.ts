@@ -94,7 +94,15 @@ let currentMedia: MediaState = demoState;
 let currentTrackKey = "";
 let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
 let activeLineIndex = 2;
-let lyricsMode: "synced" | "plain" | "instrumental" | "searching" | "missing" | "error" = "synced";
+let lyricsMode:
+  | "synced"
+  | "plain"
+  | "instrumental"
+  | "excluded"
+  | "searching"
+  | "missing"
+  | "error" = "synced";
+let lyricsNotice = "";
 let settingsOpen = false;
 let pollTimer = 0;
 let animationFrame = 0;
@@ -469,6 +477,20 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     return;
   }
 
+  const localNotice = getLocalLyricsNotice(media.title);
+  if (localNotice) {
+    if (currentTrackKey === expectedTrackKey) {
+      lyricDurationMs = media.durationMs;
+      lyricsLines = [];
+      lyricsMode = localNotice === "Instrumental" ? "instrumental" : "excluded";
+      lyricsNotice = localNotice;
+      invalidateLyricsRender();
+      renderLyrics();
+    }
+    return;
+  }
+
+  lyricsNotice = "";
   const key = trackKey(media);
   if (lyricCache.has(key)) {
     if (currentTrackKey === key) {
@@ -506,6 +528,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
 }
 
 function applyLyrics(result: LyricsResult | null) {
+  lyricsNotice = "";
   if (!result) {
     lyricsLines = [];
     lyricsMode = "missing";
@@ -546,6 +569,32 @@ function applyLyrics(result: LyricsResult | null) {
   lyricsLines = [];
   lyricsMode = "missing";
   invalidateLyricsRender();
+}
+
+function getLocalLyricsNotice(title: string): string | null {
+  if (/\binstrumental\b/i.test(title)) {
+    return "Instrumental";
+  }
+
+  const slowed = /\bslowed(?:\s+down)?\b/i.test(title);
+  const reverb = /\breverb(?:erated)?\b/i.test(title);
+  if (slowed && reverb) {
+    return "Slowed + Reverb - No Lyrics";
+  }
+
+  const variants: Array<[RegExp, string]> = [
+    [/\bslowed(?:\s+down)?\b/i, "Slowed"],
+    [/\breverb(?:erated)?\b/i, "Reverb"],
+    [/\bremix(?:ed)?\b/i, "Remix"],
+    [/\bsped[\s-]*up\b|\bspeed[\s-]*up\b/i, "Sped Up"],
+    [/\bnightcore\b/i, "Nightcore"],
+    [/\bkaraoke\b/i, "Karaoke"],
+    [/(?:[\(\[\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live"],
+    [/\bcover\b/i, "Cover"],
+  ];
+
+  const match = variants.find(([pattern]) => pattern.test(title));
+  return match ? `${match[1]} - No Lyrics` : null;
 }
 
 function parseTimeParts(minutes: string, seconds: string, fraction = "0") {
@@ -692,11 +741,7 @@ function getSyncedPositionMs() {
 
   const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
   const durationMs = getReliableLoopDurationMs();
-  if (
-    currentMedia.isPlaying &&
-    durationMs &&
-    position >= durationMs + LOOP_DETECTION_GRACE_MS
-  ) {
+  if (currentMedia.isPlaying && durationMs && position >= durationMs + LOOP_DETECTION_GRACE_MS) {
     return position % durationMs;
   }
   // WMTC duration metadata can be stale while a track is playing. Clamping an
@@ -826,13 +871,13 @@ function renderLyrics() {
     return;
   }
 
-  if (lyricsMode === "missing" || lyricsLines.length === 0) {
-    list.innerHTML = `<p class="empty-state">No lyrics found.</p>`;
+  if (lyricsMode === "instrumental" || lyricsMode === "excluded") {
+    list.innerHTML = `<p class="empty-state">${escapeHtml(lyricsNotice || "Instrumental")}</p>`;
     return;
   }
 
-  if (lyricsMode === "instrumental") {
-    list.innerHTML = `<p class="empty-state">Instrumental</p>`;
+  if (lyricsMode === "missing" || lyricsLines.length === 0) {
+    list.innerHTML = `<p class="empty-state">No lyrics found.</p>`;
     return;
   }
 
@@ -909,7 +954,13 @@ function getLyricsRenderKey() {
     return "no-session";
   }
 
-  if (lyricsMode === "searching" || lyricsMode === "missing" || lyricsMode === "error") {
+  if (
+    lyricsMode === "searching" ||
+    lyricsMode === "missing" ||
+    lyricsMode === "error" ||
+    lyricsMode === "instrumental" ||
+    lyricsMode === "excluded"
+  ) {
     return `${lyricsMode}:${currentTrackKey}`;
   }
 
