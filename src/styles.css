@@ -8,6 +8,7 @@
     BlinkMacSystemFont,
     sans-serif;
   --overlay-opacity: 0.99;
+  --backdrop-blur: 20px;
   --lyric-size: 1.5rem;
   --active-lyric-scale: 1.075;
   --line-spacing: 0.4em;
@@ -171,7 +172,7 @@ button {
   z-index: 8;
   width: 172px;
   padding: 5px;
-  background: var(--surface-strong);
+  background: hsl(210, 20%, 5%);
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
