@@ -591,23 +591,33 @@ mod media {
 
 mod lyrics {
     use super::{LrclibLyrics, LyricsResult};
+    use std::sync::OnceLock;
+
+    static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!(
-                "MusicCompanion/",
-                env!("CARGO_PKG_VERSION"),
-                " (https://github.com/JustMarkDev/Music-Companion)"
-            ))
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|error| error.to_string())?;
+        search(http_client()?, title, artist, duration_ms).await
+    }
 
-        search(&client, title, artist, duration_ms).await
+    fn http_client() -> Result<&'static reqwest::Client, String> {
+        HTTP_CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .user_agent(concat!(
+                        "MusicCompanion/",
+                        env!("CARGO_PKG_VERSION"),
+                        " (https://github.com/JustMarkDev/Music-Companion)"
+                    ))
+                    .timeout(std::time::Duration::from_secs(20))
+                    .build()
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     async fn search(
@@ -636,19 +646,10 @@ mod lyrics {
             .await
             .map_err(|error| error.to_string())?;
 
-        let normalized_title = normalize(title);
         let normalized_artist = normalize(artist);
+        let normalized_title = canonical_title(title, &normalized_artist);
         results.sort_by_key(|item| {
-            let track_score = score(item.track_name.as_deref(), &normalized_title);
-            let artist_score = score(item.artist_name.as_deref(), &normalized_artist);
-            let metadata_score = track_score * 4 + artist_score * 3;
-            let is_synced = has_synced_lyrics(item);
-            let duration_difference = duration_difference_ms(item.duration, duration_ms);
-            (
-                std::cmp::Reverse(is_synced),
-                duration_difference,
-                std::cmp::Reverse(metadata_score),
-            )
+            ranking_key(item, &normalized_title, &normalized_artist, duration_ms)
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
@@ -660,6 +661,27 @@ mod lyrics {
             .chars()
             .filter(|char| char.is_alphanumeric() || char.is_whitespace())
             .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn canonical_title(value: &str, normalized_artist: &str) -> String {
+        let normalized_title = normalize(value);
+        if normalized_artist.is_empty() {
+            return normalized_title;
+        }
+
+        normalized_title
+            .strip_prefix(normalized_artist)
+            .and_then(|title| title.strip_prefix(' '))
+            .or_else(|| {
+                normalized_title
+                    .strip_suffix(normalized_artist)
+                    .and_then(|title| title.strip_suffix(' '))
+            })
+            .unwrap_or(&normalized_title)
+            .to_string()
     }
 
     fn score(value: Option<&str>, expected: &str) -> u8 {
@@ -701,6 +723,27 @@ mod lyrics {
         lyrics.is_some_and(|value| !value.trim().is_empty())
     }
 
+    fn ranking_key(
+        candidate: &LrclibLyrics,
+        normalized_title: &str,
+        normalized_artist: &str,
+        duration_ms: Option<u64>,
+    ) -> (std::cmp::Reverse<u8>, std::cmp::Reverse<bool>, u64) {
+        let candidate_title = candidate
+            .track_name
+            .as_deref()
+            .map(|title| canonical_title(title, normalized_artist));
+        let track_score = score(candidate_title.as_deref(), normalized_title);
+        let artist_score = score(candidate.artist_name.as_deref(), normalized_artist);
+        let metadata_score = track_score * 4 + artist_score * 3;
+
+        (
+            std::cmp::Reverse(metadata_score),
+            std::cmp::Reverse(has_synced_lyrics(candidate)),
+            duration_difference_ms(candidate.duration, duration_ms),
+        )
+    }
+
     impl LrclibLyrics {
         fn into_result(self) -> LyricsResult {
             LyricsResult {
@@ -713,6 +756,69 @@ mod lyrics {
                 synced_lyrics: self.synced_lyrics,
                 plain_lyrics: self.plain_lyrics,
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn candidate(track_name: &str, artist_name: &str, duration: f64) -> LrclibLyrics {
+            LrclibLyrics {
+                track_name: Some(track_name.to_string()),
+                artist_name: Some(artist_name.to_string()),
+                album_name: None,
+                duration: Some(duration),
+                instrumental: false,
+                synced_lyrics: Some("[00:00.00]Lyrics".to_string()),
+                plain_lyrics: Some("Lyrics".to_string()),
+            }
+        }
+
+        #[test]
+        fn metadata_match_outranks_closer_duration() {
+            let normalized_artist = normalize("Jace June");
+            let normalized_title = canonical_title("Goodbye My Baby", &normalized_artist);
+            let expected_duration_ms = Some(182_000);
+            let mut results = vec![
+                candidate("Deeper Than It Seems", "Jace June", 182.0),
+                candidate("Goodbye My Baby", "Jace June", 194.0),
+            ];
+
+            results.sort_by_key(|item| {
+                ranking_key(
+                    item,
+                    &normalized_title,
+                    &normalized_artist,
+                    expected_duration_ms,
+                )
+            });
+
+            assert_eq!(results[0].track_name.as_deref(), Some("Goodbye My Baby"));
+        }
+
+        #[test]
+        fn combined_artist_and_title_forms_have_equal_metadata_rank() {
+            let normalized_artist = normalize("Jace June");
+            let normalized_title = canonical_title("Goodbye My Baby", &normalized_artist);
+            let expected_duration_ms = Some(194_000);
+            let candidates = [
+                candidate("Goodbye My Baby", "Jace June", 194.0),
+                candidate("Jace June - Goodbye My Baby", "Jace June", 194.0),
+                candidate("Goodbye My Baby - Jace June", "Jace June", 194.0),
+            ];
+
+            let keys = candidates.map(|item| {
+                ranking_key(
+                    &item,
+                    &normalized_title,
+                    &normalized_artist,
+                    expected_duration_ms,
+                )
+            });
+
+            assert_eq!(keys[0], keys[1]);
+            assert_eq!(keys[1], keys[2]);
         }
     }
 }
