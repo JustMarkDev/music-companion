@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createIcons, Lock, Maximize2, Menu, Minus, Settings, Unlock, X } from "lucide";
@@ -284,29 +285,76 @@ function wireUi() {
 
   const compactMenu = document.querySelector<HTMLElement>("#compact-menu");
   const compactMenuToggle = document.querySelector<HTMLButtonElement>("#compact-menu-toggle");
-  const setCompactMenuOpen = (open: boolean) => {
-    if (compactMenu) compactMenu.hidden = !open;
-    compactMenuToggle?.setAttribute("aria-expanded", String(open));
-  };
-  compactMenuToggle?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    setCompactMenuOpen(compactMenu?.hidden ?? true);
-  });
-  compactMenu?.addEventListener("click", (event) => {
-    const action = (event.target as Element).closest<HTMLButtonElement>("[data-action]")?.dataset
-      .action;
-    if (!action) return;
-    setCompactMenuOpen(false);
+  let compactMenuWindowSize: PhysicalSize | null = null;
+  let compactMenuTransition = Promise.resolve();
+  let compactMenuRequestedOpen = false;
+  const runCompactMenuAction = (action: string) => {
     if (action === "lock") toggleOverlayLock();
-    if (action === "settings") {
-      openSettings();
-    }
+    if (action === "settings") openSettings();
     if (action === "minimize") void safeWindowAction(() => appWindow?.minimize());
     if (action === "maximize") void safeWindowAction(() => appWindow?.toggleMaximize());
     if (action === "close") void safeWindowAction(() => appWindow?.hide());
+  };
+  const expandWindowForCompactMenu = async () => {
+    if (!appWindow || !compactMenu || compactMenuWindowSize || (await appWindow.isMaximized())) {
+      return;
+    }
+
+    const [size, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
+    const menuBottom = compactMenu.getBoundingClientRect().bottom;
+    const extraHeight = Math.ceil(Math.max(0, menuBottom + 8 - window.innerHeight) * scaleFactor);
+    if (extraHeight === 0) return;
+
+    compactMenuWindowSize = size;
+    await appWindow.setSize(new PhysicalSize(size.width, size.height + extraHeight));
+  };
+  const restoreWindowAfterCompactMenu = async () => {
+    if (appWindow && compactMenuWindowSize) {
+      const size = compactMenuWindowSize;
+      await appWindow.setSize(size);
+      compactMenuWindowSize = null;
+    }
+  };
+  const applyCompactMenuOpen = async (open: boolean) => {
+    if (compactMenu) {
+      compactMenu.hidden = !open;
+    }
+    compactMenuToggle?.setAttribute("aria-expanded", String(open));
+    if (open) {
+      try {
+        await expandWindowForCompactMenu();
+      } catch (error) {
+        if (compactMenu) compactMenu.hidden = true;
+        compactMenuToggle?.setAttribute("aria-expanded", "false");
+        showStatus(`Window menu failed: ${String(error)}`);
+      }
+    } else {
+      await restoreWindowAfterCompactMenu();
+    }
+  };
+  const setCompactMenuOpen = (open: boolean) => {
+    compactMenuRequestedOpen = open;
+    compactMenuTransition = compactMenuTransition
+      .catch(() => undefined)
+      .then(() => applyCompactMenuOpen(open))
+      .catch((error) => {
+        showStatus(`Window menu failed: ${String(error)}`);
+      });
+    return compactMenuTransition;
+  };
+  compactMenuToggle?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void setCompactMenuOpen(!compactMenuRequestedOpen);
+  });
+  compactMenu?.addEventListener("click", async (event) => {
+    const action = (event.target as Element).closest<HTMLButtonElement>("[data-action]")?.dataset
+      .action;
+    if (!action) return;
+    await setCompactMenuOpen(false);
+    runCompactMenuAction(action);
   });
   document.addEventListener("pointerdown", (event) => {
-    if (!(event.target as Element).closest(".window-actions")) setCompactMenuOpen(false);
+    if (!(event.target as Element).closest(".window-actions")) void setCompactMenuOpen(false);
   });
 
   bindRange("opacity", (value) => {
