@@ -156,14 +156,6 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
 }
 
 #[tauri::command]
-fn set_overlay_blur(app: tauri::AppHandle, intensity: u8) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Overlay window is unavailable".to_string())?;
-    persistent_backdrop::apply(&window, intensity.min(100))
-}
-
-#[tauri::command]
 fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("settings")
@@ -214,7 +206,6 @@ pub fn run() {
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
-            set_overlay_blur,
             show_settings_window,
             quit_app
         ])
@@ -222,8 +213,8 @@ pub fn run() {
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = persistent_backdrop::apply(&window, 100) {
-                    eprintln!("Failed to enable the persistent overlay backdrop: {error}");
+                if let Err(error) = window_vibrancy::apply_acrylic(&window, None) {
+                    eprintln!("Failed to enable the overlay acrylic backdrop: {error}");
                 }
                 overlay_z_order::start_monitor(window);
             }
@@ -306,81 +297,6 @@ fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("overlay-unlocked", ());
-}
-
-#[cfg(target_os = "windows")]
-mod persistent_backdrop {
-    use std::{ffi::c_void, mem};
-    use tauri::WebviewWindow;
-    use windows::{
-        core::PCSTR,
-        Win32::{
-            Foundation::{BOOL, HWND},
-            System::LibraryLoader::{GetProcAddress, LoadLibraryA},
-        },
-    };
-
-    const WCA_ACCENT_POLICY: u32 = 0x13;
-    const ACCENT_DISABLED: u32 = 0;
-    const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: u32 = 4;
-
-    #[repr(C)]
-    struct AccentPolicy {
-        state: u32,
-        flags: u32,
-        gradient_color: u32,
-        animation_id: u32,
-    }
-
-    #[repr(C)]
-    struct WindowCompositionAttributeData {
-        attribute: u32,
-        data: *mut c_void,
-        size: usize,
-    }
-
-    type SetWindowCompositionAttribute =
-        unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
-
-    pub fn apply(window: &WebviewWindow, intensity: u8) -> Result<(), String> {
-        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
-
-        // The documented Windows 11 Acrylic backdrop is disabled for inactive windows.
-        // This composition attribute keeps the blur active, which is required for an overlay.
-        unsafe {
-            let user32 =
-                LoadLibraryA(PCSTR(b"user32.dll\0".as_ptr())).map_err(|error| error.to_string())?;
-            let procedure =
-                GetProcAddress(user32, PCSTR(b"SetWindowCompositionAttribute\0".as_ptr()))
-                    .ok_or_else(|| "SetWindowCompositionAttribute is unavailable".to_string())?;
-            let set_window_composition_attribute: SetWindowCompositionAttribute =
-                mem::transmute(procedure);
-
-            let mut policy = AccentPolicy {
-                state: if intensity == 0 {
-                    ACCENT_DISABLED
-                } else {
-                    ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND
-                },
-                flags: 0,
-                // Acrylic requires non-zero alpha. Increasing it strengthens the perceived
-                // backdrop while the webview background independently controls opacity.
-                gradient_color: u32::from(intensity.max(1)) << 24,
-                animation_id: 0,
-            };
-            let mut data = WindowCompositionAttributeData {
-                attribute: WCA_ACCENT_POLICY,
-                data: &mut policy as *mut _ as *mut c_void,
-                size: mem::size_of::<AccentPolicy>(),
-            };
-
-            if !set_window_composition_attribute(HWND(hwnd.0), &mut data).as_bool() {
-                return Err("SetWindowCompositionAttribute rejected the backdrop".to_string());
-            }
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(target_os = "windows")]

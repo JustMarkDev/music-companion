@@ -75,9 +75,6 @@ Apply validation proportionally:
 
 ## Security and releases
 
-- When triggering a GitHub Actions release workflow, verify only that the
-  workflow has started successfully. Do not wait for it to finish; end the task
-  once the run is in progress.
 - Never expose or commit updater private keys, signing material, GitHub secrets,
   tokens, or credentials.
 - Treat updater public-key and endpoint changes as release-critical.

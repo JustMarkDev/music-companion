@@ -34,7 +34,6 @@ type LyricsResult = {
 type SettingsState = {
   clickThrough: boolean;
   opacity: number;
-  blurIntensity: number;
   fontSize: number;
   lineSpacing: number;
   startAtLogin: boolean;
@@ -55,7 +54,6 @@ type LyricLine = {
 const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
   opacity: 0.99,
-  blurIntensity: 100,
   fontSize: 1.5,
   lineSpacing: 0.4,
   startAtLogin: false,
@@ -180,14 +178,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <span>Opacity</span>
             <output id="opacity-value">99%</output>
           </label>
-          <input id="opacity" type="range" min="0" max="100" step="1" />
-        </div>
-        <div class="setting-row">
-          <label class="range-label" for="blur-intensity">
-            <span>Blur intensity</span>
-            <output id="blur-intensity-value">100%</output>
-          </label>
-          <input id="blur-intensity" type="range" min="1" max="100" step="1" />
+          <input id="opacity" type="range" min="80" max="100" step="1" />
         </div>
         <div class="setting-row">
           <label class="range-label" for="font-size">
@@ -380,12 +371,6 @@ function wireUi() {
 
   bindRange("opacity", (value) => {
     settings.opacity = value / 100;
-    saveSettings();
-    applySettings();
-  });
-
-  bindRange("blur-intensity", (value) => {
-    settings.blurIntensity = value;
     saveSettings();
     applySettings();
   });
@@ -1042,9 +1027,6 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#opacity")!.value = String(
     Math.round(settings.opacity * 100),
   );
-  document.querySelector<HTMLInputElement>("#blur-intensity")!.value = String(
-    settings.blurIntensity,
-  );
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
@@ -1054,8 +1036,6 @@ function renderSettings() {
 function renderSettingValues() {
   document.querySelector<HTMLOutputElement>("#opacity-value")!.value =
     `${Math.round(settings.opacity * 100)}%`;
-  document.querySelector<HTMLOutputElement>("#blur-intensity-value")!.value =
-    `${settings.blurIntensity}%`;
   document.querySelector<HTMLOutputElement>("#font-size-value")!.value = `${settings.fontSize}rem`;
   document.querySelector<HTMLOutputElement>("#line-spacing-value")!.value =
     `${settings.lineSpacing}em`;
@@ -1083,7 +1063,6 @@ function applySettings() {
   const root = document.documentElement;
   const overlay = document.querySelector<HTMLElement>("#overlay");
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
-  root.style.setProperty("--backdrop-blur", `${settings.blurIntensity * 0.2}px`);
   root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}em`);
   renderSettingValues();
@@ -1104,7 +1083,6 @@ async function applyOverlayInteractivity() {
     await safeInvoke("set_always_on_top", { enabled: true });
   }
 
-  await safeInvoke("set_overlay_blur", { intensity: settings.blurIntensity });
   await safeWindowAction(() => appWindow.setIgnoreCursorEvents(settings.clickThrough));
 }
 
@@ -1142,13 +1120,7 @@ function loadSettings(): SettingsState {
     const fontSize = loadFontSizeSetting(loaded.fontSize);
     return {
       clickThrough: Boolean(loaded.clickThrough),
-      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0, 1),
-      blurIntensity: loadNumericSetting(
-        loaded.blurIntensity,
-        DEFAULT_SETTINGS.blurIntensity,
-        1,
-        100,
-      ),
+      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0.8, 1),
       fontSize,
       lineSpacing: loadLineSpacingSetting(loaded.lineSpacing, fontSize),
       startAtLogin:
