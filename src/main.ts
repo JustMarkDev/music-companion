@@ -48,7 +48,6 @@ type LyricLine = {
   endTimeMs: number | null;
   text: string;
   words: string[];
-  emulated: boolean;
 };
 
 const DEFAULT_SETTINGS: SettingsState = {
@@ -103,7 +102,7 @@ let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
 let activeLineIndex = 2;
 let lyricsMode:
   | "synced"
-  | "plain"
+  | "unsynced"
   | "instrumental"
   | "excluded"
   | "searching"
@@ -118,7 +117,6 @@ let mediaPositionAnchorMs = demoState.positionMs;
 let demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
-let lyricDurationMs: number | null = demoState.durationMs;
 let pollInFlight = false;
 let pollQueued = false;
 let pollStartedAtMs = 0;
@@ -507,7 +505,6 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   const localNotice = getLocalLyricsNotice(media.title);
   if (localNotice) {
     if (currentTrackKey === expectedTrackKey) {
-      lyricDurationMs = media.durationMs;
       lyricsLines = [];
       lyricsMode = localNotice === "Instrumental" ? "instrumental" : "excluded";
       lyricsNotice = localNotice;
@@ -586,7 +583,6 @@ function applyLyrics(result: LyricsResult | null) {
   }
 
   if (result.instrumental) {
-    lyricDurationMs = getResultDurationMs(result);
     lyricsLines = [createLyricLine(null, "Instrumental")];
     lyricsMode = "instrumental";
     invalidateLyricsRender();
@@ -594,23 +590,16 @@ function applyLyrics(result: LyricsResult | null) {
   }
 
   if (result.syncedLyrics) {
-    lyricDurationMs = getResultDurationMs(result);
-    lyricsLines = ensureAnimatedTimings(parseLyrics(result.syncedLyrics));
+    lyricsLines = parseLyrics(result.syncedLyrics);
     lyricsMode = "synced";
     invalidateLyricsRender();
     return;
   }
 
   if (result.plainLyrics) {
-    lyricDurationMs = getResultDurationMs(result);
-    lyricsLines = emulateLineTimings(
-      result.plainLyrics
-        .split(/\r?\n/)
-        .map((text) => createLyricLine(null, text.trim()))
-        .filter((line) => line.text.length > 0),
-      getEffectiveDurationMs(),
-    );
-    lyricsMode = "plain";
+    lyricsLines = [];
+    lyricsMode = "unsynced";
+    lyricsNotice = "No Synced Lyrics";
     invalidateLyricsRender();
     return;
   }
@@ -660,10 +649,6 @@ function estimateLineDuration(line: LyricLine) {
   return clamp(line.words.length * 460, 1400, 7200);
 }
 
-function getResultDurationMs(result: LyricsResult) {
-  return result.duration ? result.duration * 1000 : currentMedia.durationMs;
-}
-
 function parseLyrics(raw: string): LyricLine[] {
   const lines: LyricLine[] = [];
   const pattern = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
@@ -697,16 +682,7 @@ function createLyricLine(timeMs: number | null, textWithWordTags: string): Lyric
     endTimeMs: null,
     text: text || " ",
     words: splitWords(text),
-    emulated: false,
   };
-}
-
-function ensureAnimatedTimings(lines: LyricLine[]) {
-  if (lines.some((line) => line.timeMs !== null)) {
-    return lines;
-  }
-
-  return emulateLineTimings(lines, getEffectiveDurationMs(lines));
 }
 
 function stripWordTags(textWithWordTags: string) {
@@ -731,33 +707,6 @@ function finalizeLyricTimings(lines: LyricLine[]) {
   return lines;
 }
 
-function emulateLineTimings(lines: LyricLine[], durationMs: number) {
-  if (lines.length === 0) {
-    return lines;
-  }
-
-  const weights = lines.map((line) =>
-    Math.max(2, line.words.length || splitWords(line.text).length),
-  );
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  let cursor = 0;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const lineDuration =
-      index === lines.length - 1
-        ? durationMs - cursor
-        : (durationMs * weights[index]) / totalWeight;
-    const endTimeMs = index === lines.length - 1 ? durationMs : cursor + lineDuration;
-
-    lines[index].timeMs = cursor;
-    lines[index].endTimeMs = Math.max(cursor + 900, Math.min(durationMs, endTimeMs));
-    lines[index].emulated = true;
-    cursor = lines[index].endTimeMs ?? cursor;
-  }
-
-  return lines;
-}
-
 function updateActiveLine(positionMs = getSyncedPositionMs()) {
   if (lyricsLines.length === 0) {
     activeLineIndex = -1;
@@ -766,8 +715,7 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
 
   const timed = lyricsLines.some((line) => line.timeMs !== null);
   if (!timed) {
-    const ratio = clamp(positionMs / getEffectiveDurationMs(), 0, 0.98);
-    activeLineIndex = Math.floor(ratio * lyricsLines.length);
+    activeLineIndex = -1;
     return;
   }
 
@@ -920,7 +868,7 @@ function renderLyrics() {
     return;
   }
 
-  if (lyricsMode === "instrumental" || lyricsMode === "excluded") {
+  if (lyricsMode === "instrumental" || lyricsMode === "excluded" || lyricsMode === "unsynced") {
     list.innerHTML = `<p class="empty-state">${escapeHtml(lyricsNotice || "Instrumental")}</p>`;
     return;
   }
@@ -976,14 +924,12 @@ function updateLyricDom() {
   const lineElements = list.querySelectorAll<HTMLElement>(".lyric-line");
   lineElements.forEach((lineElement) => {
     const lineIndex = Number(lineElement.dataset.lineIndex);
-    const line = lyricsLines[lineIndex];
     const distance = Math.abs(lineIndex - activeLineIndex);
     const showNeighborFocus = lyricsMode !== "synced";
 
     lineElement.classList.toggle("active", lineIndex === activeLineIndex);
     lineElement.classList.toggle("near", showNeighborFocus && distance === 1);
     lineElement.classList.toggle("far", distance > 4);
-    lineElement.classList.toggle("emulated", Boolean(line?.emulated));
   });
 
   if (activeLineIndex !== lastScrolledLineIndex) {
@@ -1007,6 +953,7 @@ function getLyricsRenderKey() {
     lyricsMode === "searching" ||
     lyricsMode === "missing" ||
     lyricsMode === "error" ||
+    lyricsMode === "unsynced" ||
     lyricsMode === "instrumental" ||
     lyricsMode === "excluded"
   ) {
@@ -1020,15 +967,6 @@ function getLyricsRenderKey() {
   return `${lyricsMode}:${lyricsLines
     .map((line) => `${line.timeMs ?? "x"}:${line.text}:${line.words.length}`)
     .join("|")}`;
-}
-
-function getEffectiveDurationMs(lines = lyricsLines) {
-  return currentMedia.durationMs ?? lyricDurationMs ?? estimateLyricsDuration(lines);
-}
-
-function estimateLyricsDuration(lines: LyricLine[]) {
-  const wordCount = lines.reduce((total, line) => total + Math.max(1, line.words.length), 0);
-  return clamp(wordCount * 430, 30_000, 8 * 60_000);
 }
 
 function invalidateLyricsRender() {

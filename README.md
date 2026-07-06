@@ -12,7 +12,8 @@ always-on-top window.
 
 - Works with Spotify, Apple Music, YouTube Music, browsers, VLC, and other
   WMTC-compatible players.
-- Displays synced LRCLIB lyrics with a plain-lyrics fallback.
+- Displays synchronized lyrics from LRCLIB and clearly reports when only plain
+  lyrics are available.
 - Caches successful lyric lookups locally for faster repeat playback.
 - Supports enhanced LRC word timing and smooth interpolation for line-timed
   lyrics.
