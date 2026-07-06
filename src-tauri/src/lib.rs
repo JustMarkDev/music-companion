@@ -156,10 +156,22 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
 }
 
 #[tauri::command]
+fn set_overlay_blur(app: tauri::AppHandle, intensity: u8) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Overlay window is unavailable".to_string())?;
+    persistent_backdrop::apply(&window, intensity.min(100))
+}
+
+#[tauri::command]
 fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("settings")
         .ok_or_else(|| "Settings window is unavailable".to_string())?;
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     window
@@ -202,6 +214,7 @@ pub fn run() {
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
+            set_overlay_blur,
             show_settings_window,
             quit_app
         ])
@@ -209,6 +222,9 @@ pub fn run() {
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = persistent_backdrop::apply(&window, 100) {
+                    eprintln!("Failed to enable the persistent overlay backdrop: {error}");
+                }
                 overlay_z_order::start_monitor(window);
             }
             start_automatic_update(app.handle().clone());
@@ -290,6 +306,81 @@ fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("overlay-unlocked", ());
+}
+
+#[cfg(target_os = "windows")]
+mod persistent_backdrop {
+    use std::{ffi::c_void, mem};
+    use tauri::WebviewWindow;
+    use windows::{
+        core::PCSTR,
+        Win32::{
+            Foundation::{BOOL, HWND},
+            System::LibraryLoader::{GetProcAddress, LoadLibraryA},
+        },
+    };
+
+    const WCA_ACCENT_POLICY: u32 = 0x13;
+    const ACCENT_DISABLED: u32 = 0;
+    const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: u32 = 4;
+
+    #[repr(C)]
+    struct AccentPolicy {
+        state: u32,
+        flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+
+    #[repr(C)]
+    struct WindowCompositionAttributeData {
+        attribute: u32,
+        data: *mut c_void,
+        size: usize,
+    }
+
+    type SetWindowCompositionAttribute =
+        unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
+
+    pub fn apply(window: &WebviewWindow, intensity: u8) -> Result<(), String> {
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+
+        // The documented Windows 11 Acrylic backdrop is disabled for inactive windows.
+        // This composition attribute keeps the blur active, which is required for an overlay.
+        unsafe {
+            let user32 =
+                LoadLibraryA(PCSTR(b"user32.dll\0".as_ptr())).map_err(|error| error.to_string())?;
+            let procedure =
+                GetProcAddress(user32, PCSTR(b"SetWindowCompositionAttribute\0".as_ptr()))
+                    .ok_or_else(|| "SetWindowCompositionAttribute is unavailable".to_string())?;
+            let set_window_composition_attribute: SetWindowCompositionAttribute =
+                mem::transmute(procedure);
+
+            let mut policy = AccentPolicy {
+                state: if intensity == 0 {
+                    ACCENT_DISABLED
+                } else {
+                    ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND
+                },
+                flags: 0,
+                // Acrylic requires non-zero alpha. Increasing it strengthens the perceived
+                // backdrop while the webview background independently controls opacity.
+                gradient_color: u32::from(intensity.max(1)) << 24,
+                animation_id: 0,
+            };
+            let mut data = WindowCompositionAttributeData {
+                attribute: WCA_ACCENT_POLICY,
+                data: &mut policy as *mut _ as *mut c_void,
+                size: mem::size_of::<AccentPolicy>(),
+            };
+
+            if !set_window_composition_attribute(HWND(hwnd.0), &mut data).as_bool() {
+                return Err("SetWindowCompositionAttribute rejected the backdrop".to_string());
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -709,7 +800,6 @@ mod media {
 
 mod lyrics {
     use super::{LrclibLyrics, LyricsResult};
-    use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -756,34 +846,25 @@ mod lyrics {
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
-        let (structured_result, broad_result) = tokio::join!(
-            fetch_candidates(client, structured_url, "structured"),
-            fetch_candidates(client, broad_url, "broad"),
-        );
-
-        let mut results = Vec::new();
-        let mut errors = Vec::new();
-        for result in [structured_result, broad_result] {
-            match result {
-                Ok(candidates) => results.extend(candidates),
-                Err(error) => errors.push(error),
-            }
-        }
-        if errors.len() == 2 {
-            return Err(errors.join("; "));
-        }
-
-        let mut seen = HashSet::new();
-        results.retain(|candidate| {
-            seen.insert((
-                candidate.track_name.clone(),
-                candidate.artist_name.clone(),
-                candidate.album_name.clone(),
-                candidate.duration.map(f64::to_bits),
-            ))
-        });
+        let (mut results, search_type) =
+            match fetch_candidates(client, structured_url, "structured").await {
+                Ok(candidates) if !candidates.is_empty() => (candidates, "structured"),
+                Ok(_) => (
+                    fetch_candidates(client, broad_url, "broad fallback").await?,
+                    "broad fallback",
+                ),
+                Err(structured_error) => {
+                    println!("[lyrics] {structured_error}; trying broad fallback");
+                    match fetch_candidates(client, broad_url, "broad fallback").await {
+                        Ok(candidates) => (candidates, "broad fallback"),
+                        Err(broad_error) => {
+                            return Err(format!("{structured_error}; {broad_error}"));
+                        }
+                    }
+                }
+            };
         println!(
-            "[latency] LRCLIB parallel total={}ms candidates={}",
+            "[latency] LRCLIB total={}ms search={search_type} candidates={}",
             request_started_at.elapsed().as_millis(),
             results.len()
         );

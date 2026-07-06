@@ -34,6 +34,7 @@ type LyricsResult = {
 type SettingsState = {
   clickThrough: boolean;
   opacity: number;
+  blurIntensity: number;
   fontSize: number;
   lineSpacing: number;
   startAtLogin: boolean;
@@ -54,8 +55,9 @@ type LyricLine = {
 const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
   opacity: 0.99,
+  blurIntensity: 100,
   fontSize: 1.5,
-  lineSpacing: 10,
+  lineSpacing: 0.4,
   startAtLogin: false,
 };
 
@@ -174,16 +176,32 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </button>
         </div>
         <div class="setting-row">
-          <label for="opacity">Opacity</label>
-          <input id="opacity" type="range" min="80" max="100" step="1" />
+          <label class="range-label" for="opacity">
+            <span>Opacity</span>
+            <output id="opacity-value">99%</output>
+          </label>
+          <input id="opacity" type="range" min="0" max="100" step="1" />
         </div>
         <div class="setting-row">
-          <label for="font-size">Lyric size (rem)</label>
+          <label class="range-label" for="blur-intensity">
+            <span>Blur intensity</span>
+            <output id="blur-intensity-value">100%</output>
+          </label>
+          <input id="blur-intensity" type="range" min="1" max="100" step="1" />
+        </div>
+        <div class="setting-row">
+          <label class="range-label" for="font-size">
+            <span>Lyric size</span>
+            <output id="font-size-value">1.5rem</output>
+          </label>
           <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
         </div>
         <div class="setting-row">
-          <label for="line-spacing">Line spacing</label>
-          <input id="line-spacing" type="range" min="2" max="26" step="1" />
+          <label class="range-label" for="line-spacing">
+            <span>Line spacing</span>
+            <output id="line-spacing-value">0.4em</output>
+          </label>
+          <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
         </div>
         <label class="switch-row" for="start-login">
           <span>Start at login</span>
@@ -362,6 +380,12 @@ function wireUi() {
 
   bindRange("opacity", (value) => {
     settings.opacity = value / 100;
+    saveSettings();
+    applySettings();
+  });
+
+  bindRange("blur-intensity", (value) => {
+    settings.blurIntensity = value;
     saveSettings();
     applySettings();
   });
@@ -1018,9 +1042,23 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#opacity")!.value = String(
     Math.round(settings.opacity * 100),
   );
+  document.querySelector<HTMLInputElement>("#blur-intensity")!.value = String(
+    settings.blurIntensity,
+  );
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  renderSettingValues();
+}
+
+function renderSettingValues() {
+  document.querySelector<HTMLOutputElement>("#opacity-value")!.value =
+    `${Math.round(settings.opacity * 100)}%`;
+  document.querySelector<HTMLOutputElement>("#blur-intensity-value")!.value =
+    `${settings.blurIntensity}%`;
+  document.querySelector<HTMLOutputElement>("#font-size-value")!.value = `${settings.fontSize}rem`;
+  document.querySelector<HTMLOutputElement>("#line-spacing-value")!.value =
+    `${settings.lineSpacing}em`;
 }
 
 function renderStatus() {
@@ -1045,8 +1083,10 @@ function applySettings() {
   const root = document.documentElement;
   const overlay = document.querySelector<HTMLElement>("#overlay");
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
+  root.style.setProperty("--backdrop-blur", `${settings.blurIntensity * 0.2}px`);
   root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
-  root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
+  root.style.setProperty("--line-spacing", `${settings.lineSpacing}em`);
+  renderSettingValues();
   overlay?.classList.toggle("click-through", settings.clickThrough);
   if (settings.clickThrough) {
     overlay?.classList.remove("controls-visible");
@@ -1064,6 +1104,7 @@ async function applyOverlayInteractivity() {
     await safeInvoke("set_always_on_top", { enabled: true });
   }
 
+  await safeInvoke("set_overlay_blur", { intensity: settings.blurIntensity });
   await safeWindowAction(() => appWindow.setIgnoreCursorEvents(settings.clickThrough));
 }
 
@@ -1098,11 +1139,18 @@ function loadSettings(): SettingsState {
   try {
     const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
     const loaded = stored ? JSON.parse(stored) : {};
+    const fontSize = loadFontSizeSetting(loaded.fontSize);
     return {
       clickThrough: Boolean(loaded.clickThrough),
-      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0.8, 1),
-      fontSize: loadFontSizeSetting(loaded.fontSize),
-      lineSpacing: loadNumericSetting(loaded.lineSpacing, DEFAULT_SETTINGS.lineSpacing, 2, 26),
+      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0, 1),
+      blurIntensity: loadNumericSetting(
+        loaded.blurIntensity,
+        DEFAULT_SETTINGS.blurIntensity,
+        1,
+        100,
+      ),
+      fontSize,
+      lineSpacing: loadLineSpacingSetting(loaded.lineSpacing, fontSize),
       startAtLogin:
         typeof loaded.startAtLogin === "boolean"
           ? loaded.startAtLogin
@@ -1179,6 +1227,16 @@ function loadFontSizeSetting(value: unknown) {
   // Migrate values saved by versions that stored the lyric size in pixels.
   const remValue = value > 3 ? value / 16 : value;
   return clamp(remValue, 0.5, 3);
+}
+
+function loadLineSpacingSetting(value: unknown, fontSize: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.lineSpacing;
+  }
+
+  // Migrate values saved by versions that stored line spacing in pixels.
+  const emValue = value > 1.2 ? value / (fontSize * 16) : value;
+  return clamp(Math.round(emValue * 20) / 20, 0.1, 1.2);
 }
 
 function trackKey(media: MediaState) {
