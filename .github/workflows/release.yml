@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    name: Build and publish Windows installers
+    name: Build and publish Windows installer
     runs-on: windows-latest
 
     steps:
@@ -30,15 +30,33 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust dependencies and build output
+        id: rust-cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: windows-x64-release
+          cache-workspace-crates: true
           cache-on-failure: true
 
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and publish release
+      - name: Build frontend
+        run: npm run build
+
+      - name: Compile Rust application
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc
+
+      - name: Record cache result
+        shell: pwsh
+        run: |
+          "## Release build metrics" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "Rust exact cache hit: ${{ steps.rust-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "Frontend, Rust compilation, and NSIS bundling durations are reported as separate workflow steps." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Bundle and publish NSIS release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,7 +67,7 @@ jobs:
           releaseBody: |
             Music Companion per Windows.
 
-            Scarica l'installer NSIS (`.exe`) oppure il pacchetto MSI (`.msi`).
+            Scarica l'installer NSIS (`.exe`).
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
