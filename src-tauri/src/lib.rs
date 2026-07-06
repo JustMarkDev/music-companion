@@ -167,6 +167,11 @@ fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 pub fn run() {
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
     use tauri_plugin_window_state::StateFlags;
@@ -197,7 +202,8 @@ pub fn run() {
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
-            show_settings_window
+            show_settings_window,
+            quit_app
         ])
         .setup(|app| {
             build_tray(app)?;

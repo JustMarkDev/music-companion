@@ -70,11 +70,11 @@ button {
   border: 0;
   border-radius: 0;
   background:
-    linear-gradient(150deg, hsla(var(--hue), var(--bg-saturation), 18%, 0.22), transparent 48%),
-    linear-gradient(330deg, hsla(var(--hue-2), var(--bg-saturation), 16%, 0.2), transparent 54%),
+    linear-gradient(180deg, hsla(var(--hue), var(--bg-saturation), 18%, 0.2), transparent 44px),
+    linear-gradient(180deg, hsla(var(--hue-2), var(--bg-saturation), 16%, 0.14), transparent 48px),
     var(--surface);
   box-shadow: none;
-  backdrop-filter: blur(12px) saturate(1.08);
+  backdrop-filter: none;
 }
 
 .chrome,
@@ -87,7 +87,7 @@ button {
 
 .chrome {
   position: absolute;
-  top: 4px;
+  top: 3px;
   right: 8px;
   left: 8px;
   z-index: 4;
@@ -95,7 +95,7 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
-  min-height: 28px;
+  min-height: 26px;
   padding: 0;
   border-bottom: 0;
   opacity: 0;
@@ -241,7 +241,7 @@ button {
   border-color: rgba(255, 89, 89, 0.35);
 }
 
-@media (max-width: 520px) {
+@media (max-width: 360px) {
   .chrome {
     right: 6px;
     left: 6px;
@@ -298,13 +298,12 @@ button {
 .lyrics-viewport {
   min-height: 0;
   overflow: hidden;
-  padding: 54px 28px 0;
+  padding: 42px 0 0;
 }
 
 .lyrics-list {
   height: 100%;
-  padding-right: 3.5%;
-  padding-left: 3.5%;
+  padding: 0 20px;
   overflow: hidden auto;
   scroll-behavior: smooth;
   scrollbar-width: none;
@@ -461,6 +460,27 @@ button {
   gap: 12px;
 }
 
+.settings-window .settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 42px;
+  margin: 0 -24px;
+  padding: 6px 12px;
+  background: rgba(20, 26, 30, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: grab;
+  user-select: none;
+}
+
+.settings-window .settings-header:active {
+  cursor: grabbing;
+}
+
+.settings-window .settings-header button {
+  cursor: pointer;
+}
+
 .settings-header h2 {
   margin: 0;
   font-size: 17px;
@@ -489,6 +509,32 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
+input[type="text"] {
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+}
+
+input[type="text"][readonly] {
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(116, 124, 130, 0.22);
+  border-color: rgba(255, 255, 255, 0.1);
+  cursor: default;
+}
+
+.hotkey-setting {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.hotkey-setting input {
+  width: 116px;
+  text-align: center;
+}
+
 select {
   width: 100%;
   min-height: 34px;
@@ -504,45 +550,19 @@ select {
   cursor: pointer;
 }
 
-.cache-setting {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 8px;
-}
-
-.cache-setting div {
-  display: grid;
-  gap: 3px;
-}
-
-.cache-setting span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.cache-setting small {
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 11px;
-}
-
-.secondary-settings-button {
-  min-height: 34px;
-  padding: 7px 11px;
+.clear-cache-button {
+  justify-self: center;
+  padding: 4px 8px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.09);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 7px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
   cursor: pointer;
 }
 
-.secondary-settings-button:hover {
-  background: rgba(255, 255, 255, 0.14);
+.clear-cache-button:hover {
+  background: rgba(255, 255, 255, 0.09);
 }
 
 input[type="checkbox"] {
@@ -582,7 +602,18 @@ input[type="checkbox"] {
   min-width: 0;
   min-height: 100%;
   overflow: auto;
+  scrollbar-width: none;
   background: #101417;
+}
+
+.settings-window .shell::-webkit-scrollbar,
+.settings-window .overlay::-webkit-scrollbar,
+.settings-window .settings-panel::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-window .settings-panel {
+  scrollbar-width: none;
 }
 
 .settings-window .chrome,
@@ -597,7 +628,7 @@ input[type="checkbox"] {
   right: auto;
   width: 100%;
   max-height: none;
-  padding: 24px;
+  padding: 0 24px 24px;
   background: transparent;
   border: 0;
   box-shadow: none;

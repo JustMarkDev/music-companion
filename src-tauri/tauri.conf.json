@@ -34,7 +34,7 @@
         "minWidth": 360,
         "minHeight": 460,
         "center": true,
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
         "alwaysOnTop": false,
         "resizable": true,

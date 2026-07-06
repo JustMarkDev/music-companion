@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { createIcons, Lock, Maximize2, Menu, Minus, Settings, Unlock, X } from "lucide";
+import { createIcons, Maximize2, Menu, Minus, Settings, X } from "lucide";
 import packageJson from "../package.json";
 import "./styles.css";
 
@@ -134,9 +134,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <div class="window-actions">
           <div class="secondary-actions">
-            <button class="icon-button" id="lock-toggle" title="Enable click-through lock" aria-label="Enable click-through lock">
-              <i data-lucide="unlock"></i>
-            </button>
             <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
               <i data-lucide="settings"></i>
             </button>
@@ -154,11 +151,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <i data-lucide="menu"></i>
           </button>
           <div class="compact-menu" id="compact-menu" hidden>
-            <button data-action="lock">Click through <span>Ctrl+Shift+L</span></button>
             <button data-action="settings">Settings</button>
             <button data-action="minimize">Minimize</button>
             <button data-action="maximize">Maximize</button>
-            <button class="danger" data-action="close">Hide</button>
+            <button data-action="hide">Hide</button>
+            <button class="danger" data-action="close">Close</button>
           </div>
         </div>
       </header>
@@ -170,7 +167,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
 
       <aside class="settings-panel" id="settings-panel" hidden>
-        <div class="settings-header">
+        <div class="settings-header" id="settings-header">
           <h2>Settings</h2>
           <button class="icon-button" id="settings-close" title="Close settings" aria-label="Close settings">
             <i data-lucide="x"></i>
@@ -192,21 +189,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span>Start at login</span>
           <input id="start-login" type="checkbox" />
         </label>
-        <div class="cache-setting">
-          <div>
-            <span>Lyrics cache</span>
-            <small id="cache-size"></small>
-          </div>
-          <button class="secondary-settings-button" id="clear-lyrics-cache">Clear cache</button>
+        <div class="setting-row hotkey-setting">
+          <label for="click-through-hotkey">Toggle Pinned Mode</label>
+          <input id="click-through-hotkey" type="text" value="Ctrl+Shift+L" readonly />
         </div>
         <button class="save-settings" id="settings-save">Salva e chiudi</button>
+        <button class="clear-cache-button" id="clear-lyrics-cache">Clear cache</button>
         <p class="app-version">Versione ${packageJson.version}</p>
       </aside>
     </section>
   </main>
 `;
 
-createIcons({ icons: { Lock, Maximize2, Menu, Minus, Settings, Unlock, X } });
+createIcons({ icons: { Maximize2, Menu, Minus, Settings, X } });
 if (isSettingsWindow) {
   document.body.classList.add("settings-window");
   settingsOpen = true;
@@ -248,6 +243,18 @@ function wireUi() {
     }
   });
 
+  document.querySelector("#settings-header")?.addEventListener("pointerdown", (event) => {
+    if (
+      appWindow &&
+      event instanceof PointerEvent &&
+      event.button === 0 &&
+      event.target instanceof Element &&
+      !event.target.closest("button")
+    ) {
+      void safeWindowAction(() => appWindow.startDragging());
+    }
+  });
+
   document.querySelector("#lyrics-viewport")?.addEventListener("dblclick", () => {
     openSettings();
   });
@@ -267,10 +274,6 @@ function wireUi() {
 
   document.querySelector("#settings-save")?.addEventListener("click", closeSettings);
 
-  document.querySelector("#lock-toggle")?.addEventListener("click", () => {
-    toggleOverlayLock();
-  });
-
   document.querySelector("#minimize")?.addEventListener("click", () => {
     void safeWindowAction(() => appWindow?.minimize());
   });
@@ -289,11 +292,11 @@ function wireUi() {
   let compactMenuTransition = Promise.resolve();
   let compactMenuRequestedOpen = false;
   const runCompactMenuAction = (action: string) => {
-    if (action === "lock") toggleOverlayLock();
     if (action === "settings") openSettings();
     if (action === "minimize") void safeWindowAction(() => appWindow?.minimize());
     if (action === "maximize") void safeWindowAction(() => appWindow?.toggleMaximize());
-    if (action === "close") void safeWindowAction(() => appWindow?.hide());
+    if (action === "hide") void safeWindowAction(() => appWindow?.hide());
+    if (action === "close") void safeInvoke("quit_app");
   };
   const expandWindowForCompactMenu = async () => {
     if (!appWindow || !compactMenu || compactMenuWindowSize || (await appWindow.isMaximized())) {
@@ -848,12 +851,9 @@ function renderAll() {
 }
 
 function renderChrome() {
-  const nextChromeKey = [
-    currentMedia.hasSession,
-    currentMedia.title,
-    currentMedia.artist,
-    settings.clickThrough,
-  ].join("|");
+  const nextChromeKey = [currentMedia.hasSession, currentMedia.title, currentMedia.artist].join(
+    "|",
+  );
   if (nextChromeKey === renderedChromeKey) {
     return;
   }
@@ -861,7 +861,6 @@ function renderChrome() {
   renderedChromeKey = nextChromeKey;
   const title = document.querySelector("#title")!;
   const artist = document.querySelector("#artist")!;
-  const lockToggle = document.querySelector("#lock-toggle")!;
 
   const titleText = currentMedia.hasSession
     ? currentMedia.title || "Unknown track"
@@ -873,18 +872,6 @@ function renderChrome() {
   title.setAttribute("title", titleText);
   artist.textContent = artistText;
   artist.setAttribute("title", artistText);
-  lockToggle.innerHTML = settings.clickThrough
-    ? `<i data-lucide="lock"></i>`
-    : `<i data-lucide="unlock"></i>`;
-  lockToggle.setAttribute(
-    "title",
-    settings.clickThrough ? "Disable click-through lock" : "Enable click-through lock",
-  );
-  lockToggle.setAttribute(
-    "aria-label",
-    settings.clickThrough ? "Disable click-through lock" : "Enable click-through lock",
-  );
-  createIcons({ icons: { Lock, Unlock } });
 }
 
 function renderLyrics() {
@@ -1034,12 +1021,6 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
-  const cacheSize = document.querySelector<HTMLElement>("#cache-size");
-  if (cacheSize) {
-    cacheSize.textContent = `${persistedLyricsCount()} saved track${
-      persistedLyricsCount() === 1 ? "" : "s"
-    }`;
-  }
 }
 
 function renderStatus() {
@@ -1182,15 +1163,6 @@ function clearLyricsCache() {
   lyricCache.clear();
   localStorage.removeItem(LYRICS_CACHE_STORAGE_KEY);
   console.info("[latency] lyrics cache cleared");
-}
-
-function persistedLyricsCount() {
-  try {
-    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
-    return stored ? (JSON.parse(stored) as unknown[]).length : 0;
-  } catch {
-    return 0;
-  }
 }
 
 function loadNumericSetting(value: unknown, fallback: number, minimum: number, maximum: number) {
