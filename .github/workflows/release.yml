@@ -13,6 +13,9 @@ jobs:
   release:
     name: Build and publish Windows installers
     runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
 
     steps:
       - name: Check out repository
@@ -28,6 +31,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Cache Rust dependencies and build output
         uses: Swatinem/rust-cache@v2
@@ -54,3 +60,8 @@ jobs:
           prerelease: false
           generateReleaseNotes: true
           args: --target x86_64-pc-windows-msvc
+
+      - name: Report sccache statistics
+        if: always()
+        shell: pwsh
+        run: "& $env:SCCACHE_PATH --show-stats"
