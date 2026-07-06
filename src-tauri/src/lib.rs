@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -128,7 +128,14 @@ async fn fetch_lyrics(
     artist: String,
     duration_ms: Option<u64>,
 ) -> Result<Option<LyricsResult>, String> {
-    lyrics::fetch_lyrics(&title, &artist, duration_ms).await
+    let started_at = Instant::now();
+    let result = lyrics::fetch_lyrics(&title, &artist, duration_ms).await;
+    println!(
+        "[latency] lyrics total={}ms title={title:?} artist={artist:?} found={}",
+        started_at.elapsed().as_millis(),
+        matches!(&result, Ok(Some(_)))
+    );
+    result
 }
 
 #[tauri::command]
@@ -194,6 +201,7 @@ pub fn run() {
         ])
         .setup(|app| {
             build_tray(app)?;
+            media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
                 overlay_z_order::start_monitor(window);
             }
@@ -410,18 +418,122 @@ mod overlay_z_order {
 mod media {
     use super::MediaState;
     use std::{
-        sync::{Mutex, OnceLock},
+        sync::{Arc, Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tauri::Emitter;
+    use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
     use windows::Media::Control::{
-        GlobalSystemMediaTransportControlsSession,
+        CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
+        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
     };
 
     const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
     static SELECTED_SESSION: OnceLock<Mutex<Option<GlobalSystemMediaTransportControlsSession>>> =
         OnceLock::new();
+
+    struct SessionSubscription {
+        session: GlobalSystemMediaTransportControlsSession,
+        _media_properties_token: EventRegistrationToken,
+        _playback_info_token: EventRegistrationToken,
+    }
+
+    pub fn start_event_monitor(app: tauri::AppHandle) {
+        std::thread::spawn(move || {
+            if let Err(error) = run_event_monitor(app) {
+                eprintln!("Unable to subscribe to Windows media events: {error}");
+            }
+        });
+    }
+
+    fn run_event_monitor(app: tauri::AppHandle) -> windows::core::Result<()> {
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let subscriptions = Arc::new(Mutex::new(Vec::<SessionSubscription>::new()));
+        subscribe_to_sessions(&manager, &app, &subscriptions)?;
+
+        let current_app = app.clone();
+        let _current_session_token =
+            manager.CurrentSessionChanged(&TypedEventHandler::<
+                GlobalSystemMediaTransportControlsSessionManager,
+                CurrentSessionChangedEventArgs,
+            >::new(move |_, _| {
+                emit_media_change(&current_app, "current-session");
+                Ok(())
+            }))?;
+
+        let sessions_app = app.clone();
+        let sessions_state = subscriptions.clone();
+        let _sessions_token = manager.SessionsChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSessionManager,
+            SessionsChangedEventArgs,
+        >::new(move |manager, _| {
+            if let Some(manager) = manager {
+                if let Err(error) = subscribe_to_sessions(manager, &sessions_app, &sessions_state) {
+                    eprintln!("Unable to refresh Windows media event subscriptions: {error}");
+                }
+            }
+            emit_media_change(&sessions_app, "sessions");
+            Ok(())
+        }))?;
+
+        println!("[latency] Windows media event monitor ready");
+        loop {
+            std::thread::park();
+        }
+    }
+
+    fn subscribe_to_sessions(
+        manager: &GlobalSystemMediaTransportControlsSessionManager,
+        app: &tauri::AppHandle,
+        subscriptions: &Arc<Mutex<Vec<SessionSubscription>>>,
+    ) -> windows::core::Result<()> {
+        let sessions = manager.GetSessions()?;
+        for index in 0..sessions.Size()? {
+            let session = sessions.GetAt(index)?;
+            if subscriptions
+                .lock()
+                .is_ok_and(|items| items.iter().any(|item| item.session == session))
+            {
+                continue;
+            }
+
+            let media_app = app.clone();
+            let media_properties_token =
+                session.MediaPropertiesChanged(&TypedEventHandler::<
+                    GlobalSystemMediaTransportControlsSession,
+                    MediaPropertiesChangedEventArgs,
+                >::new(move |_, _| {
+                    emit_media_change(&media_app, "media-properties");
+                    Ok(())
+                }))?;
+
+            let playback_app = app.clone();
+            let playback_info_token =
+                session.PlaybackInfoChanged(&TypedEventHandler::<
+                    GlobalSystemMediaTransportControlsSession,
+                    PlaybackInfoChangedEventArgs,
+                >::new(move |_, _| {
+                    emit_media_change(&playback_app, "playback-info");
+                    Ok(())
+                }))?;
+
+            if let Ok(mut items) = subscriptions.lock() {
+                items.push(SessionSubscription {
+                    session,
+                    _media_properties_token: media_properties_token,
+                    _playback_info_token: playback_info_token,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
+        println!("[latency] Windows media event reason={reason}");
+        let _ = app.emit("media-state-changed", reason);
+    }
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
@@ -631,13 +743,22 @@ mod lyrics {
             "https://lrclib.net/api/search?q={}",
             urlencoding::encode(&query)
         );
+        let request_started_at = std::time::Instant::now();
         let response = client
             .get(url)
             .send()
             .await
             .map_err(|error| error.to_string())?;
+        let headers_received_at = std::time::Instant::now();
 
         if !response.status().is_success() {
+            println!(
+                "[latency] LRCLIB headers={}ms status={}",
+                headers_received_at
+                    .duration_since(request_started_at)
+                    .as_millis(),
+                response.status()
+            );
             return Ok(None);
         }
 
@@ -645,6 +766,14 @@ mod lyrics {
             .json::<Vec<LrclibLyrics>>()
             .await
             .map_err(|error| error.to_string())?;
+        println!(
+            "[latency] LRCLIB headers={}ms body={}ms candidates={}",
+            headers_received_at
+                .duration_since(request_started_at)
+                .as_millis(),
+            headers_received_at.elapsed().as_millis(),
+            results.len()
+        );
 
         let normalized_artist = normalize(artist);
         let normalized_title = canonical_title(title, &normalized_artist);

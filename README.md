@@ -13,6 +13,7 @@ always-on-top window.
 - Works with Spotify, Apple Music, YouTube Music, browsers, VLC, and other
   WMTC-compatible players.
 - Displays synced LRCLIB lyrics with a plain-lyrics fallback.
+- Caches successful lyric lookups locally for faster repeat playback.
 - Supports enhanced LRC word timing and smooth interpolation for line-timed
   lyrics.
 - Provides live line and word highlighting with animated scrolling.
@@ -67,8 +68,8 @@ Open the gear button to configure:
 - Overlay opacity.
 - Lyric text size.
 - Space between lyric lines.
-- Whether the song title remains visible while the overlay is locked.
 - Whether Music Companion starts when you sign in to Windows.
+- Clear the locally saved lyrics cache.
 
 Window position and size are restored between sessions.
 
@@ -147,10 +148,18 @@ npm run tauri:build
 
 1. The Rust backend reads the current Windows media session through WMTC.
 2. When the active track changes, it queries LRCLIB over HTTPS.
-3. The TypeScript frontend parses line and enhanced-word timestamps.
-4. A local playback clock interpolates between WMTC samples for smooth
+3. Successful results are retained in a bounded local cache for later sessions.
+4. The TypeScript frontend parses line and enhanced-word timestamps.
+5. A local playback clock interpolates between WMTC samples for smooth
    highlighting.
-5. For line-timed LRC, the frontend estimates timing across individual words.
+6. For line-timed LRC, the frontend estimates timing across individual words.
+
+### Lyrics latency diagnostics
+
+When running `npm run tauri:dev`, timing entries prefixed with `[latency]`
+appear in the Rust terminal and WebView developer console. They report WMTC
+refresh triggers, media-state IPC duration, lyric cache hits, in-flight request
+reuse, and LRCLIB header/body timing.
 
 The main implementation files are:
 

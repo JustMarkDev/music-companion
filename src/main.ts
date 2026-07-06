@@ -32,11 +32,15 @@ type LyricsResult = {
 
 type SettingsState = {
   clickThrough: boolean;
-  showSongTitle: boolean;
   opacity: number;
   fontSize: number;
   lineSpacing: number;
   startAtLogin: boolean;
+};
+
+type CachedLyrics = {
+  cachedAt: number;
+  result: LyricsResult;
 };
 
 type LyricLine = {
@@ -49,7 +53,6 @@ type LyricLine = {
 
 const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
-  showSongTitle: false,
   opacity: 0.99,
   fontSize: 1.5,
   lineSpacing: 10,
@@ -57,7 +60,9 @@ const DEFAULT_SETTINGS: SettingsState = {
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
-const POLLING_INTERVAL_MS = 100;
+const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v1";
+const MAX_PERSISTED_LYRICS = 200;
+const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
 const LOOP_DETECTION_GRACE_MS = 1_000;
 const demoState: MediaState = {
@@ -87,7 +92,9 @@ const appWindow = tauriAvailable ? getCurrentWindow() : null;
 const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
-const lyricCache = new Map<string, LyricsResult | null>();
+const lyricCache = loadLyricsCache();
+const lyricRequests = new Map<string, Promise<LyricsResult | null>>();
+let lyricCacheGeneration = 0;
 
 let settings = loadSettings();
 let currentMedia: MediaState = demoState;
@@ -113,6 +120,7 @@ let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
 let lyricDurationMs: number | null = demoState.durationMs;
 let pollInFlight = false;
+let pollQueued = false;
 let pollStartedAtMs = 0;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
@@ -185,10 +193,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span>Start at login</span>
           <input id="start-login" type="checkbox" />
         </label>
-        <label class="switch-row" for="show-song-title">
-          <span>Titolo della canzone</span>
-          <input id="show-song-title" type="checkbox" />
-        </label>
+        <div class="cache-setting">
+          <div>
+            <span>Lyrics cache</span>
+            <small id="cache-size"></small>
+          </div>
+          <button class="secondary-settings-button" id="clear-lyrics-cache">Clear cache</button>
+        </div>
         <button class="save-settings" id="settings-save">Salva e chiudi</button>
         <p class="app-version">Versione ${packageJson.version}</p>
       </aside>
@@ -329,13 +340,13 @@ function wireUi() {
       }
     });
 
-  document
-    .querySelector<HTMLInputElement>("#show-song-title")
-    ?.addEventListener("change", (event) => {
-      settings.showSongTitle = (event.currentTarget as HTMLInputElement).checked;
-      saveSettings();
-      applySettings();
-    });
+  document.querySelector("#clear-lyrics-cache")?.addEventListener("click", () => {
+    clearLyricsCache();
+    renderSettings();
+    if (tauriAvailable) {
+      void emit("lyrics-cache-cleared");
+    }
+  });
 }
 
 function wireWindowEvents() {
@@ -358,6 +369,12 @@ function wireWindowEvents() {
     renderChrome();
   });
   void listen("toggle-overlay-lock", toggleOverlayLock);
+  void listen("media-state-changed", () => {
+    void pollMedia("wmtc-event");
+  });
+  void listen("lyrics-cache-cleared", () => {
+    clearLyricsCache();
+  });
   void listen<SettingsState>("settings-updated", () => {
     settings = loadSettings();
     applySettings();
@@ -414,14 +431,15 @@ function schedulePolling() {
   window.clearInterval(pollTimer);
   window.requestAnimationFrame(() => {
     window.setTimeout(() => {
-      void pollMedia();
-      pollTimer = window.setInterval(() => void pollMedia(), POLLING_INTERVAL_MS);
+      void pollMedia("startup");
+      pollTimer = window.setInterval(() => void pollMedia("fallback-poll"), POLLING_INTERVAL_MS);
     }, 0);
   });
 }
 
-async function pollMedia() {
+async function pollMedia(reason = "manual") {
   if (pollInFlight) {
+    pollQueued = true;
     if (pollStartedAtMs && performance.now() - pollStartedAtMs > 3000) {
       showStatus("Waiting for Windows media session...");
     }
@@ -438,8 +456,13 @@ async function pollMedia() {
       return;
     }
 
+    const startedAt = performance.now();
     const nextMedia = await invoke<MediaState>("get_media_state");
     const sampledAtMs = performance.now();
+    console.info("[latency] media state", {
+      reason,
+      durationMs: Math.round((sampledAtMs - startedAt) * 10) / 10,
+    });
     const nextTrackKey = trackKey(nextMedia);
     syncMediaClock(nextMedia, sampledAtMs);
     currentMedia = nextMedia;
@@ -465,6 +488,10 @@ async function pollMedia() {
   } finally {
     pollInFlight = false;
     pollStartedAtMs = 0;
+    if (pollQueued) {
+      pollQueued = false;
+      void pollMedia("queued-wmtc-event");
+    }
   }
 }
 
@@ -493,6 +520,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   lyricsNotice = "";
   const key = trackKey(media);
   if (lyricCache.has(key)) {
+    console.info("[latency] lyrics cache hit", { key });
     if (currentTrackKey === key) {
       applyLyrics(lyricCache.get(key) ?? null);
     }
@@ -507,12 +535,31 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   }
 
   try {
-    const result = await invoke<LyricsResult | null>("fetch_lyrics", {
-      title: media.title,
-      artist: media.artist,
-      durationMs: media.durationMs,
+    const cacheGeneration = lyricCacheGeneration;
+    const startedAt = performance.now();
+    let request = lyricRequests.get(key);
+    if (!request) {
+      request = invoke<LyricsResult | null>("fetch_lyrics", {
+        title: media.title,
+        artist: media.artist,
+        durationMs: media.durationMs,
+      });
+      lyricRequests.set(key, request);
+    } else {
+      console.info("[latency] joined in-flight lyrics request", { key });
+    }
+    const result = await request;
+    if (cacheGeneration === lyricCacheGeneration) {
+      lyricCache.set(key, result);
+      if (result) {
+        persistLyricsCache(key, result);
+      }
+    }
+    console.info("[latency] lyrics ready", {
+      key,
+      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      found: Boolean(result),
     });
-    lyricCache.set(key, result);
     if (currentTrackKey === key) {
       applyLyrics(result);
     }
@@ -524,6 +571,8 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
       renderLyrics();
       showStatus(`Lyrics search failed: ${String(error)}`);
     }
+  } finally {
+    lyricRequests.delete(key);
   }
 }
 
@@ -589,7 +638,7 @@ function getLocalLyricsNotice(title: string): string | null {
     [/\bsped[\s-]*up\b|\bspeed[\s-]*up\b/i, "Sped Up"],
     [/\bnightcore\b/i, "Nightcore"],
     [/\bkaraoke\b/i, "Karaoke"],
-    [/(?:[\(\[\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live"],
+    [/(?:[([\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live"],
     [/\bcover\b/i, "Cover"],
   ];
 
@@ -999,7 +1048,12 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
-  document.querySelector<HTMLInputElement>("#show-song-title")!.checked = settings.showSongTitle;
+  const cacheSize = document.querySelector<HTMLElement>("#cache-size");
+  if (cacheSize) {
+    cacheSize.textContent = `${persistedLyricsCount()} saved track${
+      persistedLyricsCount() === 1 ? "" : "s"
+    }`;
+  }
 }
 
 function renderStatus() {
@@ -1027,7 +1081,6 @@ function applySettings() {
   root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}px`);
   overlay?.classList.toggle("click-through", settings.clickThrough);
-  overlay?.classList.toggle("hide-locked-title", !settings.showSongTitle);
   if (settings.clickThrough) {
     overlay?.classList.remove("controls-visible");
   }
@@ -1080,10 +1133,6 @@ function loadSettings(): SettingsState {
     const loaded = stored ? JSON.parse(stored) : {};
     return {
       clickThrough: Boolean(loaded.clickThrough),
-      showSongTitle:
-        typeof loaded.showSongTitle === "boolean"
-          ? loaded.showSongTitle
-          : DEFAULT_SETTINGS.showSongTitle,
       opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0.8, 1),
       fontSize: loadFontSizeSetting(loaded.fontSize),
       lineSpacing: loadNumericSetting(loaded.lineSpacing, DEFAULT_SETTINGS.lineSpacing, 2, 26),
@@ -1101,6 +1150,60 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   if (tauriAvailable && isSettingsWindow) {
     void emit("settings-updated", settings);
+  }
+}
+
+function loadLyricsCache(): Map<string, LyricsResult | null> {
+  try {
+    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
+    const entries = stored ? (JSON.parse(stored) as [string, CachedLyrics][]) : [];
+    return new Map(
+      entries
+        .filter(
+          (entry): entry is [string, CachedLyrics] =>
+            Array.isArray(entry) &&
+            typeof entry[0] === "string" &&
+            typeof entry[1]?.cachedAt === "number" &&
+            typeof entry[1]?.result === "object" &&
+            entry[1].result !== null,
+        )
+        .slice(-MAX_PERSISTED_LYRICS)
+        .map(([key, cached]) => [key, cached.result]),
+    );
+  } catch {
+    localStorage.removeItem(LYRICS_CACHE_STORAGE_KEY);
+    return new Map();
+  }
+}
+
+function persistLyricsCache(key: string, result: LyricsResult) {
+  try {
+    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
+    const entries = stored ? (JSON.parse(stored) as [string, CachedLyrics][]) : [];
+    const nextEntries = entries.filter(([storedKey]) => storedKey !== key);
+    nextEntries.push([key, { cachedAt: Date.now(), result }]);
+    localStorage.setItem(
+      LYRICS_CACHE_STORAGE_KEY,
+      JSON.stringify(nextEntries.slice(-MAX_PERSISTED_LYRICS)),
+    );
+  } catch (error) {
+    console.warn("Unable to persist the lyrics cache", error);
+  }
+}
+
+function clearLyricsCache() {
+  lyricCacheGeneration += 1;
+  lyricCache.clear();
+  localStorage.removeItem(LYRICS_CACHE_STORAGE_KEY);
+  console.info("[latency] lyrics cache cleared");
+}
+
+function persistedLyricsCount() {
+  try {
+    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
+    return stored ? (JSON.parse(stored) as unknown[]).length : 0;
+  } catch {
+    return 0;
   }
 }
 

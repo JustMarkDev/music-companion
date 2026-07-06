@@ -504,6 +504,47 @@ select {
   cursor: pointer;
 }
 
+.cache-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+}
+
+.cache-setting div {
+  display: grid;
+  gap: 3px;
+}
+
+.cache-setting span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cache-setting small {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 11px;
+}
+
+.secondary-settings-button {
+  min-height: 34px;
+  padding: 7px 11px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.secondary-settings-button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
 input[type="checkbox"] {
   width: 42px;
   height: 24px;
