@@ -703,6 +703,7 @@ mod media {
 
 mod lyrics {
     use super::{LrclibLyrics, LyricsResult};
+    use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -739,39 +740,45 @@ mod lyrics {
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{artist} {title}");
-        let url = format!(
+        let broad_url = format!(
             "https://lrclib.net/api/search?q={}",
             urlencoding::encode(&query)
         );
+        let structured_url = format!(
+            "https://lrclib.net/api/search?track_name={}&artist_name={}",
+            urlencoding::encode(title),
+            urlencoding::encode(artist)
+        );
         let request_started_at = std::time::Instant::now();
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        let headers_received_at = std::time::Instant::now();
+        let (structured_result, broad_result) = tokio::join!(
+            fetch_candidates(client, structured_url, "structured"),
+            fetch_candidates(client, broad_url, "broad"),
+        );
 
-        if !response.status().is_success() {
-            println!(
-                "[latency] LRCLIB headers={}ms status={}",
-                headers_received_at
-                    .duration_since(request_started_at)
-                    .as_millis(),
-                response.status()
-            );
-            return Ok(None);
+        let mut results = Vec::new();
+        let mut errors = Vec::new();
+        for result in [structured_result, broad_result] {
+            match result {
+                Ok(candidates) => results.extend(candidates),
+                Err(error) => errors.push(error),
+            }
+        }
+        if errors.len() == 2 {
+            return Err(errors.join("; "));
         }
 
-        let mut results = response
-            .json::<Vec<LrclibLyrics>>()
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut seen = HashSet::new();
+        results.retain(|candidate| {
+            seen.insert((
+                candidate.track_name.clone(),
+                candidate.artist_name.clone(),
+                candidate.album_name.clone(),
+                candidate.duration.map(f64::to_bits),
+            ))
+        });
         println!(
-            "[latency] LRCLIB headers={}ms body={}ms candidates={}",
-            headers_received_at
-                .duration_since(request_started_at)
-                .as_millis(),
-            headers_received_at.elapsed().as_millis(),
+            "[latency] LRCLIB parallel total={}ms candidates={}",
+            request_started_at.elapsed().as_millis(),
             results.len()
         );
 
@@ -782,6 +789,45 @@ mod lyrics {
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
+    }
+
+    async fn fetch_candidates(
+        client: &reqwest::Client,
+        url: String,
+        search_type: &str,
+    ) -> Result<Vec<LrclibLyrics>, String> {
+        let request_started_at = std::time::Instant::now();
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("{search_type} search: {error}"))?;
+        let headers_received_at = std::time::Instant::now();
+        let status = response.status();
+
+        if !status.is_success() {
+            println!(
+                "[latency] LRCLIB {search_type} headers={}ms status={status}",
+                headers_received_at
+                    .duration_since(request_started_at)
+                    .as_millis(),
+            );
+            return Ok(Vec::new());
+        }
+
+        let results = response
+            .json::<Vec<LrclibLyrics>>()
+            .await
+            .map_err(|error| format!("{search_type} search: {error}"))?;
+        println!(
+            "[latency] LRCLIB {search_type} headers={}ms body={}ms candidates={}",
+            headers_received_at
+                .duration_since(request_started_at)
+                .as_millis(),
+            headers_received_at.elapsed().as_millis(),
+            results.len()
+        );
+        Ok(results)
     }
 
     fn normalize(value: &str) -> String {
