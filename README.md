@@ -1,6 +1,6 @@
 # Music Companion
 
-Current version: **1.0.6**
+Current version: **1.0.7**
 
 Music Companion is a Windows-only desktop lyrics overlay built with Tauri,
 TypeScript, and Rust. It reads the active media session through Windows Media
