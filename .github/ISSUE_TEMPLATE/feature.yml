@@ -1,0 +1,46 @@
+name: Feature
+description: Request a focused product or implementation improvement
+title: "[Feature]: "
+labels:
+  - feature
+  - agent-ready
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this feature is complete?
+      placeholder: Describe the desired outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant user need, current behavior, links, or screenshots.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: List the observable conditions that must pass.
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, platform, security, UI, or release constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: agent-notes
+    attributes:
+      label: Notes for the Agent
+      description: Files, commands, edge cases, or implementation hints.
+    validations:
+      required: false

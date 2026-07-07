@@ -1,0 +1,49 @@
+name: Bug
+description: Report a reproducible defect
+title: "[Bug]: "
+labels:
+  - bug
+  - agent-ready
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken or surprising?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Steps to reproduce, environment, logs, screenshots, or affected version.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: How should the fix be verified?
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, platform, security, UI, or release constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: agent-notes
+    attributes:
+      label: Notes for the Agent
+      description: Suspected files, commands, edge cases, or related issues.
+    validations:
+      required: false

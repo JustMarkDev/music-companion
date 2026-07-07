@@ -109,7 +109,7 @@ match the original recording.
 ### Prerequisites
 
 - Windows 10 or 11.
-- Node.js 20 or newer and npm.
+- Bun and Node.js 20 or newer.
 - Rust stable with the MSVC Windows toolchain.
 - Microsoft WebView2 Runtime, included with most current Windows installations.
 
@@ -119,28 +119,28 @@ required.
 ### Setup and run
 
 ```powershell
-npm ci
-npm run tauri:dev
+bun install
+bun run tauri:dev
 ```
 
-The Tauri development command starts `npm run dev`, which runs the frontend at
+The Tauri development command starts `bun run dev`, which runs the frontend at
 `http://127.0.0.1:1421`.
 
 ### Validation and build commands
 
 ```powershell
-npm run check
+bun run check
 cargo test --manifest-path src-tauri/Cargo.toml
-npm run build
-npm run preview
-npm run tauri:build
+bun run build
+bun run preview
+bun run tauri:build
 ```
 
-- `npm run check` runs the Vite+ project checks.
+- `bun run check` runs the Vite+ project checks.
 - The Cargo command runs the Rust unit tests.
-- `npm run build` creates the frontend production bundle in `dist/`.
-- `npm run preview` serves the frontend production build locally.
-- `npm run tauri:build` creates Windows installers under
+- `bun run build` creates the frontend production bundle in `dist/`.
+- `bun run preview` serves the frontend production build locally.
+- `bun run tauri:build` creates Windows installers under
   `src-tauri/target/release/bundle/`.
 
 ## Architecture
@@ -155,7 +155,7 @@ npm run tauri:build
 
 ### Lyrics latency diagnostics
 
-When running `npm run tauri:dev`, timing entries prefixed with `[latency]`
+When running `bun run tauri:dev`, timing entries prefixed with `[latency]`
 appear in the Rust terminal and WebView developer console. They report WMTC
 refresh triggers, media-state IPC duration, lyric cache hits, in-flight request
 reuse, and LRCLIB header/body timing.
@@ -173,6 +173,8 @@ The main implementation files are:
 Bug reports and focused pull requests are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before starting. Discuss substantial
 features, architectural changes, and broad refactors in an issue first.
+Use GitHub Issues as the source of truth for planned work, and link each pull
+request to the issue it implements.
 
 ## Releases
 

@@ -1,0 +1,45 @@
+name: Task
+description: Track maintenance, documentation, or technical work
+title: "[Task]: "
+labels:
+  - task
+  - agent-ready
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be completed?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Background, current state, links, or affected files.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: List the concrete completion checks.
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, platform, security, UI, or release constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: agent-notes
+    attributes:
+      label: Notes for the Agent
+      description: Files, commands, edge cases, or implementation hints.
+    validations:
+      required: false

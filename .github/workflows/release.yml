@@ -21,11 +21,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 24
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +41,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1

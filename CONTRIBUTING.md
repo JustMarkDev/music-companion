@@ -21,7 +21,7 @@ scope or Windows-only design.
 3. Install dependencies:
 
    ```powershell
-   npm ci
+   bun install
    ```
 
 4. Make a scoped change. Avoid unrelated formatting or refactoring.
@@ -55,14 +55,14 @@ commands or events.
 Run these checks before every pull request:
 
 ```powershell
-npm run check
+bun run check
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 Also run:
 
 ```powershell
-npm run build
+bun run build
 ```
 
 when frontend production behavior changes.
@@ -70,7 +70,7 @@ when frontend production behavior changes.
 Run:
 
 ```powershell
-npm run tauri:build
+bun run tauri:build
 ```
 
 when changing Tauri configuration, Rust dependencies, installers, updater

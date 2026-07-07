@@ -1,84 +1,53 @@
-# Repository Instructions for Coding Agents
+# Agent Instructions
 
-## Project scope
+## Workflow
 
-Music Companion is a Windows-only Tauri 2 desktop lyrics overlay. It reads
-Windows Media Transport Controls (WMTC), retrieves lyrics from LRCLIB, and
-renders synchronized lyrics in a TypeScript frontend.
+Use GitHub Issues as the source of truth for future work. Treat each issue as
+the task brief, and use Pull Requests as the implementation record: summarize
+the change, link the issue, and record verification.
 
-Do not introduce support claims for other operating systems unless the
-underlying implementation and validation are part of the requested change.
+This is a Windows-only Tauri 2 desktop app. It reads Windows Media Transport
+Controls, fetches lyrics from LRCLIB, and renders synchronized lyrics with a
+TypeScript frontend.
 
-## Repository map
+## Source of Truth
 
-- `src/main.ts` — frontend behavior, settings, lyric parsing, synchronization,
-  and Tauri IPC usage.
-- `src/styles.css` — overlay and settings presentation.
-- `src-tauri/src/lib.rs` — media integration, lyrics lookup, tray behavior,
-  updater, commands, and Rust unit tests.
-- `src-tauri/src/main.rs` — native application entry point.
-- `src-tauri/tauri.conf.json` — application windows, bundling, and updater
-  configuration.
-- `.github/workflows/release.yml` — tagged Windows release publishing.
-- `README.md` — user and developer documentation.
-- `CONTRIBUTING.md` — human contribution workflow.
-
-## Setup and commands
-
-Use the repository's npm and Cargo manifests:
-
-```powershell
-npm ci
-npm run tauri:dev
-npm run check
-cargo test --manifest-path src-tauri/Cargo.toml
-npm run build
-npm run preview
-npm run tauri:build
-```
-
-Apply validation proportionally:
-
-- Run `npm run check` for code changes.
-- Run `cargo test --manifest-path src-tauri/Cargo.toml` for Rust changes and
-  before handoff when the environment supports it.
-- Run `npm run build` for frontend production changes.
-- Run `npm run tauri:build` for packaging, installer, updater, release, native
-  dependency, or Tauri build-system changes.
-- Record checks not run and any Windows-specific validation limitations.
-
-## Change discipline
-
-- Keep changes scoped to the request and preserve unrelated user work.
-- Inspect the working tree before editing; do not overwrite existing changes.
-- Avoid unrelated formatting, refactoring, or dependency updates.
-- Do not commit `node_modules/`, `dist/`, `src-tauri/target/`, logs, caches, or
-  other generated output.
-- Avoid new dependencies unless they are necessary for the requested outcome.
-  When dependencies change, update the appropriate manifest and lockfile
-  together.
-- Update documentation when user-visible behavior, setup, commands,
-  configuration, or contributor workflow changes.
-
-## Compatibility constraints
-
-- Keep versions synchronized across `package.json`, `src-tauri/Cargo.toml`, and
+- Prefer GitHub Issues over local TODOs, notes, or planning files for active
+  work.
+- Keep user-facing setup and command documentation in `README.md`.
+- Keep contributor workflow details in `CONTRIBUTING.md`.
+- Keep versions synchronized in `package.json`, `src-tauri/Cargo.toml`, and
   `src-tauri/tauri.conf.json`.
-- Preserve camelCase frontend contracts backed by Rust
-  `#[serde(rename_all = "camelCase")]` types.
-- Treat Tauri commands, command arguments, events, window labels, and persisted
-  settings as compatibility-sensitive interfaces.
-- Preserve the Windows-only compile constraint and WMTC behavior unless the
-  task explicitly changes platform support.
-- Do not weaken Tauri capabilities or security configuration without explaining
-  and validating the impact.
 
-## Security and releases
+## Coding Rules
 
-- Never expose or commit updater private keys, signing material, GitHub secrets,
-  tokens, or credentials.
-- Treat updater public-key and endpoint changes as release-critical.
-- Do not change release tags, installer targets, update behavior, or signing
-  configuration incidentally.
-- A private signing key must never be derived from, replaced by, or stored
-  alongside the public updater key in `src-tauri/tauri.conf.json`.
+- Keep changes scoped to the issue or explicit request.
+- Preserve Windows-only support unless the requested change implements and
+  validates another platform.
+- Preserve camelCase frontend contracts backed by Rust serde types.
+- Treat Tauri commands, command arguments, events, window labels, persisted
+  settings, updater config, and release config as compatibility-sensitive.
+- Do not add dependencies unless necessary; update manifests and lockfiles
+  together when dependencies change.
+- Do not commit generated output such as `node_modules/`, `dist/`,
+  `src-tauri/target/`, logs, or caches.
+- Never expose updater private keys, signing material, tokens, or credentials.
+
+## Verification
+
+Run checks proportionally to the change:
+
+- `bun run check` for TypeScript/frontend changes.
+- `cargo test --manifest-path src-tauri/Cargo.toml` for Rust changes.
+- `bun run build` for production frontend changes.
+- `bun run tauri:build` for packaging, installer, updater, release, native
+  dependency, or Tauri build-system changes.
+
+Record any checks not run and any Windows-specific validation limitations.
+
+## Git Rules
+
+- Inspect the working tree before editing.
+- Do not overwrite unrelated user work.
+- Do not commit or push unless explicitly asked.
+- Do not rewrite history, reset, or discard changes unless explicitly asked.
