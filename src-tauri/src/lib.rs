@@ -800,6 +800,7 @@ mod media {
 
 mod lyrics {
     use super::{LrclibLyrics, LyricsResult};
+    use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -848,11 +849,13 @@ mod lyrics {
         let request_started_at = std::time::Instant::now();
         let (mut results, search_type) =
             match fetch_candidates(client, structured_url, "structured").await {
-                Ok(candidates) if !candidates.is_empty() => (candidates, "structured"),
-                Ok(_) => (
-                    fetch_candidates(client, broad_url, "broad fallback").await?,
-                    "broad fallback",
-                ),
+                Ok(candidates) if !should_query_broad(&candidates) => (candidates, "structured"),
+                Ok(mut candidates) => {
+                    let broad_candidates =
+                        fetch_candidates(client, broad_url, "broad fallback").await?;
+                    candidates.extend(broad_candidates);
+                    (candidates, "structured + broad fallback")
+                }
                 Err(structured_error) => {
                     println!("[lyrics] {structured_error}; trying broad fallback");
                     match fetch_candidates(client, broad_url, "broad fallback").await {
@@ -863,6 +866,7 @@ mod lyrics {
                     }
                 }
             };
+        deduplicate_candidates(&mut results);
         println!(
             "[latency] LRCLIB total={}ms search={search_type} candidates={}",
             request_started_at.elapsed().as_millis(),
@@ -876,6 +880,22 @@ mod lyrics {
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
+    }
+
+    fn deduplicate_candidates(candidates: &mut Vec<LrclibLyrics>) {
+        let mut seen = HashSet::new();
+        candidates.retain(|candidate| {
+            seen.insert((
+                candidate.track_name.clone(),
+                candidate.artist_name.clone(),
+                candidate.album_name.clone(),
+                candidate.duration.map(f64::to_bits),
+            ))
+        });
+    }
+
+    fn should_query_broad(candidates: &[LrclibLyrics]) -> bool {
+        !candidates.iter().any(has_synced_lyrics)
     }
 
     async fn fetch_candidates(
@@ -990,18 +1010,38 @@ mod lyrics {
         normalized_title: &str,
         normalized_artist: &str,
         duration_ms: Option<u64>,
-    ) -> (std::cmp::Reverse<u8>, std::cmp::Reverse<bool>, u64) {
+    ) -> (
+        std::cmp::Reverse<bool>,
+        std::cmp::Reverse<bool>,
+        std::cmp::Reverse<u8>,
+        u64,
+    ) {
         let candidate_title = candidate
             .track_name
             .as_deref()
             .map(|title| canonical_title(title, normalized_artist));
-        let track_score = score(candidate_title.as_deref(), normalized_title);
-        let artist_score = score(candidate.artist_name.as_deref(), normalized_artist);
-        let metadata_score = track_score * 4 + artist_score * 3;
+        let title_score = [
+            score(candidate_title.as_deref(), normalized_title),
+            score(candidate.album_name.as_deref(), normalized_title),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default();
+        let artist_score = [
+            score(candidate.artist_name.as_deref(), normalized_artist),
+            score(candidate.track_name.as_deref(), normalized_artist),
+            score(candidate.album_name.as_deref(), normalized_artist),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default();
+        let metadata_score = title_score * 4 + artist_score * 3;
+        let metadata_matches = title_score > 0 && artist_score > 0;
 
         (
-            std::cmp::Reverse(metadata_score),
+            std::cmp::Reverse(metadata_matches),
             std::cmp::Reverse(has_synced_lyrics(candidate)),
+            std::cmp::Reverse(metadata_score),
             duration_difference_ms(candidate.duration, duration_ms),
         )
     }
@@ -1026,13 +1066,23 @@ mod lyrics {
         use super::*;
 
         fn candidate(track_name: &str, artist_name: &str, duration: f64) -> LrclibLyrics {
+            candidate_with_metadata(track_name, artist_name, None, duration, true)
+        }
+
+        fn candidate_with_metadata(
+            track_name: &str,
+            artist_name: &str,
+            album_name: Option<&str>,
+            duration: f64,
+            synced: bool,
+        ) -> LrclibLyrics {
             LrclibLyrics {
                 track_name: Some(track_name.to_string()),
                 artist_name: Some(artist_name.to_string()),
-                album_name: None,
+                album_name: album_name.map(str::to_string),
                 duration: Some(duration),
                 instrumental: false,
-                synced_lyrics: Some("[00:00.00]Lyrics".to_string()),
+                synced_lyrics: synced.then(|| "[00:00.00]Lyrics".to_string()),
                 plain_lyrics: Some("Lyrics".to_string()),
             }
         }
@@ -1081,6 +1131,78 @@ mod lyrics {
 
             assert_eq!(keys[0], keys[1]);
             assert_eq!(keys[1], keys[2]);
+        }
+
+        #[test]
+        fn broad_search_is_needed_when_structured_results_are_only_unsynced() {
+            let candidates = [
+                candidate_with_metadata("Self Aware", "Temper City", None, 181.0, false),
+                candidate_with_metadata("Self Aware", "Temper City", None, 180.0, false),
+            ];
+
+            assert!(should_query_broad(&candidates));
+        }
+
+        #[test]
+        fn synced_combined_metadata_outranks_exact_unsynced_metadata() {
+            let normalized_artist = normalize("Temper City");
+            let normalized_title = canonical_title("Self Aware", &normalized_artist);
+            let expected_duration_ms = Some(181_000);
+            let mut results = vec![
+                candidate_with_metadata(
+                    "Self Aware",
+                    "Temper City",
+                    Some("Self Aware"),
+                    181.0,
+                    false,
+                ),
+                candidate_with_metadata(
+                    "Temper City - Self Aware",
+                    "DanceHype",
+                    Some("Self Aware Temper City"),
+                    181.0,
+                    true,
+                ),
+            ];
+
+            results.sort_by_key(|item| {
+                ranking_key(
+                    item,
+                    &normalized_title,
+                    &normalized_artist,
+                    expected_duration_ms,
+                )
+            });
+
+            assert_eq!(results[0].artist_name.as_deref(), Some("DanceHype"));
+        }
+
+        #[test]
+        fn unrelated_synced_candidate_does_not_outrank_relevant_unsynced_candidate() {
+            let normalized_artist = normalize("Temper City");
+            let normalized_title = canonical_title("Self Aware", &normalized_artist);
+            let expected_duration_ms = Some(181_000);
+            let mut results = vec![
+                candidate_with_metadata(
+                    "Self Aware",
+                    "Temper City",
+                    Some("Self Aware"),
+                    181.0,
+                    false,
+                ),
+                candidate("Different Song", "Different Artist", 181.0),
+            ];
+
+            results.sort_by_key(|item| {
+                ranking_key(
+                    item,
+                    &normalized_title,
+                    &normalized_artist,
+                    expected_duration_ms,
+                )
+            });
+
+            assert_eq!(results[0].track_name.as_deref(), Some("Self Aware"));
         }
     }
 }
