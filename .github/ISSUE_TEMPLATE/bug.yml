@@ -3,7 +3,7 @@ description: Report a reproducible defect
 title: "[Bug]: "
 labels:
   - bug
-  - agent-ready
+  - needs-triage
 body:
   - type: textarea
     id: problem

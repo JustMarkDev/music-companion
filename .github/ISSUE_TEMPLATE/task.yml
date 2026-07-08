@@ -3,7 +3,7 @@ description: Track maintenance, documentation, or technical work
 title: "[Task]: "
 labels:
   - task
-  - agent-ready
+  - needs-triage
 body:
   - type: textarea
     id: goal

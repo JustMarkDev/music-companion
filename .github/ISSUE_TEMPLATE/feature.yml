@@ -3,7 +3,7 @@ description: Request a focused product or implementation improvement
 title: "[Feature]: "
 labels:
   - feature
-  - agent-ready
+  - needs-triage
 body:
   - type: textarea
     id: goal

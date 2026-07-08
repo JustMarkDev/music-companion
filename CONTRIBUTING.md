@@ -34,6 +34,12 @@ scope or Windows-only design.
 Do not commit generated or local output such as `node_modules/`, `dist/`,
 `src-tauri/target/`, logs, or editor-specific files.
 
+## Issue labels
+
+New issues start as `needs-triage`. Add `agent-ready` only when the issue has a
+clear goal, sufficient context, acceptance criteria, and known constraints.
+Dependency update pull requests should use `dependencies` and `needs-review`.
+
 ## Project structure
 
 - `src/main.ts` contains the TypeScript frontend behavior, settings, lyric
@@ -122,10 +128,6 @@ Version changes must remain synchronized across:
 Do not modify updater public keys, signing configuration, or release secrets
 without explicit maintainer coordination.
 
-## License status
+## License
 
-The project has not selected a license. Public availability does not by itself
-grant permission to use, copy, modify, or redistribute the code. This guide
-does not add licensing terms or make representations about how a submitted
-contribution may be used; contact the maintainer before contributing if this
-affects your decision.
+Music Companion is licensed under the MIT License.

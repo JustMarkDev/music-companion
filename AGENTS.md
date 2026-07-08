@@ -10,6 +10,15 @@ This is a Windows-only Tauri 2 desktop app. It reads Windows Media Transport
 Controls, fetches lyrics from LRCLIB, and renders synchronized lyrics with a
 TypeScript frontend.
 
+## Commands
+
+- Install: `bun install`
+- Dev: `bun run tauri:dev`
+- Frontend check: `bun run check`
+- Rust tests: `cargo test --manifest-path src-tauri/Cargo.toml`
+- Frontend build: `bun run build`
+- Tauri build: `bun run tauri:build`
+
 ## Source of Truth
 
 - Prefer GitHub Issues over local TODOs, notes, or planning files for active

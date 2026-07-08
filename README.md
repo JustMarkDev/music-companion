@@ -194,8 +194,7 @@ future signed updates for existing installations.
 
 ## License
 
-This project has not selected a license. No permission to use, copy, modify, or
-redistribute the code should be assumed from its public availability.
+Music Companion is licensed under the MIT License.
 
 Music Companion is not affiliated with Spotify, LRCLIB, Apple, YouTube,
 Microsoft, VLC, or Lyric Overlay.
