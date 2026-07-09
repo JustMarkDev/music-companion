@@ -11,7 +11,7 @@
       },
       "devDependencies": {
         "@tauri-apps/cli": "^2.11.4",
-        "@voidzero-dev/vite-plus-core": "^0.2.0",
+        "@voidzero-dev/vite-plus-core": "^0.2.4",
         "typescript": "^5.6.3",
         "vite-plus": "^0.2.0",
       },
@@ -32,9 +32,9 @@
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
-    "@oxc-project/runtime": ["@oxc-project/runtime@0.136.0", "", {}, "sha512-u0EutjK5y6NHJkl5jNJCs8zbup1z6A/UEWgajrYzqcEU3UX05HjqybhMQOLhSM0eKGISyM6WfSMMuklYSmH2wA=="],
+    "@oxc-project/runtime": ["@oxc-project/runtime@0.138.0", "", {}, "sha512-yHhoXsN8tYxgdJCdD91PbySNjEEaBX/tH2OQRDXJpsQv5b184oC4/qVbU7qlblvfil/JP15Lh2HW7+HN5DS90Q=="],
 
-    "@oxc-project/types": ["@oxc-project/types@0.136.0", "", {}, "sha512-39Al/B3v9esnHCX7S8l9Se2+s2tb9b2jcMd+bZ2L659VG73kNyGPpPrL5Zi/p0ty7p4pTTU2/Dd+g27hv94XCg=="],
+    "@oxc-project/types": ["@oxc-project/types@0.138.0", "", {}, "sha512-1a7ZKmrRTCoN1XMZ4L0PyyqrMnrNlLyPuOkdSX2MZg7IiIGRUyurNhAm73ptDOraoBcIordsIGKNPKUzy3ZmfA=="],
 
     "@oxfmt/binding-android-arm-eabi": ["@oxfmt/binding-android-arm-eabi@0.55.0", "", { "os": "android", "cpu": "arm" }, "sha512-+rFDOqQe5LOWgxrAJaZgLRudr6GQm0wGI6gtu7vVkrdLGjNMUSGbAlaCr8j7F2H2Er97vYQCU8WDb30onqMM1g=="],
 
@@ -188,7 +188,7 @@
 
     "@vitest/utils": ["@vitest/utils@4.1.9", "", { "dependencies": { "@vitest/pretty-format": "4.1.9", "convert-source-map": "^2.0.0", "tinyrainbow": "^3.1.0" } }, "sha512-A51o8ymO5PpqlWNnBP9ZHPXDIpuMtTLlGSjN7la4US+LJzoUMyhwjA5QXlm39JexgwHKW4Xjs8Z2d3dLCXOeuA=="],
 
-    "@voidzero-dev/vite-plus-core": ["@voidzero-dev/vite-plus-core@0.2.0", "", { "dependencies": { "@oxc-project/runtime": "=0.136.0", "@oxc-project/types": "=0.136.0", "lightningcss": "^1.30.2", "postcss": "^8.5.6" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@arethetypeswrong/core": "^0.18.1", "@tsdown/css": "0.22.3", "@tsdown/exe": "0.22.3", "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.1.18", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "publint": "^0.3.8", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "typescript": "^5.0.0 || ^6.0.0", "unplugin-unused": "^0.5.0", "unrun": "*", "yaml": "^2.4.2" }, "optionalPeers": ["@arethetypeswrong/core", "@tsdown/css", "@tsdown/exe", "@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "publint", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "unplugin-unused", "unrun", "yaml"] }, "sha512-wCgDtjRlV5LdwMDdcNPTHFn2te1Rx5ib/E2Cc1PPreWv6byLm6dvzLgG5dT7i0obMjJn7K3gkwywUufoysgUwA=="],
+    "@voidzero-dev/vite-plus-core": ["@voidzero-dev/vite-plus-core@0.2.4", "", { "dependencies": { "@oxc-project/runtime": "=0.138.0", "@oxc-project/types": "=0.138.0", "lightningcss": "^1.32.0", "postcss": "^8.5.6" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@arethetypeswrong/core": "^0.18.1", "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.3.0", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "publint": "^0.3.8", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "typescript": "^5.0.0 || ^6.0.0", "unplugin-unused": "^0.5.0", "unrun": "*", "yaml": "^2.4.2" }, "optionalPeers": ["@arethetypeswrong/core", "@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "publint", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "typescript", "unplugin-unused", "unrun", "yaml"] }, "sha512-AoAYGPwNO56o9TuCR+KaQGA5XpSnTpn2QYHK0DQ0f8j3wvaMmToeWOJF6STo+XMntMDfiaB7sOsSFNE+hPYyjg=="],
 
     "@voidzero-dev/vite-plus-darwin-arm64": ["@voidzero-dev/vite-plus-darwin-arm64@0.2.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-mfXvqn5qDa7waP6md1fK9GNyaVO/PMB2Jz3bkPM8JdwpoVtpYc3XfQfQBkhiFtPi928gTZMaPqDktSDEIQZgUA=="],
 
@@ -325,5 +325,15 @@
     "why-is-node-running": ["why-is-node-running@2.3.0", "", { "dependencies": { "siginfo": "^2.0.0", "stackback": "0.0.2" }, "bin": "cli.js" }, "sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w=="],
 
     "ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
+
+    "vite/@oxc-project/runtime": ["@oxc-project/runtime@0.136.0", "", {}, "sha512-u0EutjK5y6NHJkl5jNJCs8zbup1z6A/UEWgajrYzqcEU3UX05HjqybhMQOLhSM0eKGISyM6WfSMMuklYSmH2wA=="],
+
+    "vite/@oxc-project/types": ["@oxc-project/types@0.136.0", "", {}, "sha512-39Al/B3v9esnHCX7S8l9Se2+s2tb9b2jcMd+bZ2L659VG73kNyGPpPrL5Zi/p0ty7p4pTTU2/Dd+g27hv94XCg=="],
+
+    "vite-plus/@oxc-project/types": ["@oxc-project/types@0.136.0", "", {}, "sha512-39Al/B3v9esnHCX7S8l9Se2+s2tb9b2jcMd+bZ2L659VG73kNyGPpPrL5Zi/p0ty7p4pTTU2/Dd+g27hv94XCg=="],
+
+    "vite-plus/@voidzero-dev/vite-plus-core": ["@voidzero-dev/vite-plus-core@0.2.0", "", { "dependencies": { "@oxc-project/runtime": "=0.136.0", "@oxc-project/types": "=0.136.0", "lightningcss": "^1.30.2", "postcss": "^8.5.6" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@arethetypeswrong/core": "^0.18.1", "@tsdown/css": "0.22.3", "@tsdown/exe": "0.22.3", "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.1.18", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "publint": "^0.3.8", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "typescript": "^5.0.0 || ^6.0.0", "unplugin-unused": "^0.5.0", "unrun": "*", "yaml": "^2.4.2" }, "optionalPeers": ["@arethetypeswrong/core", "@tsdown/css", "@tsdown/exe", "@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "publint", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "unplugin-unused", "unrun", "yaml"] }, "sha512-wCgDtjRlV5LdwMDdcNPTHFn2te1Rx5ib/E2Cc1PPreWv6byLm6dvzLgG5dT7i0obMjJn7K3gkwywUufoysgUwA=="],
+
+    "vite-plus/@voidzero-dev/vite-plus-core/@oxc-project/runtime": ["@oxc-project/runtime@0.136.0", "", {}, "sha512-u0EutjK5y6NHJkl5jNJCs8zbup1z6A/UEWgajrYzqcEU3UX05HjqybhMQOLhSM0eKGISyM6WfSMMuklYSmH2wA=="],
   }
 }
