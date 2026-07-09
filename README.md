@@ -101,10 +101,10 @@ sessions.
 
 ### The Wrong Player Is Followed
 
-Music Companion prefers the active Windows media session, keeps following a
-previously selected playing session, and falls back to another playing session
-when needed. If two or more players are actively playing, the overlay shows
-**Multiple players are active**.
+Music Companion prefers the active Windows media session, keeps the last track
+visible at its paused position when no session is available, and falls back to
+another playing session when needed. If two or more players are actively
+playing, the overlay shows **Multiple players are active**.
 
 Pause the players you do not want to follow, then change tracks or resume the
 target player so Windows publishes a fresh media event.

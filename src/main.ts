@@ -73,6 +73,9 @@ const MAX_PERSISTED_LYRICS = 200;
 const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
 const LOOP_DETECTION_GRACE_MS = 1_000;
+const PAUSE_POSITION_TOLERANCE_MS = 750;
+const RESUME_CONFIRMATION_DELAY_MS = 250;
+const RESUME_CONFIRMATION_PROGRESS_MS = 100;
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -129,6 +132,10 @@ let lastScrolledLineIndex = -1;
 let pollInFlight = false;
 let pollQueued = false;
 let pollStartedAtMs = 0;
+let mediaEventSequence = 0;
+let pausedPositionAnchorMs: number | null = null;
+let resumeConfirmationTimer = 0;
+let pendingResumeConfirmation: { positionMs: number } | null = null;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 
@@ -488,6 +495,7 @@ function wireWindowEvents() {
   });
   void listen("toggle-overlay-lock", toggleOverlayLock);
   void listen("media-state-changed", () => {
+    mediaEventSequence += 1;
     void pollMedia("wmtc-event");
   });
   void listen("lyrics-cache-cleared", () => {
@@ -566,6 +574,7 @@ async function pollMedia(reason = "manual") {
 
   pollInFlight = true;
   pollStartedAtMs = performance.now();
+  const mediaSequenceAtRequestStart = mediaEventSequence;
   try {
     if (!tauriAvailable) {
       renderChrome();
@@ -577,12 +586,26 @@ async function pollMedia(reason = "manual") {
     const startedAt = performance.now();
     const nextMedia = await invoke<MediaState>("get_media_state");
     const sampledAtMs = performance.now();
-    console.info("[latency] media state", {
-      reason,
-      durationMs: Math.round((sampledAtMs - startedAt) * 10) / 10,
-    });
+    const requestDurationMs = sampledAtMs - startedAt;
+    // A playback event received while this request was in flight can mean the
+    // response describes the instant before a pause. Wait for the queued poll
+    // instead of briefly rewinding the lyric clock with that stale sample.
+    if (nextMedia.isPlaying && mediaSequenceAtRequestStart !== mediaEventSequence) {
+      logSync("ignored stale playing sample", {
+        reason,
+        requestDurationMs: Math.round(requestDurationMs),
+        requestSequence: mediaSequenceAtRequestStart,
+        currentSequence: mediaEventSequence,
+        positionMs: nextMedia.positionMs,
+      });
+      pollQueued = true;
+      return;
+    }
+    if (shouldDeferResume(nextMedia, reason, requestDurationMs)) {
+      return;
+    }
     const nextTrackKey = trackKey(nextMedia);
-    syncMediaClock(nextMedia, sampledAtMs);
+    syncMediaClock(nextMedia, sampledAtMs, reason, requestDurationMs);
     currentMedia = nextMedia;
 
     if (nextTrackKey && nextTrackKey !== currentTrackKey) {
@@ -896,19 +919,127 @@ function getPlaybackRate() {
   return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : 1;
 }
 
-function syncMediaClock(media: MediaState, sampledAtMs: number) {
+function syncMediaClock(
+  media: MediaState,
+  sampledAtMs: number,
+  reason: string,
+  requestDurationMs: number,
+) {
   if (!media.hasSession) {
+    if (currentMedia.hasSession) {
+      logSync("media session cleared", {
+        reason,
+        requestDurationMs: Math.round(requestDurationMs),
+      });
+    }
     mediaSampledAtMs = sampledAtMs;
     mediaPositionAnchorMs = 0;
+    pausedPositionAnchorMs = null;
     return;
   }
 
-  // The backend has already converted WMTC Position + LastUpdatedTime +
-  // PlaybackRate into the position at sampling time. Treat every sample as
-  // authoritative. This naturally handles forward seeks, backward seeks and
-  // repeat-one without trying to infer which kind of discontinuity occurred.
+  const isSameTrack = trackKey(media) !== "" && trackKey(media) === trackKey(currentMedia);
+  const wasPlaying = isSameTrack && currentMedia.isPlaying;
+  const playbackChanged = currentMedia.isPlaying !== media.isPlaying;
+  const livePositionMs = wasPlaying
+    ? getEstimatedMediaPositionMs(sampledAtMs)
+    : pausedPositionAnchorMs;
+
+  // The backend converts WMTC Position + LastUpdatedTime + PlaybackRate into
+  // a position at sampling time. A playing sample is authoritative, while a
+  // paused sample is reconciled with the live frontend estimate below.
   mediaSampledAtMs = sampledAtMs;
-  mediaPositionAnchorMs = media.positionMs;
+  if (media.isPlaying || !isSameTrack) {
+    if (!isSameTrack || playbackChanged) {
+      logSync("media state applied", {
+        reason,
+        requestDurationMs: Math.round(requestDurationMs),
+        track: `${media.artist} — ${media.title}`,
+        previousStatus: currentMedia.status,
+        status: media.status,
+        positionMs: media.positionMs,
+        playbackRate: media.playbackRate,
+      });
+    }
+    pausedPositionAnchorMs = null;
+    mediaPositionAnchorMs = media.positionMs;
+    return;
+  }
+
+  const useLivePosition =
+    livePositionMs !== null &&
+    (media.status === "Paused session unavailable" ||
+      Math.abs(media.positionMs - livePositionMs) <= PAUSE_POSITION_TOLERANCE_MS);
+
+  const previousPausedAnchorMs = pausedPositionAnchorMs;
+  const pausedPositionMs =
+    useLivePosition && livePositionMs !== null ? livePositionMs : media.positionMs;
+
+  if (wasPlaying || previousPausedAnchorMs !== pausedPositionMs) {
+    logSync("pause position reconciled", {
+      reason,
+      requestDurationMs: Math.round(requestDurationMs),
+      track: `${media.artist} — ${media.title}`,
+      status: media.status,
+      reportedPositionMs: media.positionMs,
+      livePositionMs: livePositionMs === null ? null : Math.round(livePositionMs),
+      differenceMs: livePositionMs === null ? null : Math.round(media.positionMs - livePositionMs),
+      selectedPositionMs: Math.round(pausedPositionMs),
+      usedLivePosition: useLivePosition,
+      toleranceMs: PAUSE_POSITION_TOLERANCE_MS,
+    });
+  }
+
+  // Freeze the live frontend estimate as soon as playback pauses. WMTC
+  // position samples can arrive late or be quantized; only accept a material
+  // correction, which is most likely a seek while paused.
+  pausedPositionAnchorMs = pausedPositionMs;
+  mediaPositionAnchorMs = pausedPositionAnchorMs;
+}
+
+function shouldDeferResume(media: MediaState, reason: string, requestDurationMs: number) {
+  const resumingFromUnavailableSession =
+    currentMedia.status === "Paused session unavailable" &&
+    media.isPlaying &&
+    trackKey(media) !== "" &&
+    trackKey(media) === trackKey(currentMedia);
+
+  if (!resumingFromUnavailableSession) {
+    pendingResumeConfirmation = null;
+    window.clearTimeout(resumeConfirmationTimer);
+    return false;
+  }
+
+  const previousCandidate = pendingResumeConfirmation?.positionMs;
+  if (
+    previousCandidate !== undefined &&
+    media.positionMs >= previousCandidate + RESUME_CONFIRMATION_PROGRESS_MS
+  ) {
+    logSync("resume confirmed", {
+      reason,
+      requestDurationMs: Math.round(requestDurationMs),
+      firstPositionMs: previousCandidate,
+      confirmedPositionMs: media.positionMs,
+      progressMs: media.positionMs - previousCandidate,
+    });
+    pendingResumeConfirmation = null;
+    window.clearTimeout(resumeConfirmationTimer);
+    return false;
+  }
+
+  pendingResumeConfirmation = { positionMs: media.positionMs };
+  logSync("deferred unconfirmed resume", {
+    reason,
+    requestDurationMs: Math.round(requestDurationMs),
+    candidatePositionMs: media.positionMs,
+    pausedPositionMs: pausedPositionAnchorMs,
+    requiredProgressMs: RESUME_CONFIRMATION_PROGRESS_MS,
+  });
+  window.clearTimeout(resumeConfirmationTimer);
+  resumeConfirmationTimer = window.setTimeout(() => {
+    void pollMedia("resume-confirmation");
+  }, RESUME_CONFIRMATION_DELAY_MS);
+  return true;
 }
 
 function renderAll() {
@@ -1014,6 +1145,24 @@ function updateSyncFrame() {
   const previousActiveLineIndex = activeLineIndex;
   const positionMs = getSyncedPositionMs();
   updateActiveLine(positionMs);
+  if (activeLineIndex !== previousActiveLineIndex) {
+    const previousLine = lyricsLines[previousActiveLineIndex];
+    const activeLine = lyricsLines[activeLineIndex];
+    const activeTimestampMs = activeLine?.timeMs ?? null;
+    logSync("lyric line changed", {
+      previousIndex: previousActiveLineIndex,
+      previousTimestampMs: previousLine?.timeMs ?? null,
+      nextIndex: activeLineIndex,
+      nextTimestampMs: activeTimestampMs,
+      positionMs: Math.round(positionMs),
+      timestampDeltaMs:
+        activeTimestampMs === null ? null : Math.round(positionMs - activeTimestampMs),
+      isPlaying: currentMedia.isPlaying,
+      mediaStatus: currentMedia.status,
+      playbackRate: currentMedia.playbackRate,
+      line: activeLine?.text ?? null,
+    });
+  }
   if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
     updateLyricDom();
   }
@@ -1178,6 +1327,16 @@ async function safeInvoke(command: string, args?: Record<string, unknown>) {
   } catch (error) {
     showStatus(`Window command failed: ${String(error)}`);
   }
+}
+
+function logSync(event: string, details: Record<string, unknown>) {
+  const entry = { timestampMs: Math.round(performance.now()), ...details };
+  if (!tauriAvailable) {
+    console.info(`[sync] ${event}`, entry);
+    return;
+  }
+
+  void invoke("log_sync_diagnostic", { event, details: JSON.stringify(entry) }).catch(() => {});
 }
 
 function applyGradient() {

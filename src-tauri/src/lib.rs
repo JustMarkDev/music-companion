@@ -91,7 +91,9 @@ async fn get_media_state() -> Result<MediaState, String> {
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = media::current_media_state().map_err(|error| error.to_string());
+        let result = media::current_media_state()
+            .map_err(|error| error.to_string())
+            .map(retain_last_media_when_session_disappears);
         if let Ok(state) = &result {
             store_media_state(state.clone());
         }
@@ -119,6 +121,71 @@ fn cached_media_state() -> Option<MediaState> {
 fn store_media_state(state: MediaState) {
     if let Ok(mut cache) = MEDIA_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *cache = Some(state);
+    }
+}
+
+#[tauri::command]
+fn log_sync_diagnostic(event: String, details: String) {
+    println!("[sync] {event} {details}");
+}
+
+fn retain_last_media_when_session_disappears(state: MediaState) -> MediaState {
+    retain_cached_media_when_session_disappears(state, cached_media_state())
+}
+
+fn retain_cached_media_when_session_disappears(
+    state: MediaState,
+    cached: Option<MediaState>,
+) -> MediaState {
+    if state.has_session {
+        return state;
+    }
+
+    let Some(mut cached) = cached.filter(|media| media.has_session) else {
+        return state;
+    };
+
+    // Some players unregister their WMTC session when playback is paused.
+    // Keep the latest track visible and freeze its clock until Windows reports
+    // another session, rather than clearing the overlay immediately.
+    cached.is_playing = false;
+    cached.playback_rate = None;
+    cached.status = "Paused session unavailable".to_string();
+    cached
+}
+
+#[cfg(test)]
+mod media_state_tests {
+    use super::{retain_cached_media_when_session_disappears, MediaState};
+
+    fn state(has_session: bool, is_playing: bool, position_ms: u64) -> MediaState {
+        MediaState {
+            has_session,
+            is_playing,
+            status: String::new(),
+            title: "Track".to_string(),
+            artist: "Artist".to_string(),
+            album: String::new(),
+            source_app: String::new(),
+            position_ms,
+            duration_ms: Some(180_000),
+            playback_rate: Some(1.0),
+            playing_session_count: 0,
+        }
+    }
+
+    #[test]
+    fn retains_and_pauses_cached_track_when_windows_drops_the_session() {
+        let retained = retain_cached_media_when_session_disappears(
+            state(false, false, 0),
+            Some(state(true, true, 60_000)),
+        );
+
+        assert!(retained.has_session);
+        assert!(!retained.is_playing);
+        assert_eq!(retained.position_ms, 60_000);
+        assert_eq!(retained.title, "Track");
+        assert_eq!(retained.playback_rate, None);
     }
 }
 
@@ -210,6 +277,7 @@ pub fn run() {
         .plugin(shortcut_plugin)
         .invoke_handler(tauri::generate_handler![
             get_media_state,
+            log_sync_diagnostic,
             fetch_lyrics,
             get_start_at_login,
             set_start_at_login,
@@ -630,7 +698,6 @@ mod media {
     }
 
     fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
-        println!("[latency] Windows media event reason={reason}");
         let _ = app.emit("media-state-changed", reason);
     }
 
@@ -649,7 +716,11 @@ mod media {
             }
         }
 
-        let retained = selected_session().filter(session_is_playing);
+        // Windows can clear its current session when the selected player is
+        // paused. Retain that session so the overlay can keep showing its
+        // lyrics at the paused position; an actively playing session still
+        // takes precedence below.
+        let retained = selected_session();
         let current = manager.GetCurrentSession().ok();
         let current_is_playing = current.as_ref().is_some_and(session_is_playing);
         let mut selected = retained.or(current);
@@ -806,6 +877,7 @@ mod lyrics {
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    const REQUEST_ATTEMPTS: u8 = 2;
 
     pub async fn fetch_lyrics(
         title: &str,
@@ -824,6 +896,9 @@ mod lyrics {
                         env!("CARGO_PKG_VERSION"),
                         " (https://github.com/JustMarkDev/Music-Companion)"
                     ))
+                    // Use Windows' TLS stack and certificate store, matching
+                    // the trust configuration used by the browser.
+                    .connect_timeout(std::time::Duration::from_secs(8))
                     .timeout(std::time::Duration::from_secs(20))
                     .build()
                     .map_err(|error| error.to_string())
@@ -838,7 +913,7 @@ mod lyrics {
         artist: &str,
         duration_ms: Option<u64>,
     ) -> Result<Option<LyricsResult>, String> {
-        let query = format!("{artist} {title}");
+        let query = format!("{title} {artist}");
         let broad_url = format!(
             "https://lrclib.net/api/search?q={}",
             urlencoding::encode(&query)
@@ -906,11 +981,7 @@ mod lyrics {
         search_type: &str,
     ) -> Result<Vec<LrclibLyrics>, String> {
         let request_started_at = std::time::Instant::now();
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("{search_type} search: {error}"))?;
+        let response = send_request(client, &url, search_type).await?;
         let headers_received_at = std::time::Instant::now();
         let status = response.status();
 
@@ -937,6 +1008,29 @@ mod lyrics {
             results.len()
         );
         Ok(results)
+    }
+
+    async fn send_request(
+        client: &reqwest::Client,
+        url: &str,
+        search_type: &str,
+    ) -> Result<reqwest::Response, String> {
+        for attempt in 1..=REQUEST_ATTEMPTS {
+            match client.get(url).send().await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    println!(
+                        "[lyrics] {search_type} request attempt {attempt}/{REQUEST_ATTEMPTS} failed: {error:?}"
+                    );
+                    if attempt == REQUEST_ATTEMPTS || (!error.is_connect() && !error.is_timeout()) {
+                        return Err(format!("{search_type} search: {error}"));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                }
+            }
+        }
+
+        unreachable!("the request loop always returns")
     }
 
     fn normalize(value: &str) -> String {
