@@ -2,6 +2,9 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   clearScreen: false,
+  fmt: {
+    ignorePatterns: ["src-tauri/gen/**"],
+  },
   server: {
     port: 1421,
     strictPort: true,
