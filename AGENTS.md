@@ -50,3 +50,6 @@ cargo fmt --manifest-path src-tauri/Cargo.toml
 ## Release Policy
 
 - Releases are based on version tags matching `v*`.
+- When explicitly asked to prepare or perform a release, do not create a
+  feature branch. Apply the release version bump directly on `main`, then tag
+  that `main` commit.
