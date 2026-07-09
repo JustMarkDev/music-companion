@@ -1191,23 +1191,13 @@ function applyGradient() {
   renderedGradientKey = nextGradientKey;
 
   if (settings.accentMode === "manual") {
-    const hue = hexColorHue(settings.accentColor);
     document.documentElement.style.setProperty("--accent", settings.accentColor);
-    document.documentElement.style.setProperty(
-      "--accent-2",
-      `hsl(${(hue + 128) % 360}, 100%, 62%)`,
-    );
     return;
   }
 
   const hue = hashHue(nextGradientKey);
   document.documentElement.style.setProperty("--hue", String(hue));
-  document.documentElement.style.setProperty("--hue-2", String((hue + 128) % 360));
   document.documentElement.style.setProperty("--accent", `hsl(${hue}, var(--bg-saturation), 56%)`);
-  document.documentElement.style.setProperty(
-    "--accent-2",
-    `hsl(${(hue + 128) % 360}, var(--bg-saturation), 62%)`,
-  );
 }
 
 function loadSettings(): SettingsState {
@@ -1345,23 +1335,6 @@ function isHexColor(value: unknown): value is string {
 
 function normalizeHexColor(value: string) {
   return `#${value.replace(/^#/, "").toUpperCase()}`;
-}
-
-function hexColorHue(value: string) {
-  const hex = normalizeHexColor(value).slice(1);
-  const red = parseInt(hex.slice(0, 2), 16) / 255;
-  const green = parseInt(hex.slice(2, 4), 16) / 255;
-  const blue = parseInt(hex.slice(4, 6), 16) / 255;
-  const maximum = Math.max(red, green, blue);
-  const minimum = Math.min(red, green, blue);
-  const delta = maximum - minimum;
-  if (delta === 0) return 0;
-
-  let hue = 0;
-  if (maximum === red) hue = ((green - blue) / delta) % 6;
-  else if (maximum === green) hue = (blue - red) / delta + 2;
-  else hue = (red - green) / delta + 4;
-  return Math.round(hue * 60 + (hue < 0 ? 360 : 0));
 }
 
 function escapeHtml(value: string) {

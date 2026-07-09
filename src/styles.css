@@ -14,14 +14,13 @@
   --line-spacing: 0.4em;
   --bg-saturation: 100%;
   --hue: 174;
-  --hue-2: 4;
   --surface: hsla(210, 18%, 7%, var(--overlay-opacity));
   --surface-strong: hsla(210, 20%, 5%, calc(var(--overlay-opacity) + 0.02));
   --text: #f8fbff;
   --muted: #b6c1c9;
   --soft: rgba(255, 255, 255, 0.1);
   --accent: hsl(var(--hue), var(--bg-saturation), 56%);
-  --accent-2: hsl(var(--hue-2), var(--bg-saturation), 62%);
+  --settings-accent: #22e6c7;
   background: transparent;
   letter-spacing: 0;
 }
@@ -72,7 +71,6 @@ button {
   border-radius: 0;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 20%, transparent), transparent 44px),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-2) 14%, transparent), transparent 48px),
     var(--surface);
   box-shadow: none;
   backdrop-filter: none;
@@ -554,7 +552,7 @@ input[type="color"]:disabled {
 
 input[type="range"] {
   width: 100%;
-  accent-color: var(--accent);
+  accent-color: var(--settings-accent);
 }
 
 input[type="text"] {
@@ -592,6 +590,11 @@ select {
   border-radius: 8px;
 }
 
+select option {
+  color: var(--text);
+  background: #101417;
+}
+
 .switch-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -616,7 +619,7 @@ select {
 input[type="checkbox"] {
   width: 42px;
   height: 24px;
-  accent-color: var(--accent);
+  accent-color: var(--settings-accent);
 }
 
 .save-settings {
@@ -624,7 +627,7 @@ input[type="checkbox"] {
   padding: 9px 14px;
   color: #07110f;
   font-weight: 750;
-  background: var(--accent);
+  background: var(--settings-accent);
   border-radius: 8px;
   cursor: pointer;
 }
