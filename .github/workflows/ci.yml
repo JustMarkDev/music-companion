@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Pull request checks
+  frontend_static:
+    name: Frontend static checks
     if: github.event.pull_request.draft == false
     runs-on: windows-latest
 
@@ -20,12 +20,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-          components: rustfmt, clippy
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -39,20 +33,107 @@ jobs:
       - name: Check frontend formatting
         run: bun run format:check
 
+  rust_static:
+    name: Rust static analysis
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
+  rust_test:
+    name: Rust tests
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: Test Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  release_smoke:
+    name: Release smoke
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
       - name: Build frontend
         run: bun run build
 
+  frontend_audit:
+    name: Frontend dependency audit
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
       - name: Audit frontend dependencies
         run: bun audit
+
+  rust_audit:
+    name: Rust dependency audit
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -60,3 +141,35 @@ jobs:
       - name: Audit Rust dependencies
         working-directory: src-tauri
         run: cargo audit
+
+  pr_checks:
+    name: Pull request checks
+    if: always() && github.event.pull_request.draft == false
+    runs-on: windows-latest
+    needs:
+      - frontend_static
+      - rust_static
+      - rust_test
+      - release_smoke
+      - frontend_audit
+      - rust_audit
+
+    steps:
+      - name: Verify required jobs passed
+        shell: pwsh
+        run: |
+          $results = @(
+            '${{ needs.frontend_static.result }}',
+            '${{ needs.rust_static.result }}',
+            '${{ needs.rust_test.result }}',
+            '${{ needs.release_smoke.result }}',
+            '${{ needs.frontend_audit.result }}',
+            '${{ needs.rust_audit.result }}'
+          )
+
+          if ($results -contains 'failure' -or $results -contains 'cancelled' -or $results -contains 'skipped') {
+            Write-Error "One or more required PR jobs did not pass: $($results -join ', ')"
+            exit 1
+          }
+
+          Write-Host "All required PR jobs passed."
