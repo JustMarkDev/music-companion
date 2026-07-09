@@ -8,6 +8,9 @@
     "build": "vp build",
     "preview": "vp preview --host 127.0.0.1",
     "check": "vp check",
+    "lint": "vp lint",
+    "format": "vp format",
+    "format:check": "vp format --check",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --target x86_64-pc-windows-msvc"

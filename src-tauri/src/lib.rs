@@ -189,7 +189,7 @@ pub fn run() {
     use tauri_plugin_window_state::StateFlags;
 
     let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
-    let shortcut_for_handler = lock_shortcut.clone();
+    let shortcut_for_handler = lock_shortcut;
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_shortcut(lock_shortcut)
         .expect("failed to register Ctrl+Shift+L")
@@ -348,11 +348,13 @@ mod persistent_backdrop {
         // The documented Windows 11 Acrylic backdrop is disabled for inactive windows.
         // This composition attribute keeps the blur active, which is required for an overlay.
         unsafe {
-            let user32 =
-                LoadLibraryA(PCSTR(b"user32.dll\0".as_ptr())).map_err(|error| error.to_string())?;
-            let procedure =
-                GetProcAddress(user32, PCSTR(b"SetWindowCompositionAttribute\0".as_ptr()))
-                    .ok_or_else(|| "SetWindowCompositionAttribute is unavailable".to_string())?;
+            let user32 = LoadLibraryA(PCSTR(c"user32.dll".as_ptr().cast()))
+                .map_err(|error| error.to_string())?;
+            let procedure = GetProcAddress(
+                user32,
+                PCSTR(c"SetWindowCompositionAttribute".as_ptr().cast()),
+            )
+            .ok_or_else(|| "SetWindowCompositionAttribute is unavailable".to_string())?;
             let set_window_composition_attribute: SetWindowCompositionAttribute =
                 mem::transmute(procedure);
 
@@ -1092,7 +1094,7 @@ mod lyrics {
             let normalized_artist = normalize("Jace June");
             let normalized_title = canonical_title("Goodbye My Baby", &normalized_artist);
             let expected_duration_ms = Some(182_000);
-            let mut results = vec![
+            let mut results = [
                 candidate("Deeper Than It Seems", "Jace June", 182.0),
                 candidate("Goodbye My Baby", "Jace June", 194.0),
             ];
@@ -1148,7 +1150,7 @@ mod lyrics {
             let normalized_artist = normalize("Temper City");
             let normalized_title = canonical_title("Self Aware", &normalized_artist);
             let expected_duration_ms = Some(181_000);
-            let mut results = vec![
+            let mut results = [
                 candidate_with_metadata(
                     "Self Aware",
                     "Temper City",
@@ -1182,7 +1184,7 @@ mod lyrics {
             let normalized_artist = normalize("Temper City");
             let normalized_title = canonical_title("Self Aware", &normalized_artist);
             let expected_duration_ms = Some(181_000);
-            let mut results = vec![
+            let mut results = [
                 candidate_with_metadata(
                     "Self Aware",
                     "Temper City",

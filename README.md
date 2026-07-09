@@ -130,6 +130,10 @@ The Tauri development command starts `bun run dev`, which runs the frontend at
 
 ```powershell
 bun run check
+bun run lint
+bun run format:check
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 bun run build
 bun run preview
@@ -137,11 +141,21 @@ bun run tauri:build
 ```
 
 - `bun run check` runs the Vite+ project checks.
+- `bun run lint` runs Vite+ linting for the frontend source and project config.
+- `bun run format:check` checks Vite+ formatting without modifying files.
+- The Cargo formatting and Clippy commands check Rust style and linting.
 - The Cargo command runs the Rust unit tests.
 - `bun run build` creates the frontend production bundle in `dist/`.
 - `bun run preview` serves the frontend production build locally.
 - `bun run tauri:build` creates Windows installers under
   `src-tauri/target/release/bundle/`.
+
+For local automatic formatting, run:
+
+```powershell
+bun run format
+cargo fmt --manifest-path src-tauri/Cargo.toml
+```
 
 ## Architecture
 
@@ -173,13 +187,12 @@ The main implementation files are:
 Bug reports and focused pull requests are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before starting. Discuss substantial
 features, architectural changes, and broad refactors in an issue first.
-Use GitHub Issues as the source of truth for planned work, and link each pull
-request to the issue it implements.
+Link pull requests to the issue or discussion they implement when applicable.
 
 ## Releases
 
-Tags matching `vX.Y.Z` trigger the Windows release workflow, which publishes
-both NSIS (`.exe`) and Windows Installer (`.msi`) packages together with signed
+Tags matching `vX.Y.Z` trigger the Windows release workflow, which publishes both
+NSIS (`.exe`) and Windows Installer (`.msi`) packages together with signed
 updater metadata.
 
 Before a release, keep the version synchronized in:
