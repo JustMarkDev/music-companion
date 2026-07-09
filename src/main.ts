@@ -33,6 +33,8 @@ type LyricsResult = {
 
 type AccentMode = "dynamic" | "manual";
 
+const INSTRUMENTAL_BREAK_ICON = "♪";
+
 type SettingsState = {
   clickThrough: boolean;
   opacity: number;
@@ -823,7 +825,7 @@ function createLyricLine(timeMs: number | null, textWithWordTags: string): Lyric
   return {
     timeMs,
     endTimeMs: null,
-    text: text || " ",
+    text: text || INSTRUMENTAL_BREAK_ICON,
     words: splitWords(text),
   };
 }
