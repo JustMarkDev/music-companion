@@ -1,26 +1,36 @@
 # Music Companion
 
 Music Companion is a Windows-only desktop lyrics overlay built with Tauri,
-TypeScript, and Rust. It reads the active media session through Windows Media
-Transport Controls (WMTC), fetches lyrics from
-[LRCLIB](https://lrclib.net/), and displays them in a transparent,
-always-on-top window.
+TypeScript, Rust, Bun, and Vite+. It follows the active Windows Media Transport
+Controls (WMTC) session, fetches lyrics from [LRCLIB](https://lrclib.net/), and
+displays them in a transparent, always-on-top overlay.
 
 ## Features
 
 - Works with Spotify, Apple Music, YouTube Music, browsers, VLC, and other
   WMTC-compatible players.
-- Displays synchronized lyrics from LRCLIB and clearly reports when only plain
-  lyrics are available.
+- Selects the current or actively playing media session and keeps following the
+  selected player when more than one player is open.
+- Shows a warning when multiple players are actively playing at the same time.
+- Fetches synchronized lyrics from LRCLIB, with a broad fallback search when the
+  structured lookup only returns unsynced lyrics.
 - Caches successful lyric lookups locally for faster repeat playback.
-- Supports enhanced LRC word timing and smooth interpolation for line-timed
-  lyrics.
-- Provides live line and word highlighting with animated scrolling.
-- Offers a transparent, resizable, always-on-top overlay.
-- Includes configurable opacity, lyric size, line spacing, song-title
-  visibility, and start-at-login behavior.
+- Displays synced lyrics with smooth line highlighting and animated scrolling.
+- Reports plain lyrics, instrumental tracks, unsupported variants, missing
+  lyrics, and lyric lookup errors clearly in the overlay.
+- Detects common track variants such as slowed, reverb, remix, sped up,
+  nightcore, karaoke, live, and cover versions to avoid mismatched lyrics.
+- Uses a transparent, resizable, always-on-top overlay with persistent acrylic
+  blur.
+- Restores the overlay position and size between sessions.
+- Reasserts the overlay above other topmost windows while preserving foreground
+  app input.
+- Provides a separate settings window for opacity, blur intensity, lyric size,
+  line spacing, start-at-login, and cache clearing.
 - Hides to the system tray instead of closing.
-- Supports click-through mode from the UI or with `Ctrl+Shift+L`.
+- Supports pinned click-through mode with `Ctrl+Shift+L`; the tray icon can
+  show and unlock the overlay again.
+- Checks for signed updates automatically in release builds.
 
 ## Install
 
@@ -28,81 +38,95 @@ Music Companion supports Windows 10 and Windows 11.
 
 1. Open the
    [latest GitHub release](https://github.com/JustMarkDev/music-companion/releases/latest).
-2. Download either:
-   - The NSIS `.exe` installer for the usual guided installation experience.
-   - The `.msi` package for Windows Installer-based deployment.
-3. Run the downloaded installer and start Music Companion.
+2. Download the NSIS `.exe` installer.
+3. Run the installer and start Music Companion.
 
 Release builds check for signed updates when they launch. When a newer version
 is available, the app downloads and installs it automatically, then restarts.
-End users do not need Node.js, Rust, or Python.
+End users do not need Bun, Node.js, Rust, or Python.
 
-## How to use it
+## How to Use It
 
 1. Start Music Companion.
-2. Play a track in a WMTC-compatible media player.
-3. Wait for the player to publish track information. The overlay retrieves and
-   displays the best available lyrics from LRCLIB.
-4. Drag the top area to move the window, or use its edges to resize it.
-5. Use the title-bar controls to open settings, minimize, maximize, or hide the
-   overlay.
+2. Play or pause a track in a WMTC-compatible media player.
+3. Wait for the player to publish track metadata. Music Companion follows the
+   selected media session and searches LRCLIB for the best matching lyrics.
+4. Move the pointer near the top of the overlay to show the window controls.
+5. Drag the top area to move the overlay, or drag the window edges to resize it.
+6. Use the gear button, double-click the lyric area, or right-click the lyric
+   area to open settings.
+7. Use the close button to hide the overlay to the tray, or use the tray menu to
+   quit the app.
 
-Closing the window hides it instead of quitting the application. Left-click the
-Music Companion tray icon to show and unlock the overlay again. The tray menu
-also provides **Unlock overlay** and **Quit** actions.
+When the overlay is hidden or pinned in click-through mode, left-click the Music
+Companion tray icon to show and unlock it. The tray menu also includes
+**Unlock overlay** and **Quit**.
 
-### Click-through mode
+### Click-Through Mode
 
-Click-through mode allows mouse input to pass through the overlay to windows
-underneath it. Toggle it using the lock button, the compact window menu, or the
-global `Ctrl+Shift+L` shortcut.
+Click-through mode lets mouse input pass through the overlay to the app
+underneath it. Toggle it with `Ctrl+Shift+L`.
 
-If the overlay is locked or hidden and cannot be selected, left-click its tray
-icon to show and unlock it.
+If the overlay cannot be selected, left-click the tray icon. This shows the
+overlay and disables click-through mode.
 
 ### Settings
 
-Open the gear button to configure:
+Open settings to configure:
 
 - Overlay opacity.
+- Acrylic blur intensity.
 - Lyric text size.
 - Space between lyric lines.
 - Whether Music Companion starts when you sign in to Windows.
-- Clear the locally saved lyrics cache.
+- Local lyrics cache clearing.
 
-Window position and size are restored between sessions.
+Settings are saved locally. Window position and size are restored between
+sessions.
 
 ## Troubleshooting
 
-### No media session is detected
+### No Media Session Is Detected
 
-- Confirm that a track is actively playing or paused in a WMTC-compatible
-  player.
-- Try changing tracks or restarting the media player so it republishes its
-  metadata.
-- For browser playback, ensure the browser exposes media controls to Windows.
-  Some tabs do not publish metadata until playback has started.
+- Confirm that a track is playing or paused in a WMTC-compatible player.
+- Try changing tracks or restarting the media player so it republishes metadata.
+- For browser playback, start playback in the tab first and confirm the browser
+  exposes media controls to Windows.
+- Some players only publish WMTC metadata after playback has started once.
 
-### Multiple players are detected
+### The Wrong Player Is Followed
 
-If more than one media application is playing, Music Companion warns that the
-active source is ambiguous. Pause the players you do not want to follow.
+Music Companion prefers the active Windows media session, keeps following a
+previously selected playing session, and falls back to another playing session
+when needed. If two or more players are actively playing, the overlay shows
+**Multiple players are active**.
 
-### Lyrics are missing or out of sync
+Pause the players you do not want to follow, then change tracks or resume the
+target player so Windows publishes a fresh media event.
 
-Lyrics depend on the artist, title, duration, and data available from LRCLIB.
-Some tracks have only plain lyrics, inaccurate timestamps, or no matching entry.
-Track variants such as live, instrumental, slowed, or remixed versions may not
-match the original recording.
+### Lyrics Are Missing, Plain, or Out of Sync
 
-### The app does not open correctly
+- Lyrics depend on LRCLIB data and the metadata published by the player.
+- Some tracks only have plain lyrics, inaccurate timestamps, or no matching
+  entry.
+- Live, instrumental, slowed, reverb, remixed, sped up, nightcore, karaoke, and
+  cover versions may not match the original recording.
+- If the wrong lyrics were cached, open settings and clear the lyrics cache.
 
-- Confirm that you are using Windows 10 or 11; other operating systems are not
-  supported.
+### The Overlay Is Hidden, Locked, or Off-Screen
+
+- Left-click the tray icon to show and unlock the overlay.
+- Use the tray menu's **Unlock overlay** action if the overlay is in
+  click-through mode.
+- Resize or move the overlay after it becomes selectable.
+
+### The App Does Not Open Correctly
+
+- Confirm that you are using Windows 10 or Windows 11.
 - Install or repair the
   [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
   if the window cannot render.
-- Use the tray icon if the overlay is running but hidden off-screen or locked.
+- Check whether the app is already running in the system tray.
 
 ## Development
 
@@ -116,7 +140,7 @@ match the original recording.
 The repository includes Vite+ locally; a global Vite+ installation is not
 required.
 
-### Setup and run
+### Setup and Run
 
 ```powershell
 bun install
@@ -126,9 +150,10 @@ bun run tauri:dev
 The Tauri development command starts `bun run dev`, which runs the frontend at
 `http://127.0.0.1:1421`.
 
-### Validation and build commands
+### Validation and Build Commands
 
 ```powershell
+bun install --frozen-lockfile
 bun run check
 bun run lint
 bun run format:check
@@ -136,19 +161,10 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 bun run build
-bun run preview
-bun run tauri:build
+bun audit
+cd src-tauri
+cargo audit
 ```
-
-- `bun run check` runs the Vite+ project checks.
-- `bun run lint` runs Vite+ linting for the frontend source and project config.
-- `bun run format:check` checks Vite+ formatting without modifying files.
-- The Cargo formatting and Clippy commands check Rust style and linting.
-- The Cargo command runs the Rust unit tests.
-- `bun run build` creates the frontend production bundle in `dist/`.
-- `bun run preview` serves the frontend production build locally.
-- `bun run tauri:build` creates Windows installers under
-  `src-tauri/target/release/bundle/`.
 
 For local automatic formatting, run:
 
@@ -157,17 +173,26 @@ bun run format
 cargo fmt --manifest-path src-tauri/Cargo.toml
 ```
 
+To build the Windows installer locally, run:
+
+```powershell
+bun run tauri:build
+```
+
+The installer is written under `src-tauri/target/release/bundle/nsis/`.
+
 ## Architecture
 
-1. The Rust backend reads the current Windows media session through WMTC.
-2. When the active track changes, it queries LRCLIB over HTTPS.
-3. Successful results are retained in a bounded local cache for later sessions.
-4. The TypeScript frontend parses line and enhanced-word timestamps.
-5. A local playback clock interpolates between WMTC samples for smooth
+1. The Rust backend reads Windows media sessions through WMTC.
+2. The backend subscribes to media session, playback, and property changes and
+   emits frontend refresh events.
+3. When the active track changes, the backend queries LRCLIB over HTTPS.
+4. Successful results are retained in a bounded local cache for later sessions.
+5. The TypeScript frontend parses line timestamps and renders the overlay.
+6. A local playback clock interpolates between WMTC samples for smooth
    highlighting.
-6. For line-timed LRC, the frontend estimates timing across individual words.
 
-### Lyrics latency diagnostics
+### Lyrics Latency Diagnostics
 
 When running `bun run tauri:dev`, timing entries prefixed with `[latency]`
 appear in the Rust terminal and WebView developer console. They report WMTC
@@ -176,34 +201,17 @@ reuse, and LRCLIB header/body timing.
 
 The main implementation files are:
 
-- `src/main.ts` — overlay UI, settings, lyric parsing, and synchronization.
-- `src/styles.css` — overlay and settings presentation.
-- `src-tauri/src/lib.rs` — WMTC integration, LRCLIB requests, tray behavior,
+- `src/main.ts` - overlay UI, settings, lyric parsing, and synchronization.
+- `src/styles.css` - overlay and settings presentation.
+- `src-tauri/src/lib.rs` - WMTC integration, LRCLIB requests, tray behavior,
   updater, and Tauri commands.
-- `src-tauri/tauri.conf.json` — windows, bundling, and updater configuration.
+- `src-tauri/tauri.conf.json` - windows, bundling, and updater configuration.
 
 ## Contributing
 
 Bug reports and focused pull requests are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before starting. Discuss substantial
 features, architectural changes, and broad refactors in an issue first.
-Link pull requests to the issue or discussion they implement when applicable.
-
-## Releases
-
-Tags matching `vX.Y.Z` trigger the Windows release workflow, which publishes both
-NSIS (`.exe`) and Windows Installer (`.msi`) packages together with signed
-updater metadata.
-
-Before a release, keep the version synchronized in:
-
-- `package.json`
-- `src-tauri/Cargo.toml`
-- `src-tauri/tauri.conf.json`
-
-Updater signing uses the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret. Its
-private key must remain confidential and securely backed up. Losing it prevents
-future signed updates for existing installations.
 
 ## License
 

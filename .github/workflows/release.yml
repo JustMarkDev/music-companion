@@ -53,7 +53,7 @@ jobs:
           releaseBody: |
             Music Companion per Windows.
 
-            Scarica l'installer NSIS (`.exe`) oppure il pacchetto MSI (`.msi`).
+            Scarica l'installer NSIS (`.exe`).
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
