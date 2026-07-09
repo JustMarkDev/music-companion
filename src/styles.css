@@ -126,6 +126,10 @@ button {
   display: none;
 }
 
+.overlay.click-through {
+  background: transparent;
+}
+
 .track-meta {
   min-width: 0;
 }
