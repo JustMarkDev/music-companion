@@ -71,8 +71,8 @@ button {
   border: 0;
   border-radius: 0;
   background:
-    linear-gradient(180deg, hsla(var(--hue), var(--bg-saturation), 18%, 0.2), transparent 44px),
-    linear-gradient(180deg, hsla(var(--hue-2), var(--bg-saturation), 16%, 0.14), transparent 48px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 20%, transparent), transparent 44px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-2) 14%, transparent), transparent 48px),
     var(--surface);
   box-shadow: none;
   backdrop-filter: none;
@@ -504,6 +504,40 @@ button {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.accent-color-setting {
+  gap: 8px;
+}
+
+.manual-accent-controls {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.manual-accent-controls.disabled {
+  opacity: 0.45;
+}
+
+input[type="color"] {
+  width: 42px;
+  height: 34px;
+  padding: 3px;
+  background: rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+input[type="color"]:disabled {
+  cursor: default;
+}
+
+.manual-accent-controls input[type="text"] {
+  min-width: 0;
+  font-family: "Cascadia Code", Consolas, monospace;
 }
 
 .range-label {

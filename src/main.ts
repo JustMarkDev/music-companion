@@ -31,6 +31,8 @@ type LyricsResult = {
   plainLyrics: string | null;
 };
 
+type AccentMode = "dynamic" | "manual";
+
 type SettingsState = {
   clickThrough: boolean;
   opacity: number;
@@ -38,6 +40,8 @@ type SettingsState = {
   fontSize: number;
   lineSpacing: number;
   startAtLogin: boolean;
+  accentMode: AccentMode;
+  accentColor: string;
 };
 
 type CachedLyrics = {
@@ -59,6 +63,8 @@ const DEFAULT_SETTINGS: SettingsState = {
   fontSize: 1.5,
   lineSpacing: 0.4,
   startAtLogin: false,
+  accentMode: "dynamic",
+  accentColor: "#22e6c7",
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
@@ -202,6 +208,17 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <output id="line-spacing-value">0.4em</output>
           </label>
           <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
+        </div>
+        <div class="setting-row accent-color-setting">
+          <label for="accent-mode">Accent color</label>
+          <select id="accent-mode">
+            <option value="dynamic">Dynamic</option>
+            <option value="manual">Manual</option>
+          </select>
+          <div class="manual-accent-controls" id="manual-accent-controls">
+            <input id="accent-color" type="color" aria-label="Choose accent color" />
+            <input id="accent-color-hex" type="text" inputmode="text" maxlength="7" aria-label="Accent color hex value" />
+          </div>
         </div>
         <label class="switch-row" for="start-login">
           <span>Start at login</span>
@@ -402,6 +419,34 @@ function wireUi() {
     saveSettings();
     applySettings();
   });
+
+  document.querySelector<HTMLSelectElement>("#accent-mode")?.addEventListener("change", (event) => {
+    settings.accentMode =
+      (event.currentTarget as HTMLSelectElement).value === "manual" ? "manual" : "dynamic";
+    saveSettings();
+    applySettings();
+    renderSettings();
+  });
+
+  document.querySelector<HTMLInputElement>("#accent-color")?.addEventListener("input", (event) => {
+    const value = (event.currentTarget as HTMLInputElement).value;
+    settings.accentColor = normalizeHexColor(value);
+    saveSettings();
+    applySettings();
+    renderSettings();
+  });
+
+  document
+    .querySelector<HTMLInputElement>("#accent-color-hex")
+    ?.addEventListener("change", (event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      if (isHexColor(input.value)) {
+        settings.accentColor = normalizeHexColor(input.value);
+        saveSettings();
+        applySettings();
+      }
+      renderSettings();
+    });
 
   document
     .querySelector<HTMLInputElement>("#start-login")
@@ -1048,6 +1093,16 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  document.querySelector<HTMLSelectElement>("#accent-mode")!.value = settings.accentMode;
+  document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
+  const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
+  accentHex.value = settings.accentColor;
+  const manualAccent = settings.accentMode === "manual";
+  document.querySelector<HTMLInputElement>("#accent-color")!.disabled = !manualAccent;
+  accentHex.disabled = !manualAccent;
+  document
+    .querySelector<HTMLElement>("#manual-accent-controls")
+    ?.classList.toggle("disabled", !manualAccent);
   renderSettingValues();
 }
 
@@ -1086,6 +1141,7 @@ function applySettings() {
   root.style.setProperty("--backdrop-blur", `${settings.blurIntensity * 0.2}px`);
   root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}em`);
+  applyGradient();
   renderSettingValues();
   overlay?.classList.toggle("click-through", settings.clickThrough);
   if (settings.clickThrough) {
@@ -1125,14 +1181,33 @@ async function safeInvoke(command: string, args?: Record<string, unknown>) {
 }
 
 function applyGradient() {
-  const nextGradientKey = `${currentMedia.artist}:${currentMedia.title}`;
+  const nextGradientKey =
+    settings.accentMode === "manual"
+      ? `manual:${settings.accentColor}`
+      : `${currentMedia.artist}:${currentMedia.title}`;
   if (nextGradientKey === renderedGradientKey) {
     return;
   }
   renderedGradientKey = nextGradientKey;
+
+  if (settings.accentMode === "manual") {
+    const hue = hexColorHue(settings.accentColor);
+    document.documentElement.style.setProperty("--accent", settings.accentColor);
+    document.documentElement.style.setProperty(
+      "--accent-2",
+      `hsl(${(hue + 128) % 360}, 100%, 62%)`,
+    );
+    return;
+  }
+
   const hue = hashHue(nextGradientKey);
   document.documentElement.style.setProperty("--hue", String(hue));
   document.documentElement.style.setProperty("--hue-2", String((hue + 128) % 360));
+  document.documentElement.style.setProperty("--accent", `hsl(${hue}, var(--bg-saturation), 56%)`);
+  document.documentElement.style.setProperty(
+    "--accent-2",
+    `hsl(${(hue + 128) % 360}, var(--bg-saturation), 62%)`,
+  );
 }
 
 function loadSettings(): SettingsState {
@@ -1155,6 +1230,10 @@ function loadSettings(): SettingsState {
         typeof loaded.startAtLogin === "boolean"
           ? loaded.startAtLogin
           : DEFAULT_SETTINGS.startAtLogin,
+      accentMode: loaded.accentMode === "manual" ? "manual" : "dynamic",
+      accentColor: isHexColor(loaded.accentColor)
+        ? normalizeHexColor(loaded.accentColor)
+        : DEFAULT_SETTINGS.accentColor,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -1258,6 +1337,31 @@ function hashHue(input: string) {
     hash = (hash * 31 + input.charCodeAt(index)) | 0;
   }
   return Math.abs(hash) % 360;
+}
+
+function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#?[\da-f]{6}$/i.test(value);
+}
+
+function normalizeHexColor(value: string) {
+  return `#${value.replace(/^#/, "").toUpperCase()}`;
+}
+
+function hexColorHue(value: string) {
+  const hex = normalizeHexColor(value).slice(1);
+  const red = parseInt(hex.slice(0, 2), 16) / 255;
+  const green = parseInt(hex.slice(2, 4), 16) / 255;
+  const blue = parseInt(hex.slice(4, 6), 16) / 255;
+  const maximum = Math.max(red, green, blue);
+  const minimum = Math.min(red, green, blue);
+  const delta = maximum - minimum;
+  if (delta === 0) return 0;
+
+  let hue = 0;
+  if (maximum === red) hue = ((green - blue) / delta) % 6;
+  else if (maximum === green) hue = (blue - red) / delta + 2;
+  else hue = (red - green) / delta + 4;
+  return Math.round(hue * 60 + (hue < 0 ? 360 : 0));
 }
 
 function escapeHtml(value: string) {

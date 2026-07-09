@@ -78,8 +78,13 @@ Open settings to configure:
 - Acrylic blur intensity.
 - Lyric text size.
 - Space between lyric lines.
+- Accent color mode and color.
 - Whether Music Companion starts when you sign in to Windows.
 - Local lyrics cache clearing.
+
+Accent color can be Dynamic, which derives colors from the current track, or
+Manual, which applies one selected color to the overlay glow, top accent,
+gradient, and controls. Changes apply immediately and are saved locally.
 
 Settings are saved locally. Window position and size are restored between
 sessions.
