@@ -197,8 +197,9 @@ async fn fetch_lyrics(
 ) -> Result<Option<LyricsResult>, String> {
     let started_at = Instant::now();
     let result = lyrics::fetch_lyrics(&title, &artist, duration_ms).await;
+    let duration_seconds = duration_ms.map(|value| value as f64 / 1_000.0);
     println!(
-        "[latency] lyrics total={}ms title={title:?} artist={artist:?} found={}",
+        "[latency] lyrics total={}ms title={title:?} artist={artist:?} duration_seconds={duration_seconds:?} found={}",
         started_at.elapsed().as_millis(),
         matches!(&result, Ok(Some(_)))
     );
@@ -924,26 +925,26 @@ mod lyrics {
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
-        let (mut results, search_type) =
-            match fetch_candidates(client, structured_url, "structured").await {
-                Ok(candidates) if !should_query_broad(&candidates) => (candidates, "structured"),
-                Ok(mut candidates) => {
-                    let broad_candidates =
-                        fetch_candidates(client, broad_url, "broad fallback").await?;
-                    candidates.extend(broad_candidates);
-                    (candidates, "structured + broad fallback")
-                }
-                Err(structured_error) => {
-                    println!("[lyrics] {structured_error}; trying broad fallback");
-                    match fetch_candidates(client, broad_url, "broad fallback").await {
-                        Ok(candidates) => (candidates, "broad fallback"),
-                        Err(broad_error) => {
-                            return Err(format!("{structured_error}; {broad_error}"));
-                        }
-                    }
-                }
-            };
-        deduplicate_candidates(&mut results);
+        let (structured_result, broad_result) = tokio::join!(
+            fetch_candidates(client, structured_url, "structured"),
+            fetch_candidates(client, broad_url, "broad")
+        );
+        let (mut results, search_type) = match (structured_result, broad_result) {
+            (Ok(structured), Ok(broad)) => {
+                (merge_candidates(broad, structured), "structured + broad")
+            }
+            (Ok(structured), Err(broad_error)) => {
+                println!("[lyrics] {broad_error}; using structured results");
+                (structured, "structured")
+            }
+            (Err(structured_error), Ok(broad)) => {
+                println!("[lyrics] {structured_error}; using broad results");
+                (broad, "broad")
+            }
+            (Err(structured_error), Err(broad_error)) => {
+                return Err(format!("{structured_error}; {broad_error}"));
+            }
+        };
         println!(
             "[latency] LRCLIB total={}ms search={search_type} candidates={}",
             request_started_at.elapsed().as_millis(),
@@ -959,6 +960,17 @@ mod lyrics {
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
     }
 
+    fn merge_candidates(
+        mut broad: Vec<LrclibLyrics>,
+        structured: Vec<LrclibLyrics>,
+    ) -> Vec<LrclibLyrics> {
+        // Stable ranking and first-match deduplication preserve broad-search
+        // priority whenever candidates are otherwise equivalent.
+        broad.extend(structured);
+        deduplicate_candidates(&mut broad);
+        broad
+    }
+
     fn deduplicate_candidates(candidates: &mut Vec<LrclibLyrics>) {
         let mut seen = HashSet::new();
         candidates.retain(|candidate| {
@@ -969,10 +981,6 @@ mod lyrics {
                 candidate.duration.map(f64::to_bits),
             ))
         });
-    }
-
-    fn should_query_broad(candidates: &[LrclibLyrics]) -> bool {
-        !candidates.iter().any(has_synced_lyrics)
     }
 
     async fn fetch_candidates(
@@ -1230,13 +1238,19 @@ mod lyrics {
         }
 
         #[test]
-        fn broad_search_is_needed_when_structured_results_are_only_unsynced() {
-            let candidates = [
-                candidate_with_metadata("Self Aware", "Temper City", None, 181.0, false),
-                candidate_with_metadata("Self Aware", "Temper City", None, 180.0, false),
-            ];
+        fn broad_candidate_is_kept_when_searches_return_the_same_metadata() {
+            let mut broad = candidate("Golden Brown", "The Stranglers", 206.781);
+            broad.synced_lyrics = Some("[00:21.04] Broad".to_string());
+            let mut structured = candidate("Golden Brown", "The Stranglers", 206.781);
+            structured.synced_lyrics = Some("[00:22.95] Structured".to_string());
 
-            assert!(should_query_broad(&candidates));
+            let results = merge_candidates(vec![broad], vec![structured]);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results[0].synced_lyrics.as_deref(),
+                Some("[00:21.04] Broad")
+            );
         }
 
         #[test]
