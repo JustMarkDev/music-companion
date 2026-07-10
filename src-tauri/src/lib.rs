@@ -64,6 +64,7 @@ struct LyricsResult {
     duration: Option<u64>,
     instrumental: bool,
     synced_lyrics: Option<String>,
+    romanized_synced_lyrics: Option<String>,
     plain_lyrics: Option<String>,
 }
 
@@ -872,6 +873,287 @@ mod media {
     }
 }
 
+mod romanization {
+    use ib_romaji::HepburnRomanizer;
+    use lindera::dictionary::load_dictionary;
+    use lindera::mode::Mode;
+    use lindera::segmenter::Segmenter;
+    use lindera::tokenizer::Tokenizer;
+    use pinyin::ToPinyin;
+    use std::sync::OnceLock;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum LyricsLanguage {
+        Japanese,
+        Korean,
+        Chinese,
+    }
+
+    pub fn romanize_lrc(lyrics: &str) -> Option<String> {
+        let language = detect_language(lyrics)?;
+        let mut changed = false;
+        let lines = lyrics
+            .lines()
+            .map(|line| {
+                let text_start = line.rfind(']').map_or(0, |index| index + 1);
+                let (prefix, text) = line.split_at(text_start);
+                let romanized =
+                    capitalize_first_letter(&romanize_text(text.trim_start(), language));
+                changed |= romanized != text.trim_start();
+                let separator = if text.starts_with(' ') { " " } else { "" };
+                format!("{prefix}{separator}{romanized}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        changed.then_some(lines)
+    }
+
+    fn capitalize_first_letter(text: &str) -> String {
+        let Some((index, character)) = text
+            .char_indices()
+            .find(|(_, character)| character.is_alphabetic())
+        else {
+            return text.to_string();
+        };
+        let uppercase = character.to_uppercase().collect::<String>();
+        format!(
+            "{}{}{}",
+            &text[..index],
+            uppercase,
+            &text[index + character.len_utf8()..]
+        )
+    }
+
+    fn detect_language(text: &str) -> Option<LyricsLanguage> {
+        if text.chars().any(is_kana) {
+            Some(LyricsLanguage::Japanese)
+        } else if text.chars().any(is_hangul) {
+            Some(LyricsLanguage::Korean)
+        } else if text.chars().any(is_han) {
+            Some(LyricsLanguage::Chinese)
+        } else {
+            None
+        }
+    }
+
+    fn romanize_text(text: &str, language: LyricsLanguage) -> String {
+        match language {
+            LyricsLanguage::Japanese => romanize_japanese(text),
+            LyricsLanguage::Korean => romanize_korean(text),
+            LyricsLanguage::Chinese => romanize_chinese(text),
+        }
+    }
+
+    fn romanize_japanese(text: &str) -> String {
+        static TOKENIZER: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
+        let tokenizer = TOKENIZER.get_or_init(|| {
+            let dictionary =
+                load_dictionary("embedded://ipadic").map_err(|error| error.to_string())?;
+            Ok(Tokenizer::new(Segmenter::new(
+                Mode::Normal,
+                dictionary,
+                None,
+            )))
+        });
+        let Ok(tokenizer) = tokenizer else {
+            return romanize_japanese_without_segmentation(text);
+        };
+        let Ok(mut tokens) = tokenizer.tokenize(text) else {
+            return romanize_japanese_without_segmentation(text);
+        };
+
+        let romanizer = japanese_romanizer();
+        let mut output = String::new();
+        for token in &mut tokens {
+            let surface = token.surface.to_string();
+            let details = token.details();
+            let is_particle = details.first().is_some_and(|part| *part == "助詞");
+            let reading = details.get(7).copied().filter(|value| *value != "*");
+            let romanized = match (is_particle, surface.as_str()) {
+                (true, "は") => "wa".to_string(),
+                (true, "へ") => "e".to_string(),
+                (true, "を") => "o".to_string(),
+                _ => reading
+                    .and_then(|value| romanizer.romanize_kana_str_all(value))
+                    .unwrap_or_else(|| romanize_japanese_without_segmentation(&surface)),
+            };
+
+            if is_japanese_punctuation(&surface) {
+                output.push_str(&romanized);
+            } else {
+                if output.chars().last().is_some_and(|character| {
+                    !character.is_whitespace() && !is_opening_punctuation(character)
+                }) {
+                    output.push(' ');
+                }
+                output.push_str(&romanized);
+            }
+        }
+        output
+    }
+
+    fn japanese_romanizer() -> &'static HepburnRomanizer {
+        static ROMANIZER: OnceLock<HepburnRomanizer> = OnceLock::new();
+        ROMANIZER.get_or_init(|| {
+            HepburnRomanizer::builder()
+                .kana(true)
+                .kanji(true)
+                .word(true)
+                .build()
+        })
+    }
+
+    fn romanize_japanese_without_segmentation(text: &str) -> String {
+        let romanizer = japanese_romanizer();
+        let mut output = String::new();
+        let mut offset = 0;
+
+        while offset < text.len() {
+            let remaining = &text[offset..];
+            if let Some((length, romaji)) = romanizer
+                .romanize_vec(remaining)
+                .into_iter()
+                .max_by_key(|(length, _)| *length)
+            {
+                output.push_str(romaji);
+                offset += length;
+            } else {
+                let character = remaining
+                    .chars()
+                    .next()
+                    .expect("remaining text is non-empty");
+                output.push(character);
+                offset += character.len_utf8();
+            }
+        }
+        output
+    }
+
+    fn is_japanese_punctuation(value: &str) -> bool {
+        value.chars().all(|character| {
+            character.is_ascii_punctuation()
+                || matches!(
+                    character,
+                    '、' | '。' | '！' | '？' | '…' | '・' | '」' | '』' | '）' | '】'
+                )
+        })
+    }
+
+    fn is_opening_punctuation(character: char) -> bool {
+        matches!(character, '(' | '[' | '{' | '「' | '『' | '（' | '【')
+    }
+
+    fn romanize_chinese(text: &str) -> String {
+        let mut output = String::new();
+        let mut previous_was_pinyin = false;
+        for character in text.chars() {
+            if let Some(pinyin) = character.to_pinyin() {
+                if previous_was_pinyin
+                    || output
+                        .chars()
+                        .last()
+                        .is_some_and(|last| last.is_alphanumeric())
+                {
+                    output.push(' ');
+                }
+                output.push_str(pinyin.plain());
+                previous_was_pinyin = true;
+            } else {
+                output.push(character);
+                previous_was_pinyin = false;
+            }
+        }
+        output
+    }
+
+    fn romanize_korean(text: &str) -> String {
+        const INITIALS: [&str; 19] = [
+            "g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k",
+            "t", "p", "h",
+        ];
+        const VOWELS: [&str; 21] = [
+            "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u",
+            "wo", "we", "wi", "yu", "eu", "ui", "i",
+        ];
+        const FINALS: [&str; 28] = [
+            "", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "l", "l", "l", "p", "l", "m",
+            "p", "p", "t", "t", "ng", "t", "t", "k", "t", "p", "t",
+        ];
+
+        text.chars()
+            .map(|character| {
+                let code = character as u32;
+                if !(0xAC00..=0xD7A3).contains(&code) {
+                    return character.to_string();
+                }
+                let syllable = code - 0xAC00;
+                let initial = (syllable / 588) as usize;
+                let vowel = ((syllable % 588) / 28) as usize;
+                let final_consonant = (syllable % 28) as usize;
+                format!(
+                    "{}{}{}",
+                    INITIALS[initial], VOWELS[vowel], FINALS[final_consonant]
+                )
+            })
+            .collect()
+    }
+
+    fn is_kana(character: char) -> bool {
+        matches!(character as u32, 0x3040..=0x30FF | 0x31F0..=0x31FF)
+    }
+
+    fn is_hangul(character: char) -> bool {
+        matches!(character as u32, 0xAC00..=0xD7A3 | 0x1100..=0x11FF)
+    }
+
+    fn is_han(character: char) -> bool {
+        matches!(character as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::romanize_lrc;
+
+        #[test]
+        fn romanizes_japanese_lyrics_without_changing_timestamps() {
+            assert_eq!(
+                romanize_lrc("[00:01.00] 今日は\n[00:02.00]ありがとう").as_deref(),
+                Some("[00:01.00] Kyou wa\n[00:02.00]Arigatou")
+            );
+        }
+
+        #[test]
+        fn uses_contextual_japanese_readings_and_word_boundaries() {
+            assert_eq!(
+                romanize_lrc("[00:01.00] 明日は学校へ行く").as_deref(),
+                Some("[00:01.00] Ashita wa gakkou e iku")
+            );
+        }
+
+        #[test]
+        fn romanizes_chinese_lyrics_as_plain_pinyin() {
+            assert_eq!(
+                romanize_lrc("[00:01.00] 中国人").as_deref(),
+                Some("[00:01.00] Zhong guo ren")
+            );
+        }
+
+        #[test]
+        fn romanizes_hangul_lyrics() {
+            assert_eq!(
+                romanize_lrc("[00:01.00] 한글").as_deref(),
+                Some("[00:01.00] Hangeul")
+            );
+        }
+
+        #[test]
+        fn ignores_lyrics_that_are_already_latin() {
+            assert_eq!(romanize_lrc("[00:01.00] Hello world"), None);
+        }
+    }
+}
+
 mod lyrics {
     use super::{LrclibLyrics, LyricsResult};
     use std::collections::HashSet;
@@ -1152,6 +1434,10 @@ mod lyrics {
 
     impl LrclibLyrics {
         fn into_result(self) -> LyricsResult {
+            let romanized_synced_lyrics = self
+                .synced_lyrics
+                .as_deref()
+                .and_then(super::romanization::romanize_lrc);
             LyricsResult {
                 source: "LRCLIB".to_string(),
                 track_name: self.track_name.unwrap_or_default(),
@@ -1160,6 +1446,7 @@ mod lyrics {
                 duration: self.duration.map(|value| value.round() as u64),
                 instrumental: self.instrumental,
                 synced_lyrics: self.synced_lyrics,
+                romanized_synced_lyrics,
                 plain_lyrics: self.plain_lyrics,
             }
         }

@@ -19,6 +19,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 urlencoding = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
+ib-romaji = "0.2.1"
+lindera = { version = "4.0.0", default-features = false, features = ["embed-ipadic"] }
+pinyin = "0.11.0"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2.10.1"
