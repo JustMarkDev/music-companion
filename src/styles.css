@@ -7,7 +7,7 @@
     -apple-system,
     BlinkMacSystemFont,
     sans-serif;
-  --overlay-opacity: 0.99;
+  --overlay-opacity: 1;
   --backdrop-blur: 20px;
   --lyric-size: 1.5rem;
   --active-lyric-scale: 1.075;
@@ -347,7 +347,7 @@ button {
 .lyric-line.active {
   color: #ffffff;
   text-shadow:
-    0 0 22px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 0 26px color-mix(in srgb, var(--accent) 78%, transparent),
     0 1px 16px rgba(0, 0, 0, 0.5);
   transform: scale(var(--active-lyric-scale));
   animation: line-arrive 220ms ease-out;
