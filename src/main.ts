@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import { createIcons, Maximize2, Menu, Minus, Settings, X } from "lucide";
+import { createIcons, Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X } from "lucide";
 import packageJson from "../package.json";
 import "./styles.css";
 
@@ -19,6 +19,15 @@ type MediaState = {
   playbackRate: number | null;
   playingSessionCount: number;
 };
+
+type HotkeyStatus = {
+  action: string;
+  accelerator: string;
+  registered: boolean;
+  error: string | null;
+};
+
+let hotkeyStatuses: HotkeyStatus[] = [];
 
 type LyricsResult = {
   source: string;
@@ -48,6 +57,16 @@ type SettingsState = {
   accentMode: AccentMode;
   accentColor: string;
   backdropMaterial: BackdropMaterial;
+  hotkeys: Record<HotkeyAction, string>;
+};
+
+type HotkeyAction = "pinned" | "next" | "previous" | "playPause";
+
+const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
+  pinned: "Ctrl+Shift+KeyL",
+  next: "Ctrl+ArrowRight",
+  previous: "Ctrl+ArrowLeft",
+  playPause: "Ctrl+Shift+Space",
 };
 
 type CachedLyrics = {
@@ -73,6 +92,7 @@ const DEFAULT_SETTINGS: SettingsState = {
   accentMode: "dynamic",
   accentColor: "#22e6c7",
   backdropMaterial: "acrylic",
+  hotkeys: { ...DEFAULT_HOTKEYS },
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
@@ -114,7 +134,7 @@ const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
 const lyricCache = loadLyricsCache();
-const lyricRequests = new Map<string, Promise<LyricsResult | null>>();
+let lyricsRequestId = 0;
 let lyricCacheGeneration = 0;
 
 let settings = loadSettings();
@@ -302,7 +322,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="settings-card system-group">
             <div class="hotkey-setting">
               <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <kbd id="click-through-hotkey">Ctrl + Shift + L</kbd>
+              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + L</button></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Next song</strong><small>Skip to the next track</small></span>
+              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Right Arrow</button></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Previous song</strong><small>Return to the previous track</small></span>
+              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Left Arrow</button></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
+              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + Space</button></span>
             </div>
             <div class="cache-setting">
               <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
@@ -327,7 +359,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </main>
 `;
 
-createIcons({ icons: { Maximize2, Menu, Minus, Settings, X } });
+createIcons({ icons: { Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X } });
 if (isSettingsWindow) {
   document.body.classList.add("settings-window");
   settingsOpen = true;
@@ -336,6 +368,8 @@ if (isSettingsWindow) {
   applySettings();
   renderSettings();
   void syncSettingsAccent();
+  void loadHotkeyStatuses();
+  void applySavedHotkeys();
 } else {
   void initializeMainWindowGeometry();
   wireUi();
@@ -345,6 +379,7 @@ if (isSettingsWindow) {
   void syncStartAtLogin();
   schedulePolling();
   startSyncLoop();
+  void applySavedHotkeys();
 }
 
 async function initializeMainWindowGeometry() {
@@ -654,6 +689,86 @@ function wireUi() {
       void emit("lyrics-cache-cleared");
     }
   });
+  wireHotkeyInputs();
+}
+
+function wireHotkeyInputs() {
+  document.querySelectorAll<HTMLElement>("[data-hotkey-action]").forEach((row) => {
+    const action = row.dataset.hotkeyAction as HotkeyAction;
+    const input = row.querySelector<HTMLButtonElement>(".hotkey-input")!;
+    let pending: string | null = null;
+    input.addEventListener("focus", () => {
+      pending = null;
+      input.classList.add("recording");
+      input.textContent = "Press shortcut…";
+    });
+    input.addEventListener("keydown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        pending = null;
+        input.blur();
+        return;
+      }
+      if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
+      pending = keyboardEventToAccelerator(event);
+      input.textContent = formatAccelerator(pending);
+    });
+    input.addEventListener("keyup", (event) => {
+      event.preventDefault();
+      if (pending) void setHotkey(action, pending);
+      pending = null;
+      input.blur();
+    });
+    input.addEventListener("blur", () => {
+      if (pending) void setHotkey(action, pending);
+      pending = null;
+      input.classList.remove("recording");
+      renderHotkeyStatuses();
+    });
+    row.querySelector<HTMLButtonElement>(".hotkey-reset")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void setHotkey(action, DEFAULT_HOTKEYS[action]);
+    });
+  });
+}
+
+function keyboardEventToAccelerator(event: KeyboardEvent) {
+  const parts: string[] = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+  if (event.metaKey) parts.push("Super");
+  parts.push(event.code);
+  return parts.join("+");
+}
+
+async function setHotkey(action: HotkeyAction, accelerator: string) {
+  settings.hotkeys[action] = accelerator;
+  saveSettings();
+  if (tauriAvailable) {
+    const status = await invoke<HotkeyStatus>("register_hotkey", { action, accelerator });
+    hotkeyStatuses = [...hotkeyStatuses.filter((item) => item.action !== action), status];
+  }
+  renderHotkeyStatuses();
+}
+
+async function applySavedHotkeys() {
+  if (!tauriAvailable) return;
+  for (const action of Object.keys(DEFAULT_HOTKEYS) as HotkeyAction[]) {
+    await setHotkey(action, settings.hotkeys[action]);
+  }
+}
+
+function formatAccelerator(accelerator: string) {
+  return accelerator
+    .replace(/Key([A-Z])/g, "$1")
+    .replace("ArrowRight", "Right Arrow")
+    .replace("ArrowLeft", "Left Arrow")
+    .replace("ArrowUp", "Up Arrow")
+    .replace("ArrowDown", "Down Arrow")
+    .split("+")
+    .join(" + ");
 }
 
 function wireWindowEvents() {
@@ -666,6 +781,7 @@ function wireWindowEvents() {
       applySettings();
       renderSettings();
       void syncSettingsAccent();
+      void loadHotkeyStatuses();
     });
     void listen("media-state-changed", () => void syncSettingsAccent());
     return;
@@ -691,6 +807,38 @@ function wireWindowEvents() {
     renderSettings();
     applyLyrics(currentLyricsResult);
     renderLyrics();
+  });
+}
+
+async function loadHotkeyStatuses() {
+  if (!tauriAvailable) return;
+  try {
+    hotkeyStatuses = await invoke<HotkeyStatus[]>("get_hotkey_statuses");
+    renderHotkeyStatuses();
+  } catch (error) {
+    console.error("Unable to load global hotkey statuses", error);
+  }
+}
+
+function renderHotkeyStatuses() {
+  document.querySelectorAll<HTMLElement>("[data-hotkey-action]").forEach((element) => {
+    const status = hotkeyStatuses.find((item) => item.action === element.dataset.hotkeyAction);
+    const action = element.dataset.hotkeyAction as HotkeyAction;
+    const accelerator = settings.hotkeys[action];
+    const input = element.querySelector<HTMLButtonElement>(".hotkey-input");
+    if (input && !input.classList.contains("recording"))
+      input.textContent = formatAccelerator(accelerator);
+    element.querySelector<HTMLButtonElement>(".hotkey-reset")!.hidden =
+      accelerator === DEFAULT_HOTKEYS[action];
+    element.querySelector(".hotkey-warning")?.remove();
+    if (!status || status.registered) return;
+    const warning = document.createElement("span");
+    warning.className = "hotkey-warning";
+    warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
+    warning.setAttribute("aria-label", warning.title);
+    warning.innerHTML = '<i data-lucide="triangle-alert" aria-hidden="true"></i>';
+    element.prepend(warning);
+    createIcons({ icons: { TriangleAlert } });
   });
 }
 
@@ -794,6 +942,8 @@ async function pollMedia(reason = "manual") {
 
     if (nextTrackKey && nextTrackKey !== currentTrackKey) {
       currentTrackKey = nextTrackKey;
+      lyricsRequestId += 1;
+      void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
       void loadLyrics(currentMedia, nextTrackKey);
     }
 
@@ -859,18 +1009,13 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   try {
     const cacheGeneration = lyricCacheGeneration;
     const startedAt = performance.now();
-    let request = lyricRequests.get(key);
-    if (!request) {
-      request = invoke<LyricsResult | null>("fetch_lyrics", {
-        title: media.title,
-        artist: media.artist,
-        durationMs: media.durationMs,
-      });
-      lyricRequests.set(key, request);
-    } else {
-      console.info("[latency] joined in-flight lyrics request", { key });
-    }
-    const result = await request;
+    const requestId = lyricsRequestId;
+    const result = await invoke<LyricsResult | null>("fetch_lyrics", {
+      title: media.title,
+      artist: media.artist,
+      durationMs: media.durationMs,
+      requestId,
+    });
     if (cacheGeneration === lyricCacheGeneration) {
       lyricCache.set(key, result);
       if (result) {
@@ -892,8 +1037,6 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
       invalidateLyricsRender();
       renderLyrics();
     }
-  } finally {
-    lyricRequests.delete(key);
   }
 }
 
@@ -1464,6 +1607,7 @@ function renderSettings() {
     .querySelector<HTMLElement>("#manual-accent-controls")
     ?.classList.toggle("disabled", !manualAccent);
   renderSettingValues();
+  renderHotkeyStatuses();
 }
 
 function renderSettingValues() {
@@ -1600,9 +1744,24 @@ function loadSettings(): SettingsState {
         ? normalizeHexColor(loaded.accentColor)
         : DEFAULT_SETTINGS.accentColor,
       backdropMaterial: loaded.backdropMaterial === "mica" ? "mica" : "acrylic",
+      hotkeys: {
+        pinned:
+          typeof loaded.hotkeys?.pinned === "string"
+            ? loaded.hotkeys.pinned
+            : DEFAULT_HOTKEYS.pinned,
+        next: typeof loaded.hotkeys?.next === "string" ? loaded.hotkeys.next : DEFAULT_HOTKEYS.next,
+        previous:
+          typeof loaded.hotkeys?.previous === "string"
+            ? loaded.hotkeys.previous
+            : DEFAULT_HOTKEYS.previous,
+        playPause:
+          typeof loaded.hotkeys?.playPause === "string"
+            ? loaded.hotkeys.playPause
+            : DEFAULT_HOTKEYS.playPause,
+      },
     };
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, hotkeys: { ...DEFAULT_HOTKEYS } };
   }
 }
 

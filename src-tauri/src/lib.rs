@@ -32,6 +32,78 @@ struct MediaState {
     playing_session_count: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HotkeyStatus {
+    action: String,
+    accelerator: String,
+    registered: bool,
+    error: Option<String>,
+}
+
+static HOTKEY_STATUSES: OnceLock<Mutex<Vec<HotkeyStatus>>> = OnceLock::new();
+
+#[tauri::command]
+fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
+    HOTKEY_STATUSES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map(|statuses| statuses.clone())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn register_hotkey(
+    app: tauri::AppHandle,
+    action: String,
+    accelerator: String,
+) -> Result<HotkeyStatus, String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+    let shortcut = accelerator
+        .parse::<Shortcut>()
+        .map_err(|error| format!("Invalid shortcut: {error}"))?;
+    let mut statuses = HOTKEY_STATUSES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map_err(|_| "Hotkey registry is unavailable".to_string())?;
+
+    if let Some(current) = statuses.iter().find(|status| status.action == action) {
+        if current.accelerator == accelerator && current.registered {
+            return Ok(current.clone());
+        }
+        if current.registered {
+            if let Ok(old_shortcut) = current.accelerator.parse::<Shortcut>() {
+                let _ = app.global_shortcut().unregister(old_shortcut);
+            }
+        }
+    }
+
+    let status = match app.global_shortcut().register(shortcut) {
+        Ok(()) => {
+            println!("[hotkey] registered {accelerator} for {action}");
+            HotkeyStatus {
+                action: action.clone(),
+                accelerator,
+                registered: true,
+                error: None,
+            }
+        }
+        Err(error) => {
+            eprintln!("[hotkey] unable to register {accelerator} for {action}: {error}");
+            HotkeyStatus {
+                action: action.clone(),
+                accelerator,
+                registered: false,
+                error: Some(error.to_string()),
+            }
+        }
+    };
+    statuses.retain(|item| item.action != action);
+    statuses.push(status.clone());
+    Ok(status)
+}
+
 impl MediaState {
     fn no_session(status: &str) -> Self {
         Self {
@@ -51,6 +123,12 @@ impl MediaState {
 }
 
 static MEDIA_QUERY_RUNNING: AtomicBool = AtomicBool::new(false);
+static LATEST_LYRICS_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[tauri::command]
+fn cancel_lyrics_requests(request_id: u64) {
+    LATEST_LYRICS_REQUEST.fetch_max(request_id, Ordering::AcqRel);
+}
 static MEDIA_CACHE: OnceLock<Mutex<Option<MediaState>>> = OnceLock::new();
 const MEDIA_QUERY_WAIT: Duration = Duration::from_millis(650);
 
@@ -195,9 +273,15 @@ async fn fetch_lyrics(
     title: String,
     artist: String,
     duration_ms: Option<u64>,
+    request_id: u64,
 ) -> Result<Option<LyricsResult>, String> {
+    LATEST_LYRICS_REQUEST.fetch_max(request_id, Ordering::AcqRel);
     let started_at = Instant::now();
-    let result = lyrics::fetch_lyrics(&title, &artist, duration_ms).await;
+    let result = lyrics::fetch_lyrics(&title, &artist, duration_ms, request_id).await;
+    if matches!(&result, Err(error) if error == "lyrics request superseded") {
+        println!("[lyrics] cancelled superseded request id={request_id} title={title:?}");
+        return result;
+    }
     let duration_seconds = duration_ms.map(|value| value as f64 / 1_000.0);
     println!(
         "[latency] lyrics total={}ms title={title:?} artist={artist:?} duration_seconds={duration_seconds:?} found={}",
@@ -265,17 +349,55 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 pub fn run() {
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
     use tauri_plugin_window_state::StateFlags;
 
     let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
-    let shortcut_for_handler = lock_shortcut;
+    let next_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowRight);
+    let previous_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowLeft);
+    let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcut(lock_shortcut)
-        .expect("failed to register Ctrl+Shift+L")
         .with_handler(move |app, shortcut, event| {
-            if shortcut == &shortcut_for_handler && event.state() == ShortcutState::Pressed {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            let action = HOTKEY_STATUSES
+                .get()
+                .and_then(|statuses| statuses.lock().ok())
+                .and_then(|statuses| {
+                    statuses
+                        .iter()
+                        .find(|status| {
+                            status.registered
+                                && status
+                                    .accelerator
+                                    .parse::<Shortcut>()
+                                    .is_ok_and(|registered| &registered == shortcut)
+                        })
+                        .map(|status| status.action.clone())
+                });
+            if action.as_deref() == Some("pinned") {
+                println!("[hotkey] pinned-mode hotkey used");
                 let _ = app.emit("toggle-overlay-lock", ());
+                return;
+            }
+            let control = match action.as_deref() {
+                Some("next") => Some("next"),
+                Some("previous") => Some("previous"),
+                Some("playPause") => Some("play/pause"),
+                _ => None,
+            };
+            if let Some(action) = control {
+                println!("[hotkey] media hotkey used: {action}");
+                let action = action.to_string();
+                std::thread::spawn(move || match media::send_transport_control(&action) {
+                    Ok(accepted) => println!(
+                        "[media-control] Windows API received {action}; accepted={accepted}"
+                    ),
+                    Err(error) => eprintln!("[media-control] {action} failed: {error}"),
+                });
             }
         })
         .build();
@@ -291,8 +413,11 @@ pub fn run() {
         .plugin(shortcut_plugin)
         .invoke_handler(tauri::generate_handler![
             get_media_state,
+            get_hotkey_statuses,
+            register_hotkey,
             log_sync_diagnostic,
             fetch_lyrics,
+            cancel_lyrics_requests,
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
@@ -300,7 +425,46 @@ pub fn run() {
             show_settings_window,
             quit_app
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            let shortcuts = [
+                ("pinned", "Ctrl+Shift+KeyL", lock_shortcut),
+                ("next", "Ctrl+ArrowRight", next_shortcut),
+                ("previous", "Ctrl+ArrowLeft", previous_shortcut),
+                ("playPause", "Ctrl+Shift+Space", pause_shortcut),
+            ];
+            let statuses = shortcuts
+                .into_iter()
+                .map(|(action, accelerator, shortcut)| {
+                    match app.global_shortcut().register(shortcut) {
+                        Ok(()) => {
+                            println!("[hotkey] registered {accelerator} for {action}");
+                            HotkeyStatus {
+                                action: action.into(),
+                                accelerator: accelerator.into(),
+                                registered: true,
+                                error: None,
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[hotkey] unable to register {accelerator} for {action}: {error}"
+                            );
+                            HotkeyStatus {
+                                action: action.into(),
+                                accelerator: accelerator.into(),
+                                registered: false,
+                                error: Some(error.to_string()),
+                            }
+                        }
+                    }
+                })
+                .collect();
+            if let Ok(mut stored) = HOTKEY_STATUSES
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+            {
+                *stored = statuses;
+            }
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -751,6 +915,24 @@ mod media {
 
     fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
         let _ = app.emit("media-state-changed", reason);
+    }
+
+    pub fn send_transport_control(action: &str) -> windows::core::Result<bool> {
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let session = selected_session().or_else(|| manager.GetCurrentSession().ok());
+        let Some(session) = session else {
+            println!(
+                "[media-control] {action} requested, but no Windows media session is available"
+            );
+            return Ok(false);
+        };
+        println!("[media-control] sending {action} to Windows media session");
+        match action {
+            "next" => session.TrySkipNextAsync()?.get(),
+            "previous" => session.TrySkipPreviousAsync()?.get(),
+            "play/pause" => session.TryTogglePlayPauseAsync()?.get(),
+            _ => Ok(false),
+        }
     }
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
@@ -1205,19 +1387,18 @@ mod romanization {
 }
 
 mod lyrics {
-    use super::{LrclibLyrics, LyricsResult};
+    use super::{LrclibLyrics, LyricsResult, LATEST_LYRICS_REQUEST};
     use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    const REQUEST_ATTEMPTS: u8 = 2;
-
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
+        request_id: u64,
     ) -> Result<Option<LyricsResult>, String> {
-        search(http_client()?, title, artist, duration_ms).await
+        search(http_client()?, title, artist, duration_ms, request_id).await
     }
 
     fn http_client() -> Result<&'static reqwest::Client, String> {
@@ -1245,6 +1426,7 @@ mod lyrics {
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
+        request_id: u64,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{title} {artist}");
         let broad_url = format!(
@@ -1257,10 +1439,23 @@ mod lyrics {
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
-        let (structured_result, broad_result) = tokio::join!(
-            fetch_candidates(client, structured_url, "structured"),
-            fetch_candidates(client, broad_url, "broad")
-        );
+        let searches = async {
+            tokio::join!(
+                fetch_candidates(client, structured_url, "structured"),
+                fetch_candidates(client, broad_url, "broad")
+            )
+        };
+        tokio::pin!(searches);
+        let (structured_result, broad_result) = loop {
+            tokio::select! {
+                results = &mut searches => break results,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    if LATEST_LYRICS_REQUEST.load(std::sync::atomic::Ordering::Acquire) != request_id {
+                        return Err("lyrics request superseded".to_string());
+                    }
+                }
+            }
+        };
         let (mut results, search_type) = match (structured_result, broad_result) {
             (Ok(structured), Ok(broad)) => {
                 (merge_candidates(broad, structured), "structured + broad")
@@ -1340,7 +1535,7 @@ mod lyrics {
             .await
             .map_err(|error| format!("{search_type} search: {error}"))?;
         println!(
-            "[latency] LRCLIB {search_type} headers={}ms body={}ms candidates={}",
+            "[network] LRCLIB {search_type} succeeded status={status} headers={}ms body={}ms candidates={}",
             headers_received_at
                 .duration_since(request_started_at)
                 .as_millis(),
@@ -1355,22 +1550,10 @@ mod lyrics {
         url: &str,
         search_type: &str,
     ) -> Result<reqwest::Response, String> {
-        for attempt in 1..=REQUEST_ATTEMPTS {
-            match client.get(url).send().await {
-                Ok(response) => return Ok(response),
-                Err(error) => {
-                    println!(
-                        "[lyrics] {search_type} request attempt {attempt}/{REQUEST_ATTEMPTS} failed: {error:?}"
-                    );
-                    if attempt == REQUEST_ATTEMPTS || (!error.is_connect() && !error.is_timeout()) {
-                        return Err(format!("{search_type} search: {error}"));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-                }
-            }
-        }
-
-        unreachable!("the request loop always returns")
+        client.get(url).send().await.map_err(|error| {
+            println!("[lyrics] {search_type} request failed: {error:?}");
+            format!("{search_type} search: {error}")
+        })
     }
 
     fn normalize(value: &str) -> String {
