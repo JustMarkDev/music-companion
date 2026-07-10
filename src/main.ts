@@ -244,7 +244,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <label for="click-through-hotkey">Toggle Pinned Mode</label>
           <input id="click-through-hotkey" type="text" value="Ctrl+Shift+L" readonly />
         </div>
-        <button class="save-settings" id="settings-save">Salva e chiudi</button>
         <button class="clear-cache-button" id="clear-lyrics-cache">Clear cache</button>
         <p class="app-version">Versione ${packageJson.version}</p>
       </aside>
@@ -322,8 +321,6 @@ function wireUi() {
   document.querySelector("#settings-close")?.addEventListener("click", () => {
     closeSettings();
   });
-
-  document.querySelector("#settings-save")?.addEventListener("click", closeSettings);
 
   document.querySelector("#minimize")?.addEventListener("click", () => {
     void safeWindowAction(() => appWindow?.minimize());
@@ -1220,8 +1217,10 @@ function updateLyricDom() {
 }
 
 function getLyricsRenderKey() {
+  const romanizedMode = settings.romanizedLyrics ? "romanized" : "original";
+
   if (!currentMedia.hasSession) {
-    return "no-session";
+    return `no-session:${romanizedMode}`;
   }
 
   if (
@@ -1232,14 +1231,14 @@ function getLyricsRenderKey() {
     lyricsMode === "instrumental" ||
     lyricsMode === "excluded"
   ) {
-    return `${lyricsMode}:${currentTrackKey}`;
+    return `${lyricsMode}:${currentTrackKey}:${romanizedMode}`;
   }
 
   if (lyricsLines.length === 0) {
-    return `missing:${currentTrackKey}`;
+    return `missing:${currentTrackKey}:${romanizedMode}`;
   }
 
-  return `${lyricsMode}:${lyricsLines
+  return `${lyricsMode}:${romanizedMode}:${lyricsLines
     .map((line) => `${line.timeMs ?? "x"}:${line.text}:${line.words.length}`)
     .join("|")}`;
 }

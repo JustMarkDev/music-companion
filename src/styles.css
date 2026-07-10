@@ -618,20 +618,6 @@ input[type="checkbox"] {
   accent-color: var(--settings-accent);
 }
 
-.save-settings {
-  min-height: 40px;
-  padding: 9px 14px;
-  color: #07110f;
-  font-weight: 750;
-  background: var(--settings-accent);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.save-settings:hover {
-  filter: brightness(1.08);
-}
-
 .app-version {
   margin: -2px 0 0;
   color: var(--muted);
