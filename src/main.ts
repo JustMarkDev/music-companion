@@ -182,8 +182,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
       </header>
 
-      <div class="status-strip" id="status-strip" hidden></div>
-
       <section class="lyrics-viewport" id="lyrics-viewport" aria-live="polite">
         <div class="lyrics-list" id="lyrics-list"></div>
       </section>
@@ -379,10 +377,9 @@ function wireUi() {
     if (open) {
       try {
         await expandWindowForCompactMenu();
-      } catch (error) {
+      } catch {
         if (compactMenu) compactMenu.hidden = true;
         compactMenuToggle?.setAttribute("aria-expanded", "false");
-        showStatus(`Window menu failed: ${String(error)}`);
       }
     } else {
       await restoreWindowAfterCompactMenu();
@@ -393,9 +390,7 @@ function wireUi() {
     compactMenuTransition = compactMenuTransition
       .catch(() => undefined)
       .then(() => applyCompactMenuOpen(open))
-      .catch((error) => {
-        showStatus(`Window menu failed: ${String(error)}`);
-      });
+      .catch(() => undefined);
     return compactMenuTransition;
   };
   compactMenuToggle?.addEventListener("click", (event) => {
@@ -589,7 +584,6 @@ async function pollMedia(reason = "manual") {
   if (pollInFlight) {
     pollQueued = true;
     if (pollStartedAtMs && performance.now() - pollStartedAtMs > 3000) {
-      showStatus("Waiting for Windows media session...");
     }
     return;
   }
@@ -600,7 +594,6 @@ async function pollMedia(reason = "manual") {
   try {
     if (!tauriAvailable) {
       renderChrome();
-      renderStatus();
       applyGradient();
       return;
     }
@@ -644,10 +637,8 @@ async function pollMedia(reason = "manual") {
 
     renderChrome();
     renderLyrics();
-    renderStatus();
     applyGradient();
-  } catch (error) {
-    showStatus(`Media bridge error: ${String(error)}`);
+  } catch {
   } finally {
     pollInFlight = false;
     pollStartedAtMs = 0;
@@ -725,13 +716,12 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     if (currentTrackKey === key) {
       applyLyrics(result);
     }
-  } catch (error) {
+  } catch {
     if (currentTrackKey === key) {
       lyricsLines = [];
       lyricsMode = "error";
       invalidateLyricsRender();
       renderLyrics();
-      showStatus(`Lyrics search failed: ${String(error)}`);
     }
   } finally {
     lyricRequests.delete(key);
@@ -1079,7 +1069,6 @@ function renderAll() {
   renderChrome();
   renderLyrics();
   renderSettings();
-  renderStatus();
   applyGradient();
 }
 
@@ -1299,18 +1288,6 @@ function renderSettingValues() {
     `${settings.lineSpacing}em`;
 }
 
-function renderStatus() {
-  const status = document.querySelector<HTMLElement>("#status-strip")!;
-  status.textContent = "";
-  status.hidden = true;
-}
-
-function showStatus(message: string) {
-  const status = document.querySelector<HTMLElement>("#status-strip")!;
-  status.textContent = message;
-  status.hidden = false;
-}
-
 function applySettings() {
   const root = document.documentElement;
   const overlay = document.querySelector<HTMLElement>("#overlay");
@@ -1344,17 +1321,13 @@ async function applyOverlayInteractivity() {
 async function safeWindowAction(action: () => Promise<void> | undefined) {
   try {
     await action();
-  } catch (error) {
-    showStatus(`Window action failed: ${String(error)}`);
-  }
+  } catch {}
 }
 
 async function safeInvoke(command: string, args?: Record<string, unknown>) {
   try {
     await invoke(command, args);
-  } catch (error) {
-    showStatus(`Window command failed: ${String(error)}`);
-  }
+  } catch {}
 }
 
 function logSync(event: string, details: Record<string, unknown>) {
