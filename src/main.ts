@@ -72,6 +72,7 @@ const DEFAULT_SETTINGS: SettingsState = {
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
 const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v1";
 const MAX_PERSISTED_LYRICS = 200;
+const INTRODUCTION_THRESHOLD_MS = 3_000;
 const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
 const LOOP_DETECTION_GRACE_MS = 1_000;
@@ -817,7 +818,13 @@ function parseLyrics(raw: string): LyricLine[] {
     }
   }
 
-  return finalizeLyricTimings(lines.sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0)));
+  const sortedLines = lines.sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0));
+  const firstTimedLine = sortedLines.find((line) => line.timeMs !== null);
+  if (firstTimedLine && firstTimedLine.timeMs! > INTRODUCTION_THRESHOLD_MS) {
+    sortedLines.unshift(createLyricLine(0, ""));
+  }
+
+  return finalizeLyricTimings(sortedLines);
 }
 
 function createLyricLine(timeMs: number | null, textWithWordTags: string): LyricLine {
