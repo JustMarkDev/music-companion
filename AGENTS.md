@@ -1,30 +1,35 @@
 # Agent Instructions
 
-## Project Context
+## Project Scope
 
-Music Companion is a Windows-only desktop lyrics overlay built with Tauri,
-TypeScript, Rust, Bun, and Vite+.
+Music Companion is a Windows 10/11 desktop lyrics overlay built with Tauri 2,
+TypeScript, Rust, Bun, and Vite+. Preserve Windows-only behavior and the current
+Tauri/frontend boundary unless a task explicitly changes them.
 
-## Development Workflow
+## Repository Navigation
 
-- Work on feature branches and keep changes scoped.
-- Prefer small, reviewable diffs over broad refactors.
-- Use pull requests as the main review and integration point.
-- State assumptions when a task depends on unclear product or technical
-  decisions.
-- Preserve existing behavior unless the requested change explicitly says
-  otherwise.
+- `src/main.ts`: overlay UI, settings, lyric parsing, and synchronization.
+- `src/styles.css`: overlay and settings presentation.
+- `src-tauri/src/lib.rs`: WMTC integration, LRCLIB access, tray behavior, updater,
+  and Tauri commands.
+- `src-tauri/tauri.conf.json`: windows, NSIS packaging, and updater configuration.
+- `.github/workflows/`: pull-request CI and approved tagged releases.
 
-## CI Policy
+## Setup and Development
 
-- CI should run on pull requests only.
-- Do not add push, schedule, issue, discussion, or deployment triggers to CI.
-- Draft pull requests are not expected to run CI.
-- Release workflows are limited to approved tagged releases.
+```powershell
+bun install --frozen-lockfile
+bun run tauri:dev
+```
 
-## Validation Commands
+Use Bun for frontend dependencies and scripts. Use the stable Rust MSVC toolchain
+for native code. Do not introduce another package manager or commit generated
+`dist/`, `node_modules/`, or `src-tauri/target/` output.
 
-Use the relevant commands before opening or updating a pull request:
+## Validation
+
+Run every check relevant to the changed area. Before opening or updating a pull
+request, run the complete suite when practical:
 
 ```powershell
 bun install --frozen-lockfile
@@ -40,16 +45,33 @@ cd src-tauri
 cargo audit
 ```
 
-For local formatting, run:
+For local formatting:
 
 ```powershell
 bun run format
 cargo fmt --manifest-path src-tauri/Cargo.toml
 ```
 
+A change is complete when applicable checks pass, user-visible behavior is
+documented, and no placeholder, credential, unrelated generated file, or
+unexplained behavior change remains.
+
+## Change and Approval Boundaries
+
+- Work on focused feature branches and keep diffs reviewable.
+- Preserve existing behavior unless the request explicitly changes it.
+- Discuss broad features, architecture changes, and migrations before implementation.
+- Obtain approval before adding or replacing dependencies; explain maintenance,
+  security, size, and compatibility tradeoffs.
+- Obtain approval before destructive data or Git operations, credential changes,
+  publishing, releases, or other external side effects.
+- Never commit signing keys, tokens, passwords, or other secret values.
+- CI runs only for non-draft pull requests and exposes one stable required gate.
+  Do not add push, schedule, issue, discussion, or deployment triggers to CI.
+
 ## Release Policy
 
-- Releases are based on version tags matching `v*`.
-- When explicitly asked to prepare or perform a release, do not create a
-  feature branch. Apply the release version bump directly on `main`, then tag
-  that `main` commit.
+Releases are approved GitHub releases built from tags matching `v*`. Release
+artifacts are signed Windows x86-64 NSIS installers and Tauri updater metadata.
+When explicitly asked to prepare or perform a release, apply the version bump on
+`main` and tag that commit; do not create a feature branch for release work.

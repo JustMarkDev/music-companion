@@ -37,9 +37,6 @@ jobs:
       - name: Build frontend
         run: bun run build
 
-      - name: Audit frontend dependencies
-        run: bun audit
-
   release:
     name: Build and publish Windows installers
     runs-on: windows-latest
@@ -63,27 +60,17 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
-
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Test Rust
-        run: cargo nextest run --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Test Rust documentation
         run: cargo test --manifest-path src-tauri/Cargo.toml --doc
 
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-
-      - name: Audit Rust dependencies
-        working-directory: src-tauri
-        run: cargo audit
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
