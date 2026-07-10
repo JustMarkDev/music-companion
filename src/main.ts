@@ -28,6 +28,7 @@ type LyricsResult = {
   duration: number | null;
   instrumental: boolean;
   syncedLyrics: string | null;
+  romanizedSyncedLyrics?: string | null;
   plainLyrics: string | null;
 };
 
@@ -41,6 +42,7 @@ type SettingsState = {
   blurIntensity: number;
   fontSize: number;
   lineSpacing: number;
+  romanizedLyrics: boolean;
   startAtLogin: boolean;
   accentMode: AccentMode;
   accentColor: string;
@@ -64,13 +66,14 @@ const DEFAULT_SETTINGS: SettingsState = {
   blurIntensity: 100,
   fontSize: 1.5,
   lineSpacing: 0.4,
+  romanizedLyrics: false,
   startAtLogin: false,
   accentMode: "dynamic",
   accentColor: "#22e6c7",
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
-const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v1";
+const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v3";
 const MAX_PERSISTED_LYRICS = 200;
 const INTRODUCTION_THRESHOLD_MS = 3_000;
 const POLLING_INTERVAL_MS = 2_000;
@@ -114,6 +117,7 @@ let settings = loadSettings();
 let currentMedia: MediaState = demoState;
 let currentTrackKey = "";
 let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
+let currentLyricsResult: LyricsResult | null = null;
 let activeLineIndex = 2;
 let lyricsMode:
   | "synced"
@@ -233,6 +237,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <label class="switch-row" for="start-login">
           <span>Start at login</span>
           <input id="start-login" type="checkbox" />
+        </label>
+        <label class="switch-row" for="romanized-lyrics">
+          <span>Romanized lyrics only</span>
+          <input id="romanized-lyrics" type="checkbox" />
         </label>
         <div class="setting-row hotkey-setting">
           <label for="click-through-hotkey">Toggle Pinned Mode</label>
@@ -459,6 +467,15 @@ function wireUi() {
     });
 
   document
+    .querySelector<HTMLInputElement>("#romanized-lyrics")
+    ?.addEventListener("change", (event) => {
+      settings.romanizedLyrics = (event.currentTarget as HTMLInputElement).checked;
+      saveSettings();
+      applyLyrics(currentLyricsResult);
+      renderLyrics();
+    });
+
+  document
     .querySelector<HTMLInputElement>("#start-login")
     ?.addEventListener("change", async (event) => {
       settings.startAtLogin = (event.currentTarget as HTMLInputElement).checked;
@@ -508,6 +525,8 @@ function wireWindowEvents() {
     settings = loadSettings();
     applySettings();
     renderSettings();
+    applyLyrics(currentLyricsResult);
+    renderLyrics();
   });
 }
 
@@ -720,6 +739,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
 }
 
 function applyLyrics(result: LyricsResult | null) {
+  currentLyricsResult = result;
   lyricsNotice = "";
   if (!result) {
     lyricsLines = [];
@@ -735,8 +755,12 @@ function applyLyrics(result: LyricsResult | null) {
     return;
   }
 
-  if (result.syncedLyrics) {
-    lyricsLines = parseLyrics(result.syncedLyrics);
+  const displayedLyrics =
+    settings.romanizedLyrics && result.romanizedSyncedLyrics
+      ? result.romanizedSyncedLyrics
+      : result.syncedLyrics;
+  if (displayedLyrics) {
+    lyricsLines = parseLyrics(displayedLyrics);
     lyricsMode = "synced";
     invalidateLyricsRender();
     return;
@@ -1251,6 +1275,7 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  document.querySelector<HTMLInputElement>("#romanized-lyrics")!.checked = settings.romanizedLyrics;
   document.querySelector<HTMLSelectElement>("#accent-mode")!.value = settings.accentMode;
   document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
   const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
@@ -1384,6 +1409,10 @@ function loadSettings(): SettingsState {
       ),
       fontSize,
       lineSpacing: loadLineSpacingSetting(loaded.lineSpacing, fontSize),
+      romanizedLyrics:
+        typeof loaded.romanizedLyrics === "boolean"
+          ? loaded.romanizedLyrics
+          : DEFAULT_SETTINGS.romanizedLyrics,
       startAtLogin:
         typeof loaded.startAtLogin === "boolean"
           ? loaded.startAtLogin
