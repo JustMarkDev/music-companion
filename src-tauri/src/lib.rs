@@ -32,6 +32,26 @@ struct MediaState {
     playing_session_count: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HotkeyStatus {
+    action: String,
+    accelerator: String,
+    registered: bool,
+    error: Option<String>,
+}
+
+static HOTKEY_STATUSES: OnceLock<Mutex<Vec<HotkeyStatus>>> = OnceLock::new();
+
+#[tauri::command]
+fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
+    HOTKEY_STATUSES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map(|statuses| statuses.clone())
+        .unwrap_or_default()
+}
+
 impl MediaState {
     fn no_session(status: &str) -> Self {
         Self {
@@ -265,17 +285,44 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 pub fn run() {
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
     use tauri_plugin_window_state::StateFlags;
 
     let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
     let shortcut_for_handler = lock_shortcut;
+    let next_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowRight);
+    let previous_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowLeft);
+    let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcut(lock_shortcut)
-        .expect("failed to register Ctrl+Shift+L")
         .with_handler(move |app, shortcut, event| {
-            if shortcut == &shortcut_for_handler && event.state() == ShortcutState::Pressed {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            if shortcut == &shortcut_for_handler {
+                println!("[hotkey] Ctrl+Shift+L used: toggling pinned mode");
                 let _ = app.emit("toggle-overlay-lock", ());
+                return;
+            }
+            let action = if shortcut == &next_shortcut {
+                Some("next")
+            } else if shortcut == &previous_shortcut {
+                Some("previous")
+            } else if shortcut == &pause_shortcut {
+                Some("play/pause")
+            } else {
+                None
+            };
+            if let Some(action) = action {
+                println!("[hotkey] media hotkey used: {action}");
+                let action = action.to_string();
+                std::thread::spawn(move || match media::send_transport_control(&action) {
+                    Ok(accepted) => println!(
+                        "[media-control] Windows API received {action}; accepted={accepted}"
+                    ),
+                    Err(error) => eprintln!("[media-control] {action} failed: {error}"),
+                });
             }
         })
         .build();
@@ -291,6 +338,7 @@ pub fn run() {
         .plugin(shortcut_plugin)
         .invoke_handler(tauri::generate_handler![
             get_media_state,
+            get_hotkey_statuses,
             log_sync_diagnostic,
             fetch_lyrics,
             get_start_at_login,
@@ -300,7 +348,46 @@ pub fn run() {
             show_settings_window,
             quit_app
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            let shortcuts = [
+                ("pinned", "Ctrl + Shift + L", lock_shortcut),
+                ("next", "Ctrl + Right Arrow", next_shortcut),
+                ("previous", "Ctrl + Left Arrow", previous_shortcut),
+                ("playPause", "Ctrl + Space", pause_shortcut),
+            ];
+            let statuses = shortcuts
+                .into_iter()
+                .map(|(action, accelerator, shortcut)| {
+                    match app.global_shortcut().register(shortcut) {
+                        Ok(()) => {
+                            println!("[hotkey] registered {accelerator} for {action}");
+                            HotkeyStatus {
+                                action: action.into(),
+                                accelerator: accelerator.into(),
+                                registered: true,
+                                error: None,
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[hotkey] unable to register {accelerator} for {action}: {error}"
+                            );
+                            HotkeyStatus {
+                                action: action.into(),
+                                accelerator: accelerator.into(),
+                                registered: false,
+                                error: Some(error.to_string()),
+                            }
+                        }
+                    }
+                })
+                .collect();
+            if let Ok(mut stored) = HOTKEY_STATUSES
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+            {
+                *stored = statuses;
+            }
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -751,6 +838,24 @@ mod media {
 
     fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
         let _ = app.emit("media-state-changed", reason);
+    }
+
+    pub fn send_transport_control(action: &str) -> windows::core::Result<bool> {
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let session = selected_session().or_else(|| manager.GetCurrentSession().ok());
+        let Some(session) = session else {
+            println!(
+                "[media-control] {action} requested, but no Windows media session is available"
+            );
+            return Ok(false);
+        };
+        println!("[media-control] sending {action} to Windows media session");
+        match action {
+            "next" => session.TrySkipNextAsync()?.get(),
+            "previous" => session.TrySkipPreviousAsync()?.get(),
+            "play/pause" => session.TryTogglePlayPauseAsync()?.get(),
+            _ => Ok(false),
+        }
     }
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
@@ -1340,7 +1445,7 @@ mod lyrics {
             .await
             .map_err(|error| format!("{search_type} search: {error}"))?;
         println!(
-            "[latency] LRCLIB {search_type} headers={}ms body={}ms candidates={}",
+            "[network] LRCLIB {search_type} succeeded status={status} headers={}ms body={}ms candidates={}",
             headers_received_at
                 .duration_since(request_started_at)
                 .as_millis(),

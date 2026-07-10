@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import { createIcons, Maximize2, Menu, Minus, Settings, X } from "lucide";
+import { createIcons, Maximize2, Menu, Minus, Settings, TriangleAlert, X } from "lucide";
 import packageJson from "../package.json";
 import "./styles.css";
 
@@ -19,6 +19,15 @@ type MediaState = {
   playbackRate: number | null;
   playingSessionCount: number;
 };
+
+type HotkeyStatus = {
+  action: string;
+  accelerator: string;
+  registered: boolean;
+  error: string | null;
+};
+
+let hotkeyStatuses: HotkeyStatus[] = [];
 
 type LyricsResult = {
   source: string;
@@ -302,7 +311,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="settings-card system-group">
             <div class="hotkey-setting">
               <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <kbd id="click-through-hotkey">Ctrl + Shift + L</kbd>
+              <span class="hotkey-value" data-hotkey-action="pinned"><kbd>Ctrl + Shift + L</kbd></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Next song</strong><small>Skip to the next track</small></span>
+              <span class="hotkey-value" data-hotkey-action="next"><kbd>Ctrl + Right Arrow</kbd></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Previous song</strong><small>Return to the previous track</small></span>
+              <span class="hotkey-value" data-hotkey-action="previous"><kbd>Ctrl + Left Arrow</kbd></span>
+            </div>
+            <div class="hotkey-setting">
+              <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
+              <span class="hotkey-value" data-hotkey-action="playPause"><kbd>Ctrl + Space</kbd></span>
             </div>
             <div class="cache-setting">
               <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
@@ -327,7 +348,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </main>
 `;
 
-createIcons({ icons: { Maximize2, Menu, Minus, Settings, X } });
+createIcons({ icons: { Maximize2, Menu, Minus, Settings, TriangleAlert, X } });
 if (isSettingsWindow) {
   document.body.classList.add("settings-window");
   settingsOpen = true;
@@ -336,6 +357,7 @@ if (isSettingsWindow) {
   applySettings();
   renderSettings();
   void syncSettingsAccent();
+  void loadHotkeyStatuses();
 } else {
   void initializeMainWindowGeometry();
   wireUi();
@@ -666,6 +688,7 @@ function wireWindowEvents() {
       applySettings();
       renderSettings();
       void syncSettingsAccent();
+      void loadHotkeyStatuses();
     });
     void listen("media-state-changed", () => void syncSettingsAccent());
     return;
@@ -691,6 +714,31 @@ function wireWindowEvents() {
     renderSettings();
     applyLyrics(currentLyricsResult);
     renderLyrics();
+  });
+}
+
+async function loadHotkeyStatuses() {
+  if (!tauriAvailable) return;
+  try {
+    hotkeyStatuses = await invoke<HotkeyStatus[]>("get_hotkey_statuses");
+    renderHotkeyStatuses();
+  } catch (error) {
+    console.error("Unable to load global hotkey statuses", error);
+  }
+}
+
+function renderHotkeyStatuses() {
+  document.querySelectorAll<HTMLElement>("[data-hotkey-action]").forEach((element) => {
+    const status = hotkeyStatuses.find((item) => item.action === element.dataset.hotkeyAction);
+    element.querySelector(".hotkey-warning")?.remove();
+    if (!status || status.registered) return;
+    const warning = document.createElement("span");
+    warning.className = "hotkey-warning";
+    warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
+    warning.setAttribute("aria-label", warning.title);
+    warning.innerHTML = '<i data-lucide="triangle-alert" aria-hidden="true"></i>';
+    element.prepend(warning);
+    createIcons({ icons: { TriangleAlert } });
   });
 }
 
@@ -1464,6 +1512,7 @@ function renderSettings() {
     .querySelector<HTMLElement>("#manual-accent-controls")
     ?.classList.toggle("disabled", !manualAccent);
   renderSettingValues();
+  renderHotkeyStatuses();
 }
 
 function renderSettingValues() {

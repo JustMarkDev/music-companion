@@ -807,6 +807,24 @@ input[type="text"][readonly] {
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.2);
 }
 
+.hotkey-value {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hotkey-warning {
+  display: inline-flex;
+  color: #f6bd55;
+  cursor: help;
+}
+
+.hotkey-warning svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.25;
+}
+
 .switch-row {
   position: relative;
   cursor: pointer;
