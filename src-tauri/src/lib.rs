@@ -123,6 +123,12 @@ impl MediaState {
 }
 
 static MEDIA_QUERY_RUNNING: AtomicBool = AtomicBool::new(false);
+static LATEST_LYRICS_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[tauri::command]
+fn cancel_lyrics_requests(request_id: u64) {
+    LATEST_LYRICS_REQUEST.fetch_max(request_id, Ordering::AcqRel);
+}
 static MEDIA_CACHE: OnceLock<Mutex<Option<MediaState>>> = OnceLock::new();
 const MEDIA_QUERY_WAIT: Duration = Duration::from_millis(650);
 
@@ -267,9 +273,15 @@ async fn fetch_lyrics(
     title: String,
     artist: String,
     duration_ms: Option<u64>,
+    request_id: u64,
 ) -> Result<Option<LyricsResult>, String> {
+    LATEST_LYRICS_REQUEST.fetch_max(request_id, Ordering::AcqRel);
     let started_at = Instant::now();
-    let result = lyrics::fetch_lyrics(&title, &artist, duration_ms).await;
+    let result = lyrics::fetch_lyrics(&title, &artist, duration_ms, request_id).await;
+    if matches!(&result, Err(error) if error == "lyrics request superseded") {
+        println!("[lyrics] cancelled superseded request id={request_id} title={title:?}");
+        return result;
+    }
     let duration_seconds = duration_ms.map(|value| value as f64 / 1_000.0);
     println!(
         "[latency] lyrics total={}ms title={title:?} artist={artist:?} duration_seconds={duration_seconds:?} found={}",
@@ -405,6 +417,7 @@ pub fn run() {
             register_hotkey,
             log_sync_diagnostic,
             fetch_lyrics,
+            cancel_lyrics_requests,
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
@@ -1374,19 +1387,18 @@ mod romanization {
 }
 
 mod lyrics {
-    use super::{LrclibLyrics, LyricsResult};
+    use super::{LrclibLyrics, LyricsResult, LATEST_LYRICS_REQUEST};
     use std::collections::HashSet;
     use std::sync::OnceLock;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    const REQUEST_ATTEMPTS: u8 = 2;
-
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
+        request_id: u64,
     ) -> Result<Option<LyricsResult>, String> {
-        search(http_client()?, title, artist, duration_ms).await
+        search(http_client()?, title, artist, duration_ms, request_id).await
     }
 
     fn http_client() -> Result<&'static reqwest::Client, String> {
@@ -1414,6 +1426,7 @@ mod lyrics {
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
+        request_id: u64,
     ) -> Result<Option<LyricsResult>, String> {
         let query = format!("{title} {artist}");
         let broad_url = format!(
@@ -1426,10 +1439,23 @@ mod lyrics {
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
-        let (structured_result, broad_result) = tokio::join!(
-            fetch_candidates(client, structured_url, "structured"),
-            fetch_candidates(client, broad_url, "broad")
-        );
+        let searches = async {
+            tokio::join!(
+                fetch_candidates(client, structured_url, "structured"),
+                fetch_candidates(client, broad_url, "broad")
+            )
+        };
+        tokio::pin!(searches);
+        let (structured_result, broad_result) = loop {
+            tokio::select! {
+                results = &mut searches => break results,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    if LATEST_LYRICS_REQUEST.load(std::sync::atomic::Ordering::Acquire) != request_id {
+                        return Err("lyrics request superseded".to_string());
+                    }
+                }
+            }
+        };
         let (mut results, search_type) = match (structured_result, broad_result) {
             (Ok(structured), Ok(broad)) => {
                 (merge_candidates(broad, structured), "structured + broad")
@@ -1524,22 +1550,10 @@ mod lyrics {
         url: &str,
         search_type: &str,
     ) -> Result<reqwest::Response, String> {
-        for attempt in 1..=REQUEST_ATTEMPTS {
-            match client.get(url).send().await {
-                Ok(response) => return Ok(response),
-                Err(error) => {
-                    println!(
-                        "[lyrics] {search_type} request attempt {attempt}/{REQUEST_ATTEMPTS} failed: {error:?}"
-                    );
-                    if attempt == REQUEST_ATTEMPTS || (!error.is_connect() && !error.is_timeout()) {
-                        return Err(format!("{search_type} search: {error}"));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-                }
-            }
-        }
-
-        unreachable!("the request loop always returns")
+        client.get(url).send().await.map_err(|error| {
+            println!("[lyrics] {search_type} request failed: {error:?}");
+            format!("{search_type} search: {error}")
+        })
     }
 
     fn normalize(value: &str) -> String {

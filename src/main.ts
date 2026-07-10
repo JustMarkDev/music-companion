@@ -134,7 +134,7 @@ const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
 const lyricCache = loadLyricsCache();
-const lyricRequests = new Map<string, Promise<LyricsResult | null>>();
+let lyricsRequestId = 0;
 let lyricCacheGeneration = 0;
 
 let settings = loadSettings();
@@ -942,6 +942,8 @@ async function pollMedia(reason = "manual") {
 
     if (nextTrackKey && nextTrackKey !== currentTrackKey) {
       currentTrackKey = nextTrackKey;
+      lyricsRequestId += 1;
+      void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
       void loadLyrics(currentMedia, nextTrackKey);
     }
 
@@ -1007,18 +1009,13 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   try {
     const cacheGeneration = lyricCacheGeneration;
     const startedAt = performance.now();
-    let request = lyricRequests.get(key);
-    if (!request) {
-      request = invoke<LyricsResult | null>("fetch_lyrics", {
-        title: media.title,
-        artist: media.artist,
-        durationMs: media.durationMs,
-      });
-      lyricRequests.set(key, request);
-    } else {
-      console.info("[latency] joined in-flight lyrics request", { key });
-    }
-    const result = await request;
+    const requestId = lyricsRequestId;
+    const result = await invoke<LyricsResult | null>("fetch_lyrics", {
+      title: media.title,
+      artist: media.artist,
+      durationMs: media.durationMs,
+      requestId,
+    });
     if (cacheGeneration === lyricCacheGeneration) {
       lyricCache.set(key, result);
       if (result) {
@@ -1040,8 +1037,6 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
       invalidateLyricsRender();
       renderLyrics();
     }
-  } finally {
-    lyricRequests.delete(key);
   }
 }
 
