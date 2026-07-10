@@ -1276,14 +1276,8 @@ function renderSettingValues() {
 
 function renderStatus() {
   const status = document.querySelector<HTMLElement>("#status-strip")!;
-  const messages = [];
-
-  if (currentMedia.playingSessionCount > 1) {
-    messages.push("Multiple players are active");
-  }
-
-  status.textContent = messages.join("  |  ");
-  status.hidden = messages.length === 0;
+  status.textContent = "";
+  status.hidden = true;
 }
 
 function showStatus(message: string) {

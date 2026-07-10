@@ -11,7 +11,6 @@ displays them in a transparent, always-on-top overlay.
   WMTC-compatible players.
 - Selects the current or actively playing media session and keeps following the
   selected player when more than one player is open.
-- Shows a warning when multiple players are actively playing at the same time.
 - Fetches synchronized lyrics from LRCLIB, with a broad fallback search when the
   structured lookup only returns unsynced lyrics.
 - Caches successful lyric lookups locally for faster repeat playback.
@@ -103,8 +102,7 @@ sessions.
 
 Music Companion prefers the active Windows media session, keeps the last track
 visible at its paused position when no session is available, and falls back to
-another playing session when needed. If two or more players are actively
-playing, the overlay shows **Multiple players are active**.
+another playing session when needed.
 
 Pause the players you do not want to follow, then change tracks or resume the
 target player so Windows publishes a fresh media event.
