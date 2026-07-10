@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { PhysicalSize } from "@tauri-apps/api/dpi";
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
 import { createIcons, Maximize2, Menu, Minus, Settings, X } from "lucide";
 import packageJson from "../package.json";
 import "./styles.css";
@@ -33,6 +33,7 @@ type LyricsResult = {
 };
 
 type AccentMode = "dynamic" | "manual";
+type BackdropMaterial = "mica" | "acrylic";
 
 const INSTRUMENTAL_BREAK_ICON = "♪";
 
@@ -46,6 +47,7 @@ type SettingsState = {
   startAtLogin: boolean;
   accentMode: AccentMode;
   accentColor: string;
+  backdropMaterial: BackdropMaterial;
 };
 
 type CachedLyrics = {
@@ -70,9 +72,11 @@ const DEFAULT_SETTINGS: SettingsState = {
   startAtLogin: false,
   accentMode: "dynamic",
   accentColor: "#22e6c7",
+  backdropMaterial: "acrylic",
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
+const MAIN_WINDOW_GEOMETRY_STORAGE_KEY = "music-companion-main-window-geometry-v2";
 const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v3";
 const MAX_PERSISTED_LYRICS = 200;
 const INTRODUCTION_THRESHOLD_MS = 3_000;
@@ -145,6 +149,8 @@ let resumeConfirmationTimer = 0;
 let pendingResumeConfirmation: { positionMs: number } | null = null;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
+let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
+let geometrySaveTimer = 0;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main class="shell">
@@ -188,65 +194,135 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <aside class="settings-panel" id="settings-panel" hidden>
         <div class="settings-header" id="settings-header">
-          <h2>Settings</h2>
+          <div class="settings-heading">
+            <h2>Settings</h2>
+            <p>Make the overlay feel at home on your desktop.</p>
+          </div>
           <button class="icon-button" id="settings-close" title="Close settings" aria-label="Close settings">
             <i data-lucide="x"></i>
           </button>
         </div>
-        <div class="setting-row">
-          <label class="range-label" for="opacity">
-            <span>Opacity</span>
-            <output id="opacity-value">99%</output>
-          </label>
-          <input id="opacity" type="range" min="0" max="100" step="1" />
-        </div>
-        <div class="setting-row">
-          <label class="range-label" for="blur-intensity">
-            <span>Blur intensity</span>
-            <output id="blur-intensity-value">100%</output>
-          </label>
-          <input id="blur-intensity" type="range" min="1" max="100" step="1" />
-        </div>
-        <div class="setting-row">
-          <label class="range-label" for="font-size">
-            <span>Lyric size</span>
-            <output id="font-size-value">1.5rem</output>
-          </label>
-          <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
-        </div>
-        <div class="setting-row">
-          <label class="range-label" for="line-spacing">
-            <span>Line spacing</span>
-            <output id="line-spacing-value">0.4em</output>
-          </label>
-          <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
-        </div>
-        <div class="setting-row accent-color-setting">
-          <label for="accent-mode">Accent color</label>
-          <select id="accent-mode">
-            <option value="dynamic">Dynamic</option>
-            <option value="manual">Manual</option>
-          </select>
-          <div class="manual-accent-controls" id="manual-accent-controls">
-            <input id="accent-color" type="color" aria-label="Choose accent color" />
-            <input id="accent-color-hex" type="text" inputmode="text" maxlength="7" aria-label="Accent color hex value" />
+
+        <section class="settings-section" aria-labelledby="appearance-title">
+          <div class="section-heading">
+            <h3 id="appearance-title">Appearance</h3>
+            <p>Fine-tune the overlay surface and typography.</p>
           </div>
-        </div>
-        <label class="switch-row" for="start-login">
-          <span>Start at login</span>
-          <input id="start-login" type="checkbox" />
-        </label>
-        <label class="switch-row" for="romanized-lyrics">
-          <span>Romanized lyrics only</span>
-          <input id="romanized-lyrics" type="checkbox" />
-        </label>
-        <div class="setting-row hotkey-setting">
-          <label for="click-through-hotkey">Toggle Pinned Mode</label>
-          <input id="click-through-hotkey" type="text" value="Ctrl+Shift+L" readonly />
-        </div>
-        <button class="clear-cache-button" id="clear-lyrics-cache">Clear cache</button>
-        <p class="app-version">Versione ${packageJson.version}</p>
+          <div class="settings-card range-group">
+            <div class="range-control">
+              <label class="range-label" for="opacity">
+                <span><strong>Opacity</strong><small>Overlay transparency</small></span>
+                <output id="opacity-value">99%</output>
+              </label>
+              <input id="opacity" type="range" min="0" max="100" step="1" />
+            </div>
+            <div class="range-control">
+              <label class="range-label" for="blur-intensity">
+                <span><strong>Blur intensity</strong><small>Background diffusion</small></span>
+                <output id="blur-intensity-value">100%</output>
+              </label>
+              <input id="blur-intensity" type="range" min="1" max="100" step="1" />
+            </div>
+            <div class="range-control">
+              <label class="range-label" for="font-size">
+                <span><strong>Lyric size</strong><small>Active and surrounding lines</small></span>
+                <output id="font-size-value">1.5rem</output>
+              </label>
+              <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
+            </div>
+            <div class="range-control">
+              <label class="range-label" for="line-spacing">
+                <span><strong>Line spacing</strong><small>Breathing room between lyrics</small></span>
+                <output id="line-spacing-value">0.4em</output>
+              </label>
+              <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="material-title">
+          <div class="section-heading">
+            <h3 id="material-title">Window material</h3>
+            <p>Choose the backdrop that best suits your system.</p>
+          </div>
+          <div class="settings-card material-setting">
+            <div class="segmented-control" id="backdrop-material" role="radiogroup" aria-label="Window material">
+              <button type="button" data-backdrop-material="mica" role="radio">Mica</button>
+              <button type="button" data-backdrop-material="acrylic" role="radio">Acrylic</button>
+            </div>
+            <p id="material-description">A rich Windows backdrop with subtle depth.</p>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="accent-title">
+          <div class="section-heading">
+            <h3 id="accent-title">Accent color</h3>
+            <p>Follow the current track or choose your own color.</p>
+          </div>
+          <div class="settings-card accent-color-setting">
+            <div class="segmented-control" id="accent-mode" role="radiogroup" aria-label="Accent color mode">
+              <button type="button" data-accent-mode="dynamic" role="radio">Dynamic</button>
+              <button type="button" data-accent-mode="manual" role="radio">Manual</button>
+            </div>
+            <div class="manual-accent-controls" id="manual-accent-controls">
+              <label class="color-swatch" title="Choose accent color">
+                <input id="accent-color" type="color" aria-label="Choose accent color" />
+                <span aria-hidden="true"></span>
+              </label>
+              <input id="accent-color-hex" type="text" inputmode="text" maxlength="7" spellcheck="false" aria-label="Accent color hex value" />
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="behavior-title">
+          <div class="section-heading">
+            <h3 id="behavior-title">Behavior</h3>
+            <p>Choose how Music Companion starts and displays lyrics.</p>
+          </div>
+          <div class="settings-card switch-group">
+            <label class="switch-row" for="start-login">
+              <span><strong>Start at login</strong><small>Launch automatically with Windows</small></span>
+              <input id="start-login" type="checkbox" role="switch" />
+              <span class="switch-control" aria-hidden="true"></span>
+            </label>
+            <div class="lyrics-mode-setting">
+              <span><strong>Lyrics script</strong><small>Choose the preferred lyric writing system</small></span>
+              <div class="segmented-control" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
+                <button type="button" data-lyrics-script="original" role="radio">Original</button>
+                <button type="button" data-lyrics-script="romanized" role="radio">Romanized</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="system-title">
+          <div class="section-heading">
+            <h3 id="system-title">System</h3>
+          </div>
+          <div class="settings-card system-group">
+            <div class="hotkey-setting">
+              <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
+              <kbd id="click-through-hotkey">Ctrl + Shift + L</kbd>
+            </div>
+            <div class="cache-setting">
+              <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
+              <button class="clear-cache-button" id="clear-lyrics-cache">Clear</button>
+            </div>
+          </div>
+        </section>
+
+        <p class="app-version">Music Companion · v${packageJson.version}</p>
       </aside>
+      <div class="resize-handles" aria-hidden="true">
+        <span data-resize-direction="North"></span>
+        <span data-resize-direction="East"></span>
+        <span data-resize-direction="South"></span>
+        <span data-resize-direction="West"></span>
+        <span data-resize-direction="NorthEast"></span>
+        <span data-resize-direction="SouthEast"></span>
+        <span data-resize-direction="SouthWest"></span>
+        <span data-resize-direction="NorthWest"></span>
+      </div>
     </section>
   </main>
 `;
@@ -259,7 +335,9 @@ if (isSettingsWindow) {
   wireWindowEvents();
   applySettings();
   renderSettings();
+  void syncSettingsAccent();
 } else {
+  void initializeMainWindowGeometry();
   wireUi();
   wireWindowEvents();
   applySettings();
@@ -269,7 +347,83 @@ if (isSettingsWindow) {
   startSyncLoop();
 }
 
+async function initializeMainWindowGeometry() {
+  if (!appWindow || isSettingsWindow) return;
+
+  try {
+    const stored = localStorage.getItem(MAIN_WINDOW_GEOMETRY_STORAGE_KEY);
+    const geometry = stored ? (JSON.parse(stored) as typeof mainWindowGeometry) : null;
+    if (isValidMainWindowGeometry(geometry)) {
+      mainWindowGeometry = geometry;
+      await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height));
+      await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y));
+    }
+  } catch {
+    localStorage.removeItem(MAIN_WINDOW_GEOMETRY_STORAGE_KEY);
+  }
+
+  if (!mainWindowGeometry) {
+    const [size, position] = await Promise.all([appWindow.innerSize(), appWindow.outerPosition()]);
+    const geometry = { width: size.width, height: size.height, x: position.x, y: position.y };
+    if (isValidMainWindowGeometry(geometry) && (geometry.width > 220 || geometry.height > 110)) {
+      mainWindowGeometry = geometry;
+      localStorage.setItem(MAIN_WINDOW_GEOMETRY_STORAGE_KEY, JSON.stringify(geometry));
+    }
+  }
+
+  await appWindow.onResized(({ payload }) => {
+    if (payload.width < 220 || payload.height < 110) return;
+    if (!mainWindowGeometry && payload.width === 220 && payload.height === 110) return;
+    const position = mainWindowGeometry ?? {
+      width: payload.width,
+      height: payload.height,
+      x: 0,
+      y: 0,
+    };
+    queueMainWindowGeometrySave({ ...position, width: payload.width, height: payload.height });
+  });
+  await appWindow.onMoved(({ payload }) => {
+    if (payload.x <= -10_000 || payload.y <= -10_000) return;
+    const size = mainWindowGeometry ?? { width: 520, height: 720, x: payload.x, y: payload.y };
+    queueMainWindowGeometrySave({ ...size, x: payload.x, y: payload.y });
+  });
+}
+
+function isValidMainWindowGeometry(
+  geometry: typeof mainWindowGeometry,
+): geometry is NonNullable<typeof mainWindowGeometry> {
+  return Boolean(
+    geometry &&
+    Number.isFinite(geometry.width) &&
+    Number.isFinite(geometry.height) &&
+    Number.isFinite(geometry.x) &&
+    Number.isFinite(geometry.y) &&
+    geometry.width >= 220 &&
+    geometry.height >= 110 &&
+    geometry.x > -10_000 &&
+    geometry.y > -10_000,
+  );
+}
+
+function queueMainWindowGeometrySave(geometry: NonNullable<typeof mainWindowGeometry>) {
+  mainWindowGeometry = geometry;
+  window.clearTimeout(geometrySaveTimer);
+  geometrySaveTimer = window.setTimeout(() => {
+    localStorage.setItem(MAIN_WINDOW_GEOMETRY_STORAGE_KEY, JSON.stringify(geometry));
+  }, 180);
+}
+
 function wireUi() {
+  document.querySelectorAll<HTMLElement>("[data-resize-direction]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      if (!appWindow || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const direction = handle.dataset.resizeDirection as ResizeDirection;
+      void safeWindowAction(() => appWindow.startResizeDragging(direction));
+    });
+  });
+
   const overlay = document.querySelector<HTMLElement>("#overlay");
   overlay?.addEventListener("pointermove", (event) => {
     const rect = overlay.getBoundingClientRect();
@@ -430,9 +584,23 @@ function wireUi() {
     applySettings();
   });
 
-  document.querySelector<HTMLSelectElement>("#accent-mode")?.addEventListener("change", (event) => {
-    settings.accentMode =
-      (event.currentTarget as HTMLSelectElement).value === "manual" ? "manual" : "dynamic";
+  document.querySelector("#accent-mode")?.addEventListener("click", (event) => {
+    const mode = (event.target as Element).closest<HTMLButtonElement>("[data-accent-mode]")?.dataset
+      .accentMode;
+    if (!mode) return;
+    settings.accentMode = mode === "manual" ? "manual" : "dynamic";
+    saveSettings();
+    applySettings();
+    renderSettings();
+    void syncSettingsAccent();
+  });
+
+  document.querySelector("#backdrop-material")?.addEventListener("click", (event) => {
+    const material = (event.target as Element).closest<HTMLButtonElement>(
+      "[data-backdrop-material]",
+    )?.dataset.backdropMaterial;
+    if (!material) return;
+    settings.backdropMaterial = material === "acrylic" ? "acrylic" : "mica";
     saveSettings();
     applySettings();
     renderSettings();
@@ -458,14 +626,16 @@ function wireUi() {
       renderSettings();
     });
 
-  document
-    .querySelector<HTMLInputElement>("#romanized-lyrics")
-    ?.addEventListener("change", (event) => {
-      settings.romanizedLyrics = (event.currentTarget as HTMLInputElement).checked;
-      saveSettings();
-      applyLyrics(currentLyricsResult);
-      renderLyrics();
-    });
+  document.querySelector("#lyrics-script")?.addEventListener("click", (event) => {
+    const script = (event.target as Element).closest<HTMLButtonElement>("[data-lyrics-script]")
+      ?.dataset.lyricsScript;
+    if (!script) return;
+    settings.romanizedLyrics = script === "romanized";
+    saveSettings();
+    applyLyrics(currentLyricsResult);
+    renderLyrics();
+    renderSettings();
+  });
 
   document
     .querySelector<HTMLInputElement>("#start-login")
@@ -495,7 +665,9 @@ function wireWindowEvents() {
       settings = loadSettings();
       applySettings();
       renderSettings();
+      void syncSettingsAccent();
     });
+    void listen("media-state-changed", () => void syncSettingsAccent());
     return;
   }
 
@@ -1263,8 +1435,25 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
-  document.querySelector<HTMLInputElement>("#romanized-lyrics")!.checked = settings.romanizedLyrics;
-  document.querySelector<HTMLSelectElement>("#accent-mode")!.value = settings.accentMode;
+  document.querySelectorAll<HTMLButtonElement>("[data-accent-mode]").forEach((button) => {
+    const selected = button.dataset.accentMode === settings.accentMode;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-checked", String(selected));
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-backdrop-material]").forEach((button) => {
+    const selected = button.dataset.backdropMaterial === settings.backdropMaterial;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-checked", String(selected));
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-lyrics-script]").forEach((button) => {
+    const selected = (button.dataset.lyricsScript === "romanized") === settings.romanizedLyrics;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-checked", String(selected));
+  });
+  document.querySelector<HTMLElement>("#material-description")!.textContent =
+    settings.backdropMaterial === "mica"
+      ? "A rich Windows backdrop with subtle depth."
+      : "A lighter translucent blur for lower-powered systems.";
   document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
   const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
   accentHex.value = settings.accentColor;
@@ -1285,6 +1474,16 @@ function renderSettingValues() {
   document.querySelector<HTMLOutputElement>("#font-size-value")!.value = `${settings.fontSize}rem`;
   document.querySelector<HTMLOutputElement>("#line-spacing-value")!.value =
     `${settings.lineSpacing}em`;
+  renderRangeProgress();
+}
+
+function renderRangeProgress() {
+  document.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((input) => {
+    const minimum = Number(input.min);
+    const maximum = Number(input.max);
+    const progress = ((Number(input.value) - minimum) / (maximum - minimum)) * 100;
+    input.style.setProperty("--range-progress", `${progress}%`);
+  });
 }
 
 function applySettings() {
@@ -1303,17 +1502,30 @@ function applySettings() {
   void applyOverlayInteractivity();
 }
 
+async function syncSettingsAccent() {
+  if (!tauriAvailable || !isSettingsWindow || settings.accentMode !== "dynamic") return;
+  try {
+    currentMedia = await invoke<MediaState>("get_media_state");
+    renderedGradientKey = "";
+    applyGradient();
+  } catch {}
+}
+
 async function applyOverlayInteractivity() {
-  if (!appWindow || isSettingsWindow) {
+  if (!appWindow) {
     return;
   }
+  await safeInvoke("set_window_material", {
+    material: settings.backdropMaterial,
+    intensity: settings.blurIntensity,
+  });
+  if (isSettingsWindow) return;
   try {
     await appWindow.setAlwaysOnTop(true);
   } catch {
     await safeInvoke("set_always_on_top", { enabled: true });
   }
 
-  await safeInvoke("set_overlay_blur", { intensity: settings.blurIntensity });
   await safeWindowAction(() => appWindow.setIgnoreCursorEvents(settings.clickThrough));
 }
 
@@ -1387,6 +1599,7 @@ function loadSettings(): SettingsState {
       accentColor: isHexColor(loaded.accentColor)
         ? normalizeHexColor(loaded.accentColor)
         : DEFAULT_SETTINGS.accentColor,
+      backdropMaterial: loaded.backdropMaterial === "mica" ? "mica" : "acrylic",
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

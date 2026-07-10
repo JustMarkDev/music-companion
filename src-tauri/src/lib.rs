@@ -225,11 +225,22 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
 }
 
 #[tauri::command]
-fn set_overlay_blur(app: tauri::AppHandle, intensity: u8) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Overlay window is unavailable".to_string())?;
-    persistent_backdrop::apply(&window, intensity.min(100))
+fn set_window_material(
+    app: tauri::AppHandle,
+    material: String,
+    intensity: u8,
+) -> Result<(), String> {
+    if material != "mica" && material != "acrylic" {
+        return Err("Unsupported window material".to_string());
+    }
+
+    for label in ["main", "settings"] {
+        let window = app
+            .get_webview_window(label)
+            .ok_or_else(|| format!("{label} window is unavailable"))?;
+        persistent_backdrop::apply(&window, intensity.min(100), &material)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -274,6 +285,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                .with_denylist(&["main"])
                 .build(),
         )
         .plugin(shortcut_plugin)
@@ -284,7 +296,7 @@ pub fn run() {
             get_start_at_login,
             set_start_at_login,
             set_always_on_top,
-            set_overlay_blur,
+            set_window_material,
             show_settings_window,
             quit_app
         ])
@@ -292,7 +304,7 @@ pub fn run() {
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = persistent_backdrop::apply(&window, 100) {
+                if let Err(error) = persistent_backdrop::apply(&window, 100, "acrylic") {
                     eprintln!("Failed to enable the persistent overlay backdrop: {error}");
                 }
                 overlay_z_order::start_monitor(window);
@@ -393,6 +405,9 @@ mod persistent_backdrop {
     const WCA_ACCENT_POLICY: u32 = 0x13;
     const ACCENT_DISABLED: u32 = 0;
     const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: u32 = 4;
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+    const DWMSBT_NONE: u32 = 1;
+    const DWMSBT_MAINWINDOW: u32 = 2;
 
     #[repr(C)]
     struct AccentPolicy {
@@ -411,10 +426,22 @@ mod persistent_backdrop {
 
     type SetWindowCompositionAttribute =
         unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
+    type DwmSetWindowAttribute = unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> i32;
 
-    pub fn apply(window: &WebviewWindow, intensity: u8) -> Result<(), String> {
+    pub fn apply(window: &WebviewWindow, intensity: u8, material: &str) -> Result<(), String> {
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
 
+        if material == "mica" {
+            set_acrylic(HWND(hwnd.0), 0)?;
+            set_dwm_backdrop(HWND(hwnd.0), DWMSBT_MAINWINDOW)
+                .or_else(|_| set_acrylic(HWND(hwnd.0), intensity))
+        } else {
+            let _ = set_dwm_backdrop(HWND(hwnd.0), DWMSBT_NONE);
+            set_acrylic(HWND(hwnd.0), intensity)
+        }
+    }
+
+    fn set_acrylic(hwnd: HWND, intensity: u8) -> Result<(), String> {
         // The documented Windows 11 Acrylic backdrop is disabled for inactive windows.
         // This composition attribute keeps the blur active, which is required for an overlay.
         unsafe {
@@ -446,8 +473,31 @@ mod persistent_backdrop {
                 size: mem::size_of::<AccentPolicy>(),
             };
 
-            if !set_window_composition_attribute(HWND(hwnd.0), &mut data).as_bool() {
+            if !set_window_composition_attribute(hwnd, &mut data).as_bool() {
                 return Err("SetWindowCompositionAttribute rejected the backdrop".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn set_dwm_backdrop(hwnd: HWND, backdrop_type: u32) -> Result<(), String> {
+        unsafe {
+            let dwmapi = LoadLibraryA(PCSTR(c"dwmapi.dll".as_ptr().cast()))
+                .map_err(|error| error.to_string())?;
+            let procedure = GetProcAddress(dwmapi, PCSTR(c"DwmSetWindowAttribute".as_ptr().cast()))
+                .ok_or_else(|| "DwmSetWindowAttribute is unavailable".to_string())?;
+            let set_window_attribute: DwmSetWindowAttribute = mem::transmute(procedure);
+            let result = set_window_attribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                &backdrop_type as *const _ as *const c_void,
+                mem::size_of::<u32>() as u32,
+            );
+            if result < 0 {
+                return Err(format!(
+                    "DwmSetWindowAttribute failed with HRESULT {result:#x}"
+                ));
             }
         }
 
