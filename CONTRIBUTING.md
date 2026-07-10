@@ -1,41 +1,35 @@
-# Contributing
+# Contributing to Music Companion
 
-Thanks for taking the time to improve Music Companion. Keep changes focused and
-reviewable, and preserve existing behavior unless the issue or pull request
-explicitly calls for a behavior change.
+Focused bug fixes, tests, documentation, accessibility improvements, and features
+within Music Companion's Windows lyrics-overlay scope are welcome.
 
 ## Before You Start
 
-- Use a feature branch.
-- Open or link an issue for substantial features, architecture changes, or broad
-  refactors.
-- State assumptions when a product or technical decision is unclear.
-- Keep pull requests scoped to one problem.
+- Open an issue before a large feature, architectural change, compatibility
+  change, or release-workflow change. Small focused fixes do not require one.
+- Explain the maintenance, security, size, and compatibility tradeoffs of any new
+  dependency.
+- Work on a focused branch and avoid unrelated formatting or refactoring.
 
-## Development Setup
+## Local Setup
 
-Music Companion is Windows-only.
-
-Prerequisites:
-
-- Windows 10 or Windows 11.
-- Bun and Node.js 20 or newer.
-- Rust stable with the MSVC Windows toolchain.
-- Microsoft WebView2 Runtime.
-
-Install dependencies and run the app:
-
-```powershell
-bun install
-bun run tauri:dev
-```
-
-## Validation
-
-Run the relevant checks before opening or updating a pull request:
+Use Windows 10 or 11 with Bun, Node.js 20 or newer, stable Rust with the MSVC
+toolchain, and Microsoft WebView2 Runtime.
 
 ```powershell
 bun install --frozen-lockfile
+bun run tauri:dev
+```
+
+## Making Changes
+
+Follow the existing TypeScript/Tauri architecture and preserve behavior unless
+the change intentionally alters it. Update tests and documentation when behavior
+changes.
+
+Before opening or updating a pull request, run the applicable checks:
+
+```powershell
 bun run check
 bun run lint
 bun run format:check
@@ -48,22 +42,17 @@ cd src-tauri
 cargo audit
 ```
 
-For local formatting, run:
-
-```powershell
-bun run format
-cargo fmt --manifest-path src-tauri/Cargo.toml
-```
-
 ## Pull Requests
 
-- CI runs on pull requests only.
-- Draft pull requests are not expected to run CI.
-- Keep diffs small enough to review comfortably.
-- Include testing notes in the pull request description.
-- Link the issue or discussion the pull request implements when applicable.
+- [ ] The change has a clear purpose and focused scope.
+- [ ] Applicable checks pass locally.
+- [ ] Tests cover new or changed behavior where practical.
+- [ ] Documentation reflects user-visible changes.
+- [ ] New dependencies are justified.
+- [ ] No credentials, secrets, unrelated generated files, or placeholders are included.
 
-## Release Notes
+CI runs for non-draft pull requests. Include validation notes and link the issue
+or discussion when one exists.
 
-Releases are based on approved version tags matching `v*`. Release workflow
-changes should stay limited to tagged release builds.
+Use short, imperative commit subjects. Conventional Commits, signed commits, a
+DCO, and a CLA are not required.

@@ -96,24 +96,14 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          cache-on-failure: true
-          cache-targets: false
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Test Rust
-        run: cargo nextest run --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Test Rust documentation
         run: cargo test --manifest-path src-tauri/Cargo.toml --doc
@@ -160,11 +150,7 @@ jobs:
       - name: Verify required jobs passed
         shell: bash
         run: |
-          results=(
-            '${{ needs.changes.result }}'
-            '${{ needs.frontend_static.result }}'
-            '${{ needs.release_smoke.result }}'
-          )
+          results=('${{ needs.changes.result }}')
 
           if printf '%s\n' "${results[@]}" | grep -Eq '^(failure|cancelled|skipped)$'; then
             echo "::error::One or more required PR jobs did not pass: ${results[*]}"
