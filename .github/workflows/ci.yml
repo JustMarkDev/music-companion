@@ -12,6 +12,7 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
+      frontend: ${{ steps.frontend_changes.outputs.changed }}
       rust: ${{ steps.rust_changes.outputs.changed }}
 
     steps:
@@ -33,9 +34,23 @@ jobs:
             echo "No Rust-relevant changes detected."
           fi
 
+      - name: Detect frontend changes
+        id: frontend_changes
+        shell: bash
+        run: |
+          if git diff --name-only '${{ github.event.pull_request.base.sha }}' '${{ github.event.pull_request.head.sha }}' \
+            | grep -Eq '^(src/|public/|index\.html$|package\.json$|bun\.lock$|vite\.config\.|tsconfig\.|\.github/workflows/ci\.yml$)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Frontend-relevant changes detected."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No frontend-relevant changes detected."
+          fi
+
   frontend_static:
     name: Frontend static checks
-    if: github.event.pull_request.draft == false
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: windows-latest
 
     steps:
@@ -59,6 +74,9 @@ jobs:
       - name: Check frontend formatting
         run: bun run format:check
 
+      - name: Audit frontend dependencies
+        run: bun audit
+
   rust_checks:
     name: Rust checks
     needs: changes
@@ -81,6 +99,9 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -100,9 +121,14 @@ jobs:
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: cargo audit
+
   release_smoke:
     name: Release smoke
-    if: github.event.pull_request.draft == false
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: windows-latest
 
     steps:
@@ -123,7 +149,7 @@ jobs:
   pr_checks:
     name: Pull request checks
     if: always() && github.event.pull_request.draft == false
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs:
       - changes
       - frontend_static
@@ -132,30 +158,43 @@ jobs:
 
     steps:
       - name: Verify required jobs passed
-        shell: pwsh
+        shell: bash
         run: |
-          $results = @(
-            '${{ needs.changes.result }}',
-            '${{ needs.frontend_static.result }}',
+          results=(
+            '${{ needs.changes.result }}'
+            '${{ needs.frontend_static.result }}'
             '${{ needs.release_smoke.result }}'
           )
 
-          if ($results -contains 'failure' -or $results -contains 'cancelled' -or $results -contains 'skipped') {
-            Write-Error "One or more required PR jobs did not pass: $($results -join ', ')"
+          if printf '%s\n' "${results[@]}" | grep -Eq '^(failure|cancelled|skipped)$'; then
+            echo "::error::One or more required PR jobs did not pass: ${results[*]}"
             exit 1
-          }
+          fi
 
-          $rustChanged = '${{ needs.changes.outputs.rust }}'
-          $rustResult = '${{ needs.rust_checks.result }}'
+          rust_changed='${{ needs.changes.outputs.rust }}'
+          rust_result='${{ needs.rust_checks.result }}'
+          frontend_changed='${{ needs.changes.outputs.frontend }}'
+          frontend_static_result='${{ needs.frontend_static.result }}'
+          release_smoke_result='${{ needs.release_smoke.result }}'
 
-          if ($rustChanged -eq 'true' -and $rustResult -ne 'success') {
-            Write-Error "Rust changes were detected, but Rust checks did not pass: $rustResult"
+          if [[ "$rust_changed" == 'true' && "$rust_result" != 'success' ]]; then
+            echo "::error::Rust changes were detected, but Rust checks did not pass: $rust_result"
             exit 1
-          }
+          fi
 
-          if ($rustChanged -eq 'false' -and $rustResult -ne 'skipped') {
-            Write-Error "No Rust changes were detected, but Rust checks had an unexpected result: $rustResult"
+          if [[ "$rust_changed" == 'false' && "$rust_result" != 'skipped' ]]; then
+            echo "::error::No Rust changes were detected, but Rust checks had an unexpected result: $rust_result"
             exit 1
-          }
+          fi
 
-          Write-Host "All required PR jobs passed."
+          if [[ "$frontend_changed" == 'true' && ( "$frontend_static_result" != 'success' || "$release_smoke_result" != 'success' ) ]]; then
+            echo "::error::Frontend changes were detected, but frontend checks did not pass: $frontend_static_result, $release_smoke_result"
+            exit 1
+          fi
+
+          if [[ "$frontend_changed" == 'false' && ( "$frontend_static_result" != 'skipped' || "$release_smoke_result" != 'skipped' ) ]]; then
+            echo "::error::No frontend changes were detected, but frontend checks had unexpected results: $frontend_static_result, $release_smoke_result"
+            exit 1
+          fi
+
+          echo "All required PR jobs passed."
