@@ -52,6 +52,58 @@ fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
         .unwrap_or_default()
 }
 
+#[tauri::command]
+fn register_hotkey(
+    app: tauri::AppHandle,
+    action: String,
+    accelerator: String,
+) -> Result<HotkeyStatus, String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+    let shortcut = accelerator
+        .parse::<Shortcut>()
+        .map_err(|error| format!("Invalid shortcut: {error}"))?;
+    let mut statuses = HOTKEY_STATUSES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map_err(|_| "Hotkey registry is unavailable".to_string())?;
+
+    if let Some(current) = statuses.iter().find(|status| status.action == action) {
+        if current.accelerator == accelerator && current.registered {
+            return Ok(current.clone());
+        }
+        if current.registered {
+            if let Ok(old_shortcut) = current.accelerator.parse::<Shortcut>() {
+                let _ = app.global_shortcut().unregister(old_shortcut);
+            }
+        }
+    }
+
+    let status = match app.global_shortcut().register(shortcut) {
+        Ok(()) => {
+            println!("[hotkey] registered {accelerator} for {action}");
+            HotkeyStatus {
+                action: action.clone(),
+                accelerator,
+                registered: true,
+                error: None,
+            }
+        }
+        Err(error) => {
+            eprintln!("[hotkey] unable to register {accelerator} for {action}: {error}");
+            HotkeyStatus {
+                action: action.clone(),
+                accelerator,
+                registered: false,
+                error: Some(error.to_string()),
+            }
+        }
+    };
+    statuses.retain(|item| item.action != action);
+    statuses.push(status.clone());
+    Ok(status)
+}
+
 impl MediaState {
     fn no_session(status: &str) -> Self {
         Self {
@@ -291,30 +343,41 @@ pub fn run() {
     use tauri_plugin_window_state::StateFlags;
 
     let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
-    let shortcut_for_handler = lock_shortcut;
     let next_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowRight);
     let previous_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowLeft);
-    let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
+    let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_handler(move |app, shortcut, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            if shortcut == &shortcut_for_handler {
-                println!("[hotkey] Ctrl+Shift+L used: toggling pinned mode");
+            let action = HOTKEY_STATUSES
+                .get()
+                .and_then(|statuses| statuses.lock().ok())
+                .and_then(|statuses| {
+                    statuses
+                        .iter()
+                        .find(|status| {
+                            status.registered
+                                && status
+                                    .accelerator
+                                    .parse::<Shortcut>()
+                                    .is_ok_and(|registered| &registered == shortcut)
+                        })
+                        .map(|status| status.action.clone())
+                });
+            if action.as_deref() == Some("pinned") {
+                println!("[hotkey] pinned-mode hotkey used");
                 let _ = app.emit("toggle-overlay-lock", ());
                 return;
             }
-            let action = if shortcut == &next_shortcut {
-                Some("next")
-            } else if shortcut == &previous_shortcut {
-                Some("previous")
-            } else if shortcut == &pause_shortcut {
-                Some("play/pause")
-            } else {
-                None
+            let control = match action.as_deref() {
+                Some("next") => Some("next"),
+                Some("previous") => Some("previous"),
+                Some("playPause") => Some("play/pause"),
+                _ => None,
             };
-            if let Some(action) = action {
+            if let Some(action) = control {
                 println!("[hotkey] media hotkey used: {action}");
                 let action = action.to_string();
                 std::thread::spawn(move || match media::send_transport_control(&action) {
@@ -339,6 +402,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_media_state,
             get_hotkey_statuses,
+            register_hotkey,
             log_sync_diagnostic,
             fetch_lyrics,
             get_start_at_login,
@@ -350,10 +414,10 @@ pub fn run() {
         ])
         .setup(move |app| {
             let shortcuts = [
-                ("pinned", "Ctrl + Shift + L", lock_shortcut),
-                ("next", "Ctrl + Right Arrow", next_shortcut),
-                ("previous", "Ctrl + Left Arrow", previous_shortcut),
-                ("playPause", "Ctrl + Space", pause_shortcut),
+                ("pinned", "Ctrl+Shift+KeyL", lock_shortcut),
+                ("next", "Ctrl+ArrowRight", next_shortcut),
+                ("previous", "Ctrl+ArrowLeft", previous_shortcut),
+                ("playPause", "Ctrl+Shift+Space", pause_shortcut),
             ];
             let statuses = shortcuts
                 .into_iter()
