@@ -345,7 +345,38 @@ fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    release_hotkeys_and_exit(&app);
+}
+
+fn release_hotkeys_and_exit(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    if let Err(error) = app.global_shortcut().unregister_all() {
+        eprintln!("[hotkey] unable to unregister shortcuts while quitting: {error}");
+    }
     app.exit(0);
+}
+
+fn retry_failed_hotkeys(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        for delay in [250, 750, 1_500] {
+            std::thread::sleep(Duration::from_millis(delay));
+            let failed = get_hotkey_statuses()
+                .into_iter()
+                .filter(|status| !status.registered)
+                .collect::<Vec<_>>();
+            if failed.is_empty() {
+                return;
+            }
+            for status in failed {
+                let _ = register_hotkey(
+                    app.clone(),
+                    status.action.clone(),
+                    status.accelerator.clone(),
+                );
+            }
+        }
+    });
 }
 
 pub fn run() {
@@ -465,6 +496,7 @@ pub fn run() {
             {
                 *stored = statuses;
             }
+            retry_failed_hotkeys(app.handle().clone());
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -523,7 +555,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     unlock_overlay(&window);
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => release_hotkeys_and_exit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -939,6 +971,7 @@ mod media {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
         let sessions = manager.GetSessions()?;
         let mut playing_count = 0;
+        let mut available = Vec::new();
 
         for index in 0..sessions.Size()? {
             let session = sessions.GetAt(index)?;
@@ -948,27 +981,24 @@ mod media {
             {
                 playing_count += 1;
             }
+            available.push(session);
         }
 
-        // Windows can clear its current session when the selected player is
-        // paused. Retain that session so the overlay can keep showing its
-        // lyrics at the paused position; an actively playing session still
-        // takes precedence below.
-        let retained = selected_session();
+        // Keep a valid selected music session even when another application
+        // starts playing. Browser videos frequently become Windows' current
+        // session, but must not replace the paused song or its lyrics.
+        let retained = selected_session().filter(session_is_available);
         let current = manager.GetCurrentSession().ok();
         let current_is_playing = current.as_ref().is_some_and(session_is_playing);
-        let mut selected = retained.or(current);
-
-        if !current_is_playing
-            && selected
-                .as_ref()
-                .is_none_or(|session| !session_is_playing(session))
-        {
-            selected = (0..sessions.Size()?).find_map(|index| {
-                let session = sessions.GetAt(index).ok()?;
-                session_is_playing(&session).then_some(session)
-            });
-        }
+        let playing = if current_is_playing {
+            current.clone()
+        } else {
+            available
+                .iter()
+                .find(|session| session_is_playing(session))
+                .cloned()
+        };
+        let selected = retained.or(playing).or(current);
 
         let Some(session) = selected else {
             store_selected_session(None);
@@ -1031,6 +1061,10 @@ mod media {
             .is_ok_and(|status| {
                 status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
             })
+    }
+
+    fn session_is_available(session: &GlobalSystemMediaTransportControlsSession) -> bool {
+        session.GetPlaybackInfo().is_ok()
     }
 
     fn timespan_to_ms(value: windows::Foundation::TimeSpan) -> u64 {
