@@ -270,7 +270,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <button type="button" data-backdrop-material="acrylic" role="radio">Acrylic</button>
               <button type="button" data-backdrop-material="mica" role="radio">Mica</button>
             </div>
-            <p id="material-description">A rich Windows backdrop with subtle depth.</p>
+            <p id="material-description">Live frosted-glass blur of windows behind the overlay.</p>
           </div>
         </section>
 
@@ -1595,8 +1595,8 @@ function renderSettings() {
   });
   document.querySelector<HTMLElement>("#material-description")!.textContent =
     settings.backdropMaterial === "mica"
-      ? "A rich Windows backdrop with subtle depth."
-      : "A lighter translucent blur for lower-powered systems.";
+      ? "Efficient opaque backdrop tinted from your desktop wallpaper."
+      : "Live frosted-glass blur of windows behind the overlay.";
   document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
   const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
   accentHex.value = settings.accentColor;
