@@ -83,11 +83,11 @@ type LyricLine = {
 
 const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,
-  opacity: 0.99,
+  opacity: 0,
   blurIntensity: 100,
-  fontSize: 1.5,
-  lineSpacing: 0.4,
-  romanizedLyrics: false,
+  fontSize: 1,
+  lineSpacing: 0.5,
+  romanizedLyrics: true,
   startAtLogin: false,
   accentMode: "dynamic",
   accentColor: "#22e6c7",
@@ -232,7 +232,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="range-control">
               <label class="range-label" for="opacity">
                 <span><strong>Opacity</strong><small>Overlay transparency</small></span>
-                <output id="opacity-value">99%</output>
+                <output id="opacity-value">0%</output>
               </label>
               <input id="opacity" type="range" min="0" max="100" step="1" />
             </div>
@@ -246,14 +246,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="range-control">
               <label class="range-label" for="font-size">
                 <span><strong>Lyric size</strong><small>Active and surrounding lines</small></span>
-                <output id="font-size-value">1.5rem</output>
+                <output id="font-size-value">1rem</output>
               </label>
               <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
             </div>
             <div class="range-control">
               <label class="range-label" for="line-spacing">
                 <span><strong>Line spacing</strong><small>Breathing room between lyrics</small></span>
-                <output id="line-spacing-value">0.4em</output>
+                <output id="line-spacing-value">0.5em</output>
               </label>
               <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
             </div>
@@ -267,8 +267,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="settings-card material-setting">
             <div class="segmented-control" id="backdrop-material" role="radiogroup" aria-label="Window material">
-              <button type="button" data-backdrop-material="mica" role="radio">Mica</button>
               <button type="button" data-backdrop-material="acrylic" role="radio">Acrylic</button>
+              <button type="button" data-backdrop-material="mica" role="radio">Mica</button>
             </div>
             <p id="material-description">A rich Windows backdrop with subtle depth.</p>
           </div>
