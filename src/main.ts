@@ -991,6 +991,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
 
   lyricsNotice = "";
   const key = trackKey(media);
+  const lyricsMetadata = normalizeLyricsMetadata(media);
   if (lyricCache.has(key)) {
     console.info("[latency] lyrics cache hit", { key });
     if (currentTrackKey === key) {
@@ -1011,8 +1012,8 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
     const startedAt = performance.now();
     const requestId = lyricsRequestId;
     const result = await invoke<LyricsResult | null>("fetch_lyrics", {
-      title: media.title,
-      artist: media.artist,
+      title: lyricsMetadata.title,
+      artist: lyricsMetadata.artist,
       durationMs: media.durationMs,
       requestId,
     });
@@ -1399,12 +1400,13 @@ function renderChrome() {
   renderedChromeKey = nextChromeKey;
   const title = document.querySelector("#title")!;
   const artist = document.querySelector("#artist")!;
+  const displayMetadata = currentMedia.hasSession ? normalizeDisplayMetadata(currentMedia) : null;
 
   const titleText = currentMedia.hasSession
-    ? currentMedia.title || "Unknown track"
+    ? displayMetadata?.title || "Unknown track"
     : "No media session";
   const artistText = currentMedia.hasSession
-    ? currentMedia.artist || "Unknown artist"
+    ? displayMetadata?.artist || "Unknown artist"
     : "Play something";
   title.textContent = titleText;
   title.setAttribute("title", titleText);
@@ -1853,7 +1855,75 @@ function trackKey(media: MediaState) {
   }
   // Album metadata is not stable across all WMTC providers and may briefly
   // disappear during a seek. It must not make the same track look new.
-  return `${normalizeTrackField(media.artist)}::${normalizeTrackField(media.title)}`;
+  const lyricsMetadata = normalizeLyricsMetadata(media);
+  return `${normalizeTrackField(lyricsMetadata.artist)}::${normalizeTrackField(lyricsMetadata.title)}`;
+}
+
+function normalizeLyricsMetadata(media: Pick<MediaState, "artist" | "title">) {
+  const artist = normalizeLyricsArtist(media.artist);
+  const title = media.title.trim();
+  const combinedTitle = title.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
+
+  if (!combinedTitle) {
+    return { artist, title };
+  }
+
+  const titleArtist = combinedTitle[1].trim();
+  const songTitle = combinedTitle[2].trim();
+  if (normalizeArtistComparison(titleArtist) !== normalizeArtistComparison(artist)) {
+    return { artist, title };
+  }
+
+  return { artist: titleArtist, title: songTitle };
+}
+
+function normalizeDisplayMetadata(media: Pick<MediaState, "artist" | "title">) {
+  const metadata = normalizeLyricsMetadata(media);
+  return { ...metadata, title: normalizeLyricsTitle(metadata.title) };
+}
+
+function normalizeLyricsTitle(title: string) {
+  let normalized = title.trim();
+  while (true) {
+    const labelStart = Math.max(normalized.lastIndexOf("("), normalized.lastIndexOf("["));
+    if (labelStart < 0) {
+      return normalized;
+    }
+    const closingBracket = normalized[labelStart] === "(" ? ")" : "]";
+    if (!normalized.endsWith(closingBracket)) {
+      return normalized;
+    }
+    const label = normalized.slice(labelStart + 1, -1);
+    if (!isVideoDescriptor(label)) {
+      return normalized;
+    }
+    normalized = normalized.slice(0, labelStart).trimEnd();
+  }
+}
+
+function isVideoDescriptor(label: string) {
+  const normalized = label.trim();
+  return (
+    /^(?:official\s+)?(?:(?:music|lyric(?:s)?|hd|4k)\s+)*video(?:\s+(?:hd|4k))?$/i.test(
+      normalized,
+    ) || /^(?:official\s+)?(?:audio|visuali[sz]er)$/i.test(normalized)
+  );
+}
+
+function normalizeLyricsArtist(artist: string) {
+  const syntheticChannel = /(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i.test(artist);
+  const normalized = artist.replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "").trim();
+  if (!syntheticChannel) {
+    return normalized;
+  }
+
+  return normalized
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2");
+}
+
+function normalizeArtistComparison(artist: string) {
+  return normalizeTrackField(artist).replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 function normalizeTrackField(value: string) {
