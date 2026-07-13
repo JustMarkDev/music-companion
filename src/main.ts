@@ -134,7 +134,9 @@ const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
 const lyricCache = loadLyricsCache();
-let lyricsRequestId = 0;
+// Rust survives frontend reloads during development, so keep request IDs newer
+// than any IDs issued by the previous WebView document.
+let lyricsRequestId = Date.now();
 let lyricCacheGeneration = 0;
 
 let settings = loadSettings();
@@ -1879,18 +1881,25 @@ function trackKey(media: MediaState) {
 function normalizeLyricsMetadata(media: Pick<MediaState, "artist" | "title">) {
   const artist = normalizeLyricsArtist(media.artist);
   const title = media.title.trim();
-  const combinedTitle = title.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
+  const normalizedTitle = normalizeLyricsTitle(title);
+  const combinedTitle = normalizedTitle.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
 
   if (!combinedTitle) {
-    return { artist, title };
+    return { artist, title: normalizedTitle };
   }
 
   const titleArtist = combinedTitle[1].trim();
   const songTitle = combinedTitle[2].trim();
-  if (normalizeArtistComparison(titleArtist) !== normalizeArtistComparison(artist)) {
-    return { artist, title };
+  const hasVideoDescriptor = normalizedTitle !== title;
+  if (
+    !hasVideoDescriptor &&
+    normalizeArtistComparison(titleArtist) !== normalizeArtistComparison(artist)
+  ) {
+    return { artist, title: normalizedTitle };
   }
 
+  // YouTube can expose a channel handle as the WMTC artist even though the
+  // human-readable artist is present in an official video's title.
   return { artist: titleArtist, title: songTitle };
 }
 
