@@ -1512,6 +1512,8 @@ mod lyrics {
             results.len()
         );
 
+        results.retain(|item| duration_matches(item.duration, duration_ms));
+
         let normalized_artist = normalize(artist);
         let normalized_title = canonical_title(title, &normalized_artist);
         results.sort_by_key(|item| {
@@ -1648,6 +1650,13 @@ mod lyrics {
 
         let candidate_ms = (candidate_seconds.max(0.0) * 1_000.0).round() as u64;
         candidate_ms.abs_diff(expected_ms)
+    }
+
+    fn duration_matches(candidate_seconds: Option<f64>, expected_ms: Option<u64>) -> bool {
+        const DURATION_TOLERANCE_MS: u64 = 3_000;
+
+        expected_ms.is_none()
+            || duration_difference_ms(candidate_seconds, expected_ms) <= DURATION_TOLERANCE_MS
     }
 
     fn has_synced_lyrics(candidate: &LrclibLyrics) -> bool {
@@ -1789,6 +1798,17 @@ mod lyrics {
 
             assert_eq!(keys[0], keys[1]);
             assert_eq!(keys[1], keys[2]);
+        }
+
+        #[test]
+        fn only_durations_within_three_seconds_are_eligible() {
+            assert!(duration_matches(Some(177.0), Some(180_000)));
+            assert!(duration_matches(Some(183.0), Some(180_000)));
+            assert!(!duration_matches(Some(176.999), Some(180_000)));
+            assert!(!duration_matches(Some(184.0), Some(180_000)));
+            assert!(!duration_matches(Some(215.0), Some(180_000)));
+            assert!(!duration_matches(None, Some(180_000)));
+            assert!(duration_matches(Some(215.0), None));
         }
 
         #[test]

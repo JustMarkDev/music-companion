@@ -978,10 +978,10 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   }
 
   const localNotice = getLocalLyricsNotice(media.title);
-  if (localNotice) {
+  if (localNotice === "Instrumental") {
     if (currentTrackKey === expectedTrackKey) {
       lyricsLines = [];
-      lyricsMode = localNotice === "Instrumental" ? "instrumental" : "excluded";
+      lyricsMode = "instrumental";
       lyricsNotice = localNotice;
       invalidateLyricsRender();
       renderLyrics();
@@ -994,7 +994,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   if (lyricCache.has(key)) {
     console.info("[latency] lyrics cache hit", { key });
     if (currentTrackKey === key) {
-      applyLyrics(lyricCache.get(key) ?? null);
+      applyLyrics(lyricCache.get(key) ?? null, localNotice);
     }
     return;
   }
@@ -1028,7 +1028,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
       found: Boolean(result),
     });
     if (currentTrackKey === key) {
-      applyLyrics(result);
+      applyLyrics(result, localNotice);
     }
   } catch {
     if (currentTrackKey === key) {
@@ -1040,12 +1040,15 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   }
 }
 
-function applyLyrics(result: LyricsResult | null) {
+function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null = null) {
+  const currentNotice = fallbackNotice ?? getLocalLyricsNotice(currentMedia.title);
+  const variantFallback = currentNotice === "Instrumental" ? null : currentNotice;
   currentLyricsResult = result;
   lyricsNotice = "";
   if (!result) {
     lyricsLines = [];
-    lyricsMode = "missing";
+    lyricsMode = variantFallback ? "excluded" : "missing";
+    lyricsNotice = variantFallback ?? "";
     invalidateLyricsRender();
     return;
   }
@@ -1070,14 +1073,15 @@ function applyLyrics(result: LyricsResult | null) {
 
   if (result.plainLyrics) {
     lyricsLines = [];
-    lyricsMode = "unsynced";
-    lyricsNotice = "No Synced Lyrics";
+    lyricsMode = variantFallback ? "excluded" : "unsynced";
+    lyricsNotice = variantFallback ?? "No Synced Lyrics";
     invalidateLyricsRender();
     return;
   }
 
   lyricsLines = [];
-  lyricsMode = "missing";
+  lyricsMode = variantFallback ? "excluded" : "missing";
+  lyricsNotice = variantFallback ?? "";
   invalidateLyricsRender();
 }
 
