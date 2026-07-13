@@ -1321,10 +1321,12 @@ function syncMediaClock(
       requestDurationMs: Math.round(requestDurationMs),
       track: `${media.artist} — ${media.title}`,
       status: media.status,
-      reportedPositionMs: media.positionMs,
-      livePositionMs: livePositionMs === null ? null : Math.round(livePositionMs),
+      reportedPositionMs: formatSyncTimestamp(media.positionMs),
+      livePositionMs: formatSyncTimestamp(
+        livePositionMs === null ? null : Math.round(livePositionMs),
+      ),
       differenceMs: livePositionMs === null ? null : Math.round(media.positionMs - livePositionMs),
-      selectedPositionMs: Math.round(pausedPositionMs),
+      selectedPositionMs: formatSyncTimestamp(Math.round(pausedPositionMs)),
       usedLivePosition: useLivePosition,
       toleranceMs: PAUSE_POSITION_TOLERANCE_MS,
     });
@@ -1491,10 +1493,10 @@ function updateSyncFrame() {
     const activeTimestampMs = activeLine?.timeMs ?? null;
     logSync("lyric line changed", {
       previousIndex: previousActiveLineIndex,
-      previousTimestampMs: previousLine?.timeMs ?? null,
+      previousTimestampMs: formatSyncTimestamp(previousLine?.timeMs ?? null),
       nextIndex: activeLineIndex,
-      nextTimestampMs: activeTimestampMs,
-      positionMs: Math.round(positionMs),
+      nextTimestampMs: formatSyncTimestamp(activeTimestampMs),
+      positionMs: formatSyncTimestamp(positionMs),
       timestampDeltaMs:
         activeTimestampMs === null ? null : Math.round(positionMs - activeTimestampMs),
       isPlaying: currentMedia.isPlaying,
@@ -1506,6 +1508,21 @@ function updateSyncFrame() {
   if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
     updateLyricDom();
   }
+}
+
+function formatSyncTimestamp(timestampMs: number | null) {
+  if (timestampMs === null) {
+    return null;
+  }
+
+  const normalizedTimestampMs = Math.max(0, Math.floor(timestampMs));
+  const totalSeconds = Math.floor(normalizedTimestampMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const milliseconds = normalizedTimestampMs % 1000;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}:${milliseconds
+    .toString()
+    .padStart(3, "0")}`;
 }
 
 function updateLyricDom() {
