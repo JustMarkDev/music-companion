@@ -12,10 +12,13 @@ Tauri window.
 - Handles plain lyrics, instrumental tracks, missing lyrics, and common track
   variants without silently presenting a poor match.
 - Normalizes browser metadata such as `- Topic`, `VEVO`, and matching
-  `Artist - Song` video titles before searching for lyrics.
+  `Artist - Song` titles for display and lyrics searches, while hiding trailing
+  official-video labels only in the overlay.
 - Caches successful lookups and restores overlay position, size, and settings.
 - Provides opacity, blur, typography, accent-color, start-at-login, and cache
   controls in a separate settings window.
+- Supports configurable global playback hotkeys, with a Windows media-key
+  fallback for browser sessions that decline next or previous commands.
 - Supports a global `Ctrl+Shift+L` click-through toggle and tray recovery.
 - Checks for signed updates in release builds.
 

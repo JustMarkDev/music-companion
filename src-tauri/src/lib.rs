@@ -422,12 +422,19 @@ pub fn run() {
             };
             if let Some(action) = control {
                 println!("[hotkey] media hotkey used: {action}");
+                let uses_same_media_key = shortcut.mods.is_empty()
+                    && matches!(
+                        (action, shortcut.key),
+                        ("next", Code::MediaTrackNext) | ("previous", Code::MediaTrackPrevious)
+                    );
                 let action = action.to_string();
-                std::thread::spawn(move || match media::send_transport_control(&action) {
-                    Ok(accepted) => println!(
-                        "[media-control] Windows API received {action}; accepted={accepted}"
-                    ),
-                    Err(error) => eprintln!("[media-control] {action} failed: {error}"),
+                std::thread::spawn(move || {
+                    match media::send_transport_control(&action, !uses_same_media_key) {
+                        Ok(accepted) => println!(
+                            "[media-control] Windows API received {action}; accepted={accepted}"
+                        ),
+                        Err(error) => eprintln!("[media-control] {action} failed: {error}"),
+                    }
                 });
             }
         })
@@ -844,6 +851,10 @@ mod media {
         GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
         PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
     };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK,
+    };
 
     const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
     static SELECTED_SESSION: OnceLock<Mutex<Option<GlobalSystemMediaTransportControlsSession>>> =
@@ -949,7 +960,10 @@ mod media {
         let _ = app.emit("media-state-changed", reason);
     }
 
-    pub fn send_transport_control(action: &str) -> windows::core::Result<bool> {
+    pub fn send_transport_control(
+        action: &str,
+        allow_media_key_fallback: bool,
+    ) -> windows::core::Result<bool> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
         let session = selected_session().or_else(|| manager.GetCurrentSession().ok());
         let Some(session) = session else {
@@ -959,11 +973,60 @@ mod media {
             return Ok(false);
         };
         println!("[media-control] sending {action} to Windows media session");
-        match action {
+        let accepted = match action {
             "next" => session.TrySkipNextAsync()?.get(),
             "previous" => session.TrySkipPreviousAsync()?.get(),
             "play/pause" => session.TryTogglePlayPauseAsync()?.get(),
             _ => Ok(false),
+        }?;
+
+        if accepted {
+            return Ok(true);
+        }
+
+        let media_key = match (action, allow_media_key_fallback) {
+            ("next", true) => Some(VK_MEDIA_NEXT_TRACK),
+            ("previous", true) => Some(VK_MEDIA_PREV_TRACK),
+            _ => None,
+        };
+        let Some(media_key) = media_key else {
+            return Ok(false);
+        };
+
+        println!("[media-control] Windows session declined {action}; sending media key fallback");
+        send_media_key(media_key)?;
+        Ok(true)
+    }
+
+    fn send_media_key(
+        key: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY,
+    ) -> windows::core::Result<()> {
+        let inputs = [
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: key,
+                        ..Default::default()
+                    },
+                },
+            },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: key,
+                        dwFlags: KEYEVENTF_KEYUP,
+                        ..Default::default()
+                    },
+                },
+            },
+        ];
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        if sent == inputs.len() as u32 {
+            Ok(())
+        } else {
+            Err(windows::core::Error::from_win32())
         }
     }
 

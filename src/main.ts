@@ -1400,12 +1400,13 @@ function renderChrome() {
   renderedChromeKey = nextChromeKey;
   const title = document.querySelector("#title")!;
   const artist = document.querySelector("#artist")!;
+  const displayMetadata = currentMedia.hasSession ? normalizeDisplayMetadata(currentMedia) : null;
 
   const titleText = currentMedia.hasSession
-    ? currentMedia.title || "Unknown track"
+    ? displayMetadata?.title || "Unknown track"
     : "No media session";
   const artistText = currentMedia.hasSession
-    ? currentMedia.artist || "Unknown artist"
+    ? displayMetadata?.artist || "Unknown artist"
     : "Play something";
   title.textContent = titleText;
   title.setAttribute("title", titleText);
@@ -1876,8 +1877,49 @@ function normalizeLyricsMetadata(media: Pick<MediaState, "artist" | "title">) {
   return { artist: titleArtist, title: songTitle };
 }
 
+function normalizeDisplayMetadata(media: Pick<MediaState, "artist" | "title">) {
+  const metadata = normalizeLyricsMetadata(media);
+  return { ...metadata, title: normalizeLyricsTitle(metadata.title) };
+}
+
+function normalizeLyricsTitle(title: string) {
+  let normalized = title.trim();
+  while (true) {
+    const labelStart = Math.max(normalized.lastIndexOf("("), normalized.lastIndexOf("["));
+    if (labelStart < 0) {
+      return normalized;
+    }
+    const closingBracket = normalized[labelStart] === "(" ? ")" : "]";
+    if (!normalized.endsWith(closingBracket)) {
+      return normalized;
+    }
+    const label = normalized.slice(labelStart + 1, -1);
+    if (!isVideoDescriptor(label)) {
+      return normalized;
+    }
+    normalized = normalized.slice(0, labelStart).trimEnd();
+  }
+}
+
+function isVideoDescriptor(label: string) {
+  const normalized = label.trim();
+  return (
+    /^(?:official\s+)?(?:(?:music|lyric(?:s)?|hd|4k)\s+)*video(?:\s+(?:hd|4k))?$/i.test(
+      normalized,
+    ) || /^(?:official\s+)?(?:audio|visuali[sz]er)$/i.test(normalized)
+  );
+}
+
 function normalizeLyricsArtist(artist: string) {
-  return artist.replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "").trim();
+  const syntheticChannel = /(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i.test(artist);
+  const normalized = artist.replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "").trim();
+  if (!syntheticChannel) {
+    return normalized;
+  }
+
+  return normalized
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2");
 }
 
 function normalizeArtistComparison(artist: string) {
