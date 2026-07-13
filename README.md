@@ -11,6 +11,8 @@ Tauri window.
 - Displays synchronized lyrics with smooth highlighting and scrolling.
 - Handles plain lyrics, instrumental tracks, missing lyrics, and common track
   variants without silently presenting a poor match.
+- Normalizes browser metadata such as `- Topic`, `VEVO`, and matching
+  `Artist - Song` video titles before searching for lyrics.
 - Caches successful lookups and restores overlay position, size, and settings.
 - Provides opacity, blur, typography, accent-color, start-at-login, and cache
   controls in a separate settings window.
