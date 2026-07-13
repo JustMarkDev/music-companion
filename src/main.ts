@@ -1709,7 +1709,7 @@ async function safeInvoke(command: string, args?: Record<string, unknown>) {
 }
 
 function logSync(event: string, details: Record<string, unknown>) {
-  const entry = { timestampMs: Math.round(performance.now()), ...details };
+  const entry = { timestampMs: formatSyncTimestamp(Math.round(performance.now())), ...details };
   if (!tauriAvailable) {
     console.info(`[sync] ${event}`, entry);
     return;
