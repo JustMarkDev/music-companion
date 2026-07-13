@@ -2374,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "music-companion"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "ib-romaji",
  "lindera",
