@@ -2,7 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import { createIcons, Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X } from "lucide";
+import {
+  CircleCheck,
+  createIcons,
+  Maximize2,
+  Menu,
+  Minus,
+  RotateCcw,
+  Settings,
+  TriangleAlert,
+  X,
+} from "lucide";
 import packageJson from "../package.json";
 import "./styles.css";
 
@@ -25,6 +35,7 @@ type HotkeyStatus = {
   accelerator: string;
   registered: boolean;
   error: string | null;
+  conflictAction: string | null;
 };
 
 let hotkeyStatuses: HotkeyStatus[] = [];
@@ -67,6 +78,13 @@ const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   next: "Ctrl+ArrowRight",
   previous: "Ctrl+ArrowLeft",
   playPause: "Ctrl+Shift+Space",
+};
+
+const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
+  pinned: "Pinned mode",
+  next: "Next song",
+  previous: "Previous song",
+  playPause: "Pause song",
 };
 
 type CachedLyrics = {
@@ -359,9 +377,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </section>
   </main>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
 `;
 
-createIcons({ icons: { Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X } });
+createIcons({
+  icons: { CircleCheck, Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X },
+});
 if (isSettingsWindow) {
   document.body.classList.add("settings-window");
   settingsOpen = true;
@@ -686,11 +707,53 @@ function wireUi() {
   document.querySelector("#clear-lyrics-cache")?.addEventListener("click", () => {
     clearLyricsCache();
     renderSettings();
+    showToast("Cache pulita", "I testi salvati sono stati rimossi.");
     if (tauriAvailable) {
       void emit("lyrics-cache-cleared");
     }
   });
   wireHotkeyInputs();
+}
+
+function showToast(title: string, description?: string, variant: "success" | "error" = "success") {
+  const region = document.querySelector<HTMLDivElement>("#toast-region");
+  if (!region) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${variant} toast-visible`;
+  toast.setAttribute("role", "status");
+  toast.innerHTML = `
+    <i class="toast-icon" data-lucide="${variant === "error" ? "triangle-alert" : "circle-check"}" aria-hidden="true"></i>
+    <div class="toast-content">
+      <p class="toast-title"></p>
+      ${description ? '<p class="toast-description"></p>' : ""}
+    </div>`;
+  toast.querySelector<HTMLElement>(".toast-title")!.textContent = title;
+  const descriptionElement = toast.querySelector<HTMLElement>(".toast-description");
+  if (descriptionElement) descriptionElement.textContent = description ?? "";
+  region.append(toast);
+  updateToastStack(region);
+  createIcons({ icons: { CircleCheck, TriangleAlert }, attrs: { "aria-hidden": "true" } });
+  window.setTimeout(() => {
+    toast.classList.add("toast-exiting");
+    updateToastStack(region);
+    const removeToast = () => {
+      toast.remove();
+      updateToastStack(region);
+    };
+    toast.addEventListener("transitionend", removeToast, { once: true });
+    window.setTimeout(removeToast, 250);
+  }, 3_000);
+}
+
+function updateToastStack(region: HTMLElement) {
+  const toasts = [...region.querySelectorAll<HTMLElement>(".toast:not(.toast-exiting)")].reverse();
+  toasts.forEach((toast, index) => {
+    toast.style.setProperty("--toast-offset", `${index * -7}px`);
+    toast.style.setProperty("--toast-scale", String(Math.max(0.9, 1 - index * 0.035)));
+    toast.style.setProperty("--toast-opacity", index < 3 ? "1" : "0");
+    toast.style.zIndex = String(toasts.length - index);
+  });
 }
 
 function wireHotkeyInputs() {
@@ -702,6 +765,7 @@ function wireHotkeyInputs() {
       pending = null;
       input.classList.add("recording");
       input.textContent = "Press shortcut…";
+      void safeInvoke("set_hotkey_recording", { recording: true });
     });
     input.addEventListener("keydown", (event) => {
       event.preventDefault();
@@ -715,16 +779,19 @@ function wireHotkeyInputs() {
       pending = keyboardEventToAccelerator(event);
       input.textContent = formatAccelerator(pending);
     });
-    input.addEventListener("keyup", (event) => {
+    input.addEventListener("keyup", async (event) => {
       event.preventDefault();
-      if (pending) void setHotkey(action, pending);
+      const accelerator = pending;
       pending = null;
+      if (accelerator) await setHotkey(action, accelerator);
       input.blur();
     });
-    input.addEventListener("blur", () => {
-      if (pending) void setHotkey(action, pending);
+    input.addEventListener("blur", async () => {
+      const accelerator = pending;
       pending = null;
+      if (accelerator) await setHotkey(action, accelerator);
       input.classList.remove("recording");
+      await safeInvoke("set_hotkey_recording", { recording: false });
       renderHotkeyStatuses();
     });
     row.querySelector<HTMLButtonElement>(".hotkey-reset")?.addEventListener("click", (event) => {
@@ -745,11 +812,49 @@ function keyboardEventToAccelerator(event: KeyboardEvent) {
 }
 
 async function setHotkey(action: HotkeyAction, accelerator: string, retryFailed = true) {
-  settings.hotkeys[action] = accelerator;
-  saveSettings();
-  if (tauriAvailable) {
+  if (!tauriAvailable) {
+    settings.hotkeys[action] = accelerator;
+    saveSettings();
+    renderHotkeyStatuses();
+    return;
+  }
+
+  try {
     const status = await invoke<HotkeyStatus>("register_hotkey", { action, accelerator });
-    hotkeyStatuses = [...hotkeyStatuses.filter((item) => item.action !== action), status];
+    if (status.registered) {
+      settings.hotkeys[action] = accelerator;
+      saveSettings();
+      hotkeyStatuses = [...hotkeyStatuses.filter((item) => item.action !== action), status];
+    } else if (retryFailed) {
+      const conflictingAction =
+        status.conflictAction ??
+        hotkeyStatuses.find(
+          (item) =>
+            item.action !== action && item.registered && item.accelerator === status.accelerator,
+        )?.action;
+      if (conflictingAction && conflictingAction in HOTKEY_ACTION_LABELS) {
+        showToast(
+          `Hotkey già registrata su ${HOTKEY_ACTION_LABELS[conflictingAction as HotkeyAction]}`,
+          undefined,
+          "error",
+        );
+      } else {
+        showToast(
+          "Hotkey non disponibile",
+          "La combinazione potrebbe essere utilizzata da un'altra applicazione.",
+          "error",
+        );
+      }
+    }
+  } catch (error) {
+    console.error("Unable to register global hotkey", error);
+    if (retryFailed) {
+      showToast(
+        "Hotkey non disponibile",
+        "Non è stato possibile aggiornare la scorciatoia.",
+        "error",
+      );
+    }
   }
   renderHotkeyStatuses();
   if (tauriAvailable && retryFailed) {
@@ -858,6 +963,7 @@ function openSettings() {
 }
 
 function closeSettings() {
+  void safeInvoke("set_hotkey_recording", { recording: false });
   if (isSettingsWindow && appWindow) {
     void safeWindowAction(() => appWindow.hide());
     return;

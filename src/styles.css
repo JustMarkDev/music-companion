@@ -935,6 +935,89 @@ input[type="text"][readonly] {
   border-color: rgba(255, 255, 255, 0.16);
 }
 
+.toast-region {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  z-index: 200;
+  width: min(340px, calc(100vw - 36px));
+  height: 72px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.toast {
+  --toast-offset: 0;
+  --toast-scale: 1;
+  --toast-opacity: 1;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 11px;
+  align-items: start;
+  padding: 13px 14px;
+  color: #f8fafc;
+  background: rgba(12, 15, 18, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 10px;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.38),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+  transform-origin: bottom center;
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.toast-visible {
+  opacity: var(--toast-opacity);
+  transform: translateY(var(--toast-offset)) scale(var(--toast-scale));
+}
+
+.toast-exiting {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+}
+
+.toast-icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--settings-accent);
+  stroke-width: 2.2;
+}
+
+.toast-error .toast-icon {
+  color: #fb7185;
+}
+
+.toast-content {
+  min-width: 0;
+}
+
+.toast-title,
+.toast-description {
+  margin: 0;
+}
+
+.toast-title {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.toast-description {
+  margin-top: 2px;
+  color: rgba(226, 232, 240, 0.62);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .app-version {
   margin: -2px 0 2px;
   color: rgba(193, 205, 213, 0.34);
@@ -1001,7 +1084,8 @@ input:focus-visible,
   .segmented-control button,
   .switch-control,
   .switch-control::after,
-  input[type="range"]::-webkit-slider-thumb {
+  input[type="range"]::-webkit-slider-thumb,
+  .toast {
     transition: none;
   }
 }

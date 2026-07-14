@@ -39,9 +39,11 @@ struct HotkeyStatus {
     accelerator: String,
     registered: bool,
     error: Option<String>,
+    conflict_action: Option<String>,
 }
 
 static HOTKEY_STATUSES: OnceLock<Mutex<Vec<HotkeyStatus>>> = OnceLock::new();
+static HOTKEY_RECORDING: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
@@ -50,6 +52,57 @@ fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
         .lock()
         .map(|statuses| statuses.clone())
         .unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_hotkey_recording(app: tauri::AppHandle, recording: bool) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let was_recording = HOTKEY_RECORDING.swap(recording, Ordering::AcqRel);
+    if recording {
+        if was_recording {
+            return Ok(());
+        }
+        if let Err(error) = app.global_shortcut().unregister_all() {
+            HOTKEY_RECORDING.store(false, Ordering::Release);
+            return Err(format!(
+                "Unable to suspend shortcuts while recording: {error}"
+            ));
+        }
+        return Ok(());
+    }
+
+    if !was_recording {
+        return Ok(());
+    }
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| format!("Unable to reset shortcuts after recording: {error}"))?;
+
+    let shortcuts_to_restore = {
+        let mut statuses = HOTKEY_STATUSES
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_| "Hotkey registry is unavailable".to_string())?;
+        let shortcuts = statuses
+            .iter()
+            .filter(|status| status.registered)
+            .cloned()
+            .collect::<Vec<_>>();
+        for status in &mut *statuses {
+            if status.registered {
+                status.registered = false;
+            }
+        }
+        shortcuts
+    };
+
+    for status in shortcuts_to_restore {
+        let _ = register_hotkey(app.clone(), status.action, status.accelerator);
+    }
+    let _ = app.emit("hotkey-statuses-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -68,10 +121,36 @@ fn register_hotkey(
         .lock()
         .map_err(|_| "Hotkey registry is unavailable".to_string())?;
 
-    if let Some(current) = statuses.iter().find(|status| status.action == action) {
+    let conflict_action = statuses
+        .iter()
+        .find(|status| {
+            status.action != action && status.registered && status.accelerator == accelerator
+        })
+        .map(|status| status.action.clone());
+    let current = statuses
+        .iter()
+        .find(|status| status.action == action)
+        .cloned();
+
+    if let Some(current) = &current {
         if current.accelerator == accelerator && current.registered {
             return Ok(current.clone());
         }
+    }
+
+    if let Some(conflict_action) = conflict_action {
+        return Ok(HotkeyStatus {
+            action,
+            accelerator,
+            registered: false,
+            error: Some(format!(
+                "Shortcut is already registered for {conflict_action}"
+            )),
+            conflict_action: Some(conflict_action),
+        });
+    }
+
+    if let Some(current) = &current {
         if current.registered {
             if let Ok(old_shortcut) = current.accelerator.parse::<Shortcut>() {
                 let _ = app.global_shortcut().unregister(old_shortcut);
@@ -87,16 +166,30 @@ fn register_hotkey(
                 accelerator,
                 registered: true,
                 error: None,
+                conflict_action: None,
             }
         }
         Err(error) => {
             eprintln!("[hotkey] unable to register {accelerator} for {action}: {error}");
-            HotkeyStatus {
+            let failed = HotkeyStatus {
                 action: action.clone(),
                 accelerator,
                 registered: false,
                 error: Some(error.to_string()),
+                conflict_action: None,
+            };
+            let rolled_back = current.as_ref().is_some_and(|current| {
+                current.registered
+                    && current
+                        .accelerator
+                        .parse::<Shortcut>()
+                        .is_ok_and(|shortcut| app.global_shortcut().register(shortcut).is_ok())
+            });
+            if !rolled_back {
+                statuses.retain(|item| item.action != action);
+                statuses.push(failed.clone());
             }
+            return Ok(failed);
         }
     };
     statuses.retain(|item| item.action != action);
@@ -394,6 +487,15 @@ pub fn run() {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
+            if HOTKEY_RECORDING.load(Ordering::Acquire) {
+                return;
+            }
+            if app
+                .get_webview_window("settings")
+                .is_some_and(|window| window.is_focused().unwrap_or(false))
+            {
+                return;
+            }
             let action = HOTKEY_STATUSES
                 .get()
                 .and_then(|statuses| statuses.lock().ok())
@@ -452,6 +554,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_media_state,
             get_hotkey_statuses,
+            set_hotkey_recording,
             register_hotkey,
             retry_failed_hotkeys,
             log_sync_diagnostic,
