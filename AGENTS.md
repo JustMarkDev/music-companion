@@ -1,77 +1,60 @@
-# Agent Instructions
+# Repository instructions
 
-## Project Scope
+## Repository scope
 
-Music Companion is a Windows 10/11 desktop lyrics overlay built with Tauri 2,
-TypeScript, Rust, Bun, and Vite+. Preserve Windows-only behavior and the current
-Tauri/frontend boundary unless a task explicitly changes them.
+Music Companion is a Windows 10/11 desktop lyrics overlay built with Tauri 2, TypeScript, Rust, Bun, and Vite+. Preserve Windows-only behavior and the current Tauri/frontend boundary unless a task explicitly changes them.
 
-## Repository Navigation
+- Relevant source areas: `src/`, `src-tauri/src/`, `src-tauri/tauri.conf.json`, and `.github/workflows/`.
+- Instruction precedence: follow this root guidance, then the closest applicable nested `AGENTS.md` or `AGENTS.override.md` for scoped work.
+- Scoped instruction files: none.
 
-- `src/main.ts`: overlay UI, settings, lyric parsing, and synchronization.
-- `src/styles.css`: overlay and settings presentation.
-- `src-tauri/src/lib.rs`: WMTC integration, LRCLIB access, tray behavior, updater,
-  and Tauri commands.
-- `src-tauri/tauri.conf.json`: windows, NSIS packaging, and updater configuration.
-- `.github/workflows/`: pull-request CI and approved tagged releases.
+## Repository navigation
 
-## Setup and Development
+| Path                            | Purpose                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `src/main.ts`                   | Overlay UI, settings, lyric parsing, and synchronization                    |
+| `src/styles.css`                | Overlay and settings presentation                                           |
+| `src-tauri/src/lib.rs`          | WMTC integration, LRCLIB access, tray behavior, updater, and Tauri commands |
+| `src-tauri/tauri.conf.json`     | Windows, NSIS packaging, and updater configuration                          |
+| `.github/workflows/release.yml` | Verification and publication for approved `v*` tags                         |
 
-```powershell
-bun install --frozen-lockfile
-bun run tauri:dev
-```
+## Verified commands
 
-Use Bun for frontend dependencies and scripts. Use the stable Rust MSVC toolchain
-for native code. Do not introduce another package manager or commit generated
-`dist/`, `node_modules/`, or `src-tauri/target/` output.
+Use Bun for frontend dependencies and scripts and stable Rust MSVC for native code.
 
-## Validation
+| Task                      | Command                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| Setup/install             | `bun install --frozen-lockfile`                                                                     |
+| Development               | `bun run tauri:dev`                                                                                 |
+| Test                      | `cargo test --manifest-path src-tauri/Cargo.toml`                                                   |
+| Lint                      | `bun run lint` and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` |
+| Format check              | `bun run format:check` and `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`              |
+| Format                    | `bun run format` and `cargo fmt --manifest-path src-tauri/Cargo.toml`                               |
+| Type-check                | `bun run check`                                                                                     |
+| Build                     | `bun run build`                                                                                     |
+| Package                   | `bun run tauri:build`                                                                               |
+| Dependency/security audit | `bun audit` and, from `src-tauri`, `cargo audit`                                                    |
+| Release                   | Apply the version bump on `main`, tag that commit with `v*`, and push the approved tag              |
 
-Run every check relevant to the changed area. Before opening or updating a pull
-request, run the complete suite when practical:
+## Architecture and dependency constraints
 
-```powershell
-bun install --frozen-lockfile
-bun run check
-bun run lint
-bun run format:check
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
-bun run build
-bun audit
-cd src-tauri
-cargo audit
-```
+- Keep Windows integration, networking, persistence, tray behavior, and updates in Rust; keep overlay and settings presentation in the frontend.
+- Do not introduce another package manager or commit generated `dist/`, `node_modules/`, or `src-tauri/target/` output.
+- Ask before adding or replacing a dependency, and explain its maintenance, security, size, licensing, and compatibility tradeoffs.
+- Do not add pull-request CI unless explicitly approved. Dependabot is not PR CI.
+- Releases are approved GitHub releases built from `v*` tags as signed Windows x86-64 NSIS installers with Tauri updater metadata. Release version bumps happen on `main`, not a feature branch.
 
-For local formatting:
+## Working and autonomy policy
 
-```powershell
-bun run format
-cargo fmt --manifest-path src-tauri/Cargo.toml
-```
+- For requests to answer, explain, review, diagnose, or plan, inspect the relevant materials and report the result. Do not implement changes unless the request also asks for them.
+- For requests to change, build, or fix, make the requested in-scope local changes and run relevant non-destructive validation without asking first.
+- Require confirmation before destructive operations, external writes, publishing, handling credentials, purchases, irreversible migrations, or a material expansion of scope.
+- Preserve user changes and unrelated work. Do not silently overwrite, revert, or reformat outside the requested scope.
 
-A change is complete when applicable checks pass, user-visible behavior is
-documented, and no placeholder, credential, unrelated generated file, or
-unexplained behavior change remains.
+## Verification and completion
 
-## Change and Approval Boundaries
-
-- Work on focused feature branches and keep diffs reviewable.
-- Preserve existing behavior unless the request explicitly changes it.
-- Discuss broad features, architecture changes, and migrations before implementation.
-- Obtain approval before adding or replacing dependencies; explain maintenance,
-  security, size, and compatibility tradeoffs.
-- Obtain approval before destructive data or Git operations, credential changes,
-  publishing, releases, or other external side effects.
-- Never commit signing keys, tokens, passwords, or other secret values.
-- CI runs only for non-draft pull requests and exposes one stable required gate.
-  Do not add push, schedule, issue, discussion, or deployment triggers to CI.
-
-## Release Policy
-
-Releases are approved GitHub releases built from tags matching `v*`. Release
-artifacts are signed Windows x86-64 NSIS installers and Tauri updater metadata.
-When explicitly asked to prepare or perform a release, apply the version bump on
-`main` and tag that commit; do not create a feature branch for release work.
+- Run targeted checks first, then every applicable repository-defined check above when practical.
+- Report checks that could not run and why.
+- Do not invent commands, claim unverified behavior, or declare completion while required work remains.
+- Update tests and documentation when observable behavior changes.
+- Leave no placeholder, credential, unrelated generated file, or unexplained behavior change.

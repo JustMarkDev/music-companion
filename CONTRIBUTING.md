@@ -1,33 +1,27 @@
 # Contributing to Music Companion
 
-Focused bug fixes, tests, documentation, accessibility improvements, and features
-within Music Companion's Windows lyrics-overlay scope are welcome.
+Focused bug fixes, tests, documentation, accessibility improvements, and features within Music Companion's Windows lyrics-overlay scope are welcome.
 
-## Before You Start
+## Before you start
 
-- Open an issue before a large feature, architectural change, compatibility
-  change, or release-workflow change. Small focused fixes do not require one.
-- Explain the maintenance, security, size, and compatibility tradeoffs of any new
-  dependency.
+- Open an issue or discussion before a large feature, architectural change, compatibility change, or release-workflow change. Small focused fixes do not require one.
+- Explain the maintenance, security, size, licensing, and compatibility tradeoffs of any new dependency.
 - Work on a focused branch and avoid unrelated formatting or refactoring.
 
-## Local Setup
+## Local setup
 
-Use Windows 10 or 11 with Bun, Node.js 20 or newer, stable Rust with the MSVC
-toolchain, and Microsoft WebView2 Runtime.
+Use Windows 10 or 11 with Bun, Node.js 20 or newer, stable Rust with the MSVC toolchain, and Microsoft WebView2 Runtime.
 
 ```powershell
 bun install --frozen-lockfile
 bun run tauri:dev
 ```
 
-## Making Changes
+## Making changes
 
-Follow the existing TypeScript/Tauri architecture and preserve behavior unless
-the change intentionally alters it. Update tests and documentation when behavior
-changes.
+Follow the existing TypeScript/Tauri architecture and preserve behavior unless the change intentionally alters it. Update tests and documentation when behavior changes.
 
-Before opening or updating a pull request, run the applicable checks:
+Before submitting a change, run every applicable check:
 
 ```powershell
 bun run check
@@ -42,7 +36,7 @@ cd src-tauri
 cargo audit
 ```
 
-## Pull Requests
+## Change checklist
 
 - [ ] The change has a clear purpose and focused scope.
 - [ ] Applicable checks pass locally.
@@ -51,8 +45,4 @@ cargo audit
 - [ ] New dependencies are justified.
 - [ ] No credentials, secrets, unrelated generated files, or placeholders are included.
 
-CI runs for non-draft pull requests. Include validation notes and link the issue
-or discussion when one exists.
-
-Use short, imperative commit subjects. Conventional Commits, signed commits, a
-DCO, and a CLA are not required.
+Use short, imperative commit subjects. Conventional Commits, signed commits, a DCO, and a CLA are not required.

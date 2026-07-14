@@ -5,7 +5,7 @@ Windows Media Transport Controls (WMTC) session, retrieves lyrics from
 [LRCLIB](https://lrclib.net/), and presents them in a transparent, always-on-top
 Tauri window.
 
-## Key Capabilities
+## Key capabilities
 
 - Follows WMTC-compatible players, including desktop players and browsers.
 - Displays synchronized lyrics with smooth highlighting and scrolling.
@@ -22,7 +22,7 @@ Tauri window.
 - Supports a global `Ctrl+Shift+L` click-through toggle and tray recovery.
 - Checks for signed updates in release builds.
 
-## Technology Stack
+## Technology stack
 
 - Tauri 2 and Rust provide Windows integration, WMTC monitoring, the tray,
   networking, persistence, and updates.
@@ -30,7 +30,7 @@ Tauri window.
 - Bun manages frontend dependencies and scripts.
 - Vite+ provides development, checking, linting, formatting, and builds.
 
-## Installation and Use
+## Installation and use
 
 Download the NSIS `.exe` from the
 [latest GitHub release](https://github.com/JustMarkDev/music-companion/releases/latest).
@@ -67,7 +67,7 @@ The development server listens on `http://127.0.0.1:1421`. Development builds
 emit `[latency]` diagnostics for WMTC refreshes, IPC, cache activity, and LRCLIB
 requests in the Rust terminal and WebView console.
 
-## Quality Checks
+## Quality checks
 
 ```powershell
 bun run check
@@ -85,7 +85,7 @@ cargo audit
 Run `bun run format` and `cargo fmt --manifest-path src-tauri/Cargo.toml` to
 apply formatting locally.
 
-## Build and Release
+## Build and release
 
 ```powershell
 bun run tauri:build
@@ -96,14 +96,14 @@ The Windows x86-64 NSIS installer is written below
 are published from version tags matching `v*`; release builds also create signed
 Tauri updater artifacts.
 
-## Project Structure
+## Project structure
 
 ```text
 src/main.ts                 Overlay UI, settings, and lyric synchronization
 src/styles.css              Overlay and settings styles
 src-tauri/src/lib.rs        WMTC, LRCLIB, tray, updater, and Tauri commands
 src-tauri/tauri.conf.json   Window, NSIS bundle, and updater configuration
-.github/workflows/          Pull-request CI and tagged release automation
+.github/                    Dependabot and tagged release automation
 ```
 
 ## Contributing
@@ -113,5 +113,5 @@ architectural changes, and broad refactors before implementation.
 
 ## License
 
-Music Companion is available under the [MIT License](LICENSE). It is not
+Music Companion is available under the [GNU General Public License v3.0 only](LICENSE). It is not
 affiliated with Spotify, LRCLIB, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.

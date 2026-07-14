@@ -9,38 +9,9 @@ permissions:
   contents: write
 
 jobs:
-  frontend_checks:
-    name: Frontend checks
+  verify:
+    name: Verify tagged commit
     runs-on: windows-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Check frontend
-        run: bun run check
-
-      - name: Lint frontend
-        run: bun run lint
-
-      - name: Check frontend formatting
-        run: bun run format:check
-
-      - name: Build frontend
-        run: bun run build
-
-  release:
-    name: Build and publish Windows installers
-    runs-on: windows-latest
-    needs: frontend_checks
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
@@ -60,6 +31,27 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check frontend
+        run: bun run check
+
+      - name: Lint frontend
+        run: bun run lint
+
+      - name: Check frontend formatting
+        run: bun run format:check
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Audit frontend dependencies
+        run: bun audit
+
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
@@ -71,6 +63,29 @@ jobs:
 
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: cargo audit
+
+  release:
+    name: Build and publish Windows installers
+    runs-on: windows-latest
+    needs: verify
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
