@@ -744,7 +744,7 @@ function keyboardEventToAccelerator(event: KeyboardEvent) {
   return parts.join("+");
 }
 
-async function setHotkey(action: HotkeyAction, accelerator: string) {
+async function setHotkey(action: HotkeyAction, accelerator: string, retryFailed = true) {
   settings.hotkeys[action] = accelerator;
   saveSettings();
   if (tauriAvailable) {
@@ -752,12 +752,15 @@ async function setHotkey(action: HotkeyAction, accelerator: string) {
     hotkeyStatuses = [...hotkeyStatuses.filter((item) => item.action !== action), status];
   }
   renderHotkeyStatuses();
+  if (tauriAvailable && retryFailed) {
+    await safeInvoke("retry_failed_hotkeys");
+  }
 }
 
 async function applySavedHotkeys() {
   if (!tauriAvailable || isSettingsWindow) return;
   for (const action of Object.keys(DEFAULT_HOTKEYS) as HotkeyAction[]) {
-    await setHotkey(action, settings.hotkeys[action]);
+    await setHotkey(action, settings.hotkeys[action], false);
   }
   await safeInvoke("retry_failed_hotkeys");
 }
@@ -786,6 +789,7 @@ function wireWindowEvents() {
       void loadHotkeyStatuses();
     });
     void listen("media-state-changed", () => void syncSettingsAccent());
+    void listen("hotkey-statuses-changed", () => void loadHotkeyStatuses());
     return;
   }
 

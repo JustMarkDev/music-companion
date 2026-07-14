@@ -369,12 +369,17 @@ fn retry_failed_hotkeys(app: tauri::AppHandle) {
             if failed.is_empty() {
                 return;
             }
+            let mut recovered = false;
             for status in failed {
-                let _ = register_hotkey(
+                recovered |= register_hotkey(
                     app.clone(),
                     status.action.clone(),
                     status.accelerator.clone(),
-                );
+                )
+                .is_ok_and(|status| status.registered);
+            }
+            if recovered {
+                let _ = app.emit("hotkey-statuses-changed", ());
             }
         }
     });
