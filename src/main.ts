@@ -142,7 +142,7 @@ let lyricCacheGeneration = 0;
 let settings = loadSettings();
 let currentMedia: MediaState = demoState;
 let currentTrackKey = "";
-let lyricsLines: LyricLine[] = parseLyrics(demoLyrics);
+let lyricsLines: LyricLine[] = tauriAvailable ? [] : parseLyrics(demoLyrics);
 let currentLyricsResult: LyricsResult | null = null;
 let activeLineIndex = 2;
 let lyricsMode:
@@ -152,7 +152,7 @@ let lyricsMode:
   | "excluded"
   | "searching"
   | "missing"
-  | "error" = "synced";
+  | "error" = tauriAvailable ? "searching" : "synced";
 let lyricsNotice = "";
 let settingsOpen = false;
 let pollTimer = 0;
@@ -371,7 +371,6 @@ if (isSettingsWindow) {
   renderSettings();
   void syncSettingsAccent();
   void loadHotkeyStatuses();
-  void applySavedHotkeys();
 } else {
   void initializeMainWindowGeometry();
   wireUi();
@@ -756,10 +755,11 @@ async function setHotkey(action: HotkeyAction, accelerator: string) {
 }
 
 async function applySavedHotkeys() {
-  if (!tauriAvailable) return;
+  if (!tauriAvailable || isSettingsWindow) return;
   for (const action of Object.keys(DEFAULT_HOTKEYS) as HotkeyAction[]) {
     await setHotkey(action, settings.hotkeys[action]);
   }
+  await safeInvoke("retry_failed_hotkeys");
 }
 
 function formatAccelerator(accelerator: string) {

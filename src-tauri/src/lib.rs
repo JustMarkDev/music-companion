@@ -357,6 +357,7 @@ fn release_hotkeys_and_exit(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
 fn retry_failed_hotkeys(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         for delay in [250, 750, 1_500] {
@@ -380,15 +381,9 @@ fn retry_failed_hotkeys(app: tauri::AppHandle) {
 }
 
 pub fn run() {
-    use tauri_plugin_global_shortcut::{
-        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
-    };
+    use tauri_plugin_global_shortcut::{Code, Shortcut, ShortcutState};
     use tauri_plugin_window_state::StateFlags;
 
-    let lock_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
-    let next_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowRight);
-    let previous_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::ArrowLeft);
-    let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_handler(move |app, shortcut, event| {
             if event.state() != ShortcutState::Pressed {
@@ -453,6 +448,7 @@ pub fn run() {
             get_media_state,
             get_hotkey_statuses,
             register_hotkey,
+            retry_failed_hotkeys,
             log_sync_diagnostic,
             fetch_lyrics,
             cancel_lyrics_requests,
@@ -463,47 +459,7 @@ pub fn run() {
             show_settings_window,
             quit_app
         ])
-        .setup(move |app| {
-            let shortcuts = [
-                ("pinned", "Ctrl+Shift+KeyL", lock_shortcut),
-                ("next", "Ctrl+ArrowRight", next_shortcut),
-                ("previous", "Ctrl+ArrowLeft", previous_shortcut),
-                ("playPause", "Ctrl+Shift+Space", pause_shortcut),
-            ];
-            let statuses = shortcuts
-                .into_iter()
-                .map(|(action, accelerator, shortcut)| {
-                    match app.global_shortcut().register(shortcut) {
-                        Ok(()) => {
-                            println!("[hotkey] registered {accelerator} for {action}");
-                            HotkeyStatus {
-                                action: action.into(),
-                                accelerator: accelerator.into(),
-                                registered: true,
-                                error: None,
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "[hotkey] unable to register {accelerator} for {action}: {error}"
-                            );
-                            HotkeyStatus {
-                                action: action.into(),
-                                accelerator: accelerator.into(),
-                                registered: false,
-                                error: Some(error.to_string()),
-                            }
-                        }
-                    }
-                })
-                .collect();
-            if let Ok(mut stored) = HOTKEY_STATUSES
-                .get_or_init(|| Mutex::new(Vec::new()))
-                .lock()
-            {
-                *stored = statuses;
-            }
-            retry_failed_hotkeys(app.handle().clone());
+        .setup(|app| {
             build_tray(app)?;
             media::start_event_monitor(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
