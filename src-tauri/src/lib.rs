@@ -490,12 +490,6 @@ pub fn run() {
             if HOTKEY_RECORDING.load(Ordering::Acquire) {
                 return;
             }
-            if app
-                .get_webview_window("settings")
-                .is_some_and(|window| window.is_focused().unwrap_or(false))
-            {
-                return;
-            }
             let action = HOTKEY_STATUSES
                 .get()
                 .and_then(|statuses| statuses.lock().ok())
