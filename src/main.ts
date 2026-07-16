@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -13,7 +14,6 @@ import {
   TriangleAlert,
   X,
 } from "lucide";
-import packageJson from "../package.json";
 import "./styles.css";
 
 type MediaState = {
@@ -363,7 +363,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
         </section>
 
-        <p class="app-version">Music Companion · v${packageJson.version}</p>
+        <p class="app-version" id="app-version">Music Companion</p>
       </aside>
       <div class="resize-handles" aria-hidden="true">
         <span data-resize-direction="North"></span>
@@ -383,6 +383,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 createIcons({
   icons: { CircleCheck, Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X },
 });
+void renderAppVersion();
+
 if (isSettingsWindow) {
   document.body.classList.add("settings-window");
   settingsOpen = true;
@@ -402,6 +404,18 @@ if (isSettingsWindow) {
   schedulePolling();
   startSyncLoop();
   void applySavedHotkeys();
+}
+
+async function renderAppVersion() {
+  if (!tauriAvailable) return;
+
+  try {
+    const version = await getVersion();
+    document.querySelector<HTMLElement>("#app-version")!.textContent =
+      `Music Companion · v${version}`;
+  } catch (error) {
+    console.warn("Unable to read the application version", error);
+  }
 }
 
 async function initializeMainWindowGeometry() {
