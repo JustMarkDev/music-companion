@@ -1,0 +1,142 @@
+name: Pull request validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changed-areas:
+    name: Detect changed areas
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.changes.outputs.frontend }}
+      native: ${{ steps.changes.outputs.native }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect affected areas
+        id: changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only "$BASE_SHA" HEAD)"
+
+          frontend=false
+          native=false
+
+          if grep -Eq '^(src/|index\.html$|package\.json$|bun\.lock$|tsconfig\.json$|vite\.config\.ts$|\.gitattributes$|\.gitignore$|\.github/workflows/)' <<<"$files"; then
+            frontend=true
+          fi
+
+          if grep -Eq '^(src-tauri/|package\.json$|bun\.lock$|\.gitattributes$|\.gitignore$|\.github/workflows/)' <<<"$files"; then
+            native=true
+          fi
+
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+
+  frontend-checks:
+    name: Frontend checks
+    needs: detect-changed-areas
+    if: needs.detect-changed-areas.outputs.frontend == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check frontend
+        run: bun run check
+
+      - name: Lint frontend
+        run: bun run lint
+
+      - name: Check frontend formatting
+        run: bun run format:check
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Audit frontend dependencies
+        run: bun audit
+
+  native-checks:
+    name: Rust and Tauri checks
+    needs: detect-changed-areas
+    if: needs.detect-changed-areas.outputs.native == 'true'
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: cargo audit
+
+  pull-request-validation:
+    name: Pull request validation
+    if: always() && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changed-areas
+      - frontend-checks
+      - native-checks
+    steps:
+      - name: Verify required job states
+        env:
+          DETECT_RESULT: ${{ needs.detect-changed-areas.result }}
+          FRONTEND_CHANGED: ${{ needs.detect-changed-areas.outputs.frontend }}
+          FRONTEND_RESULT: ${{ needs.frontend-checks.result }}
+          NATIVE_CHANGED: ${{ needs.detect-changed-areas.outputs.native }}
+          NATIVE_RESULT: ${{ needs.native-checks.result }}
+        run: |
+          test "$DETECT_RESULT" = success
+
+          if [ "$FRONTEND_CHANGED" = true ]; then
+            test "$FRONTEND_RESULT" = success
+          else
+            test "$FRONTEND_RESULT" = skipped
+          fi
+
+          if [ "$NATIVE_CHANGED" = true ]; then
+            test "$NATIVE_RESULT" = success
+          else
+            test "$NATIVE_RESULT" = skipped
+          fi

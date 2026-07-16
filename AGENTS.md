@@ -16,6 +16,7 @@ Music Companion is a Windows 10/11 desktop lyrics overlay built with Tauri 2, Ty
 | `src/styles.css`                | Overlay and settings presentation                                           |
 | `src-tauri/src/lib.rs`          | WMTC integration, LRCLIB access, tray behavior, updater, and Tauri commands |
 | `src-tauri/tauri.conf.json`     | Windows, NSIS packaging, and updater configuration                          |
+| `.github/workflows/ci.yml`      | Changed-area pull-request validation and stable required gate               |
 | `.github/workflows/release.yml` | Verification and publication for approved `v*` tags                         |
 
 ## Verified commands
@@ -41,7 +42,7 @@ Use Bun for frontend dependencies and scripts and stable Rust MSVC for native co
 - Keep Windows integration, networking, persistence, tray behavior, and updates in Rust; keep overlay and settings presentation in the frontend.
 - Do not introduce another package manager or commit generated `dist/`, `node_modules/`, or `src-tauri/target/` output.
 - Ask before adding or replacing a dependency, and explain its maintenance, security, size, licensing, and compatibility tradeoffs.
-- Do not add pull-request CI unless explicitly approved. Dependabot is not PR CI.
+- Keep pull-request validation split into frontend and Rust/Tauri changed areas, with `Pull request validation` as the stable required gate. Dependabot is not PR CI.
 - Releases are approved GitHub releases built from `v*` tags as signed Windows x86-64 NSIS installers with Tauri updater metadata. Release version bumps happen on `main`, not a feature branch.
 
 ## Working and autonomy policy

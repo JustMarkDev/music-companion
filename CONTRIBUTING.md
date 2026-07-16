@@ -36,6 +36,10 @@ cd src-tauri
 cargo audit
 ```
 
+## Pull requests
+
+Pull requests run changed-area validation for the frontend and Rust/Tauri code. The stable `Pull request validation` check succeeds only when every affected area passes; unaffected checks are skipped.
+
 ## Change checklist
 
 - [ ] The change has a clear purpose and focused scope.

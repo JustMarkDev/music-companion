@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -72,6 +72,8 @@ jobs:
     name: Build and publish Windows installers
     runs-on: windows-latest
     needs: verify
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
