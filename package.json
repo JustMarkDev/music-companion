@@ -24,7 +24,7 @@
     "@tauri-apps/cli": "^2.11.4",
     "@voidzero-dev/vite-plus-core": "^0.2.4",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.2.4"
+    "vite-plus": "^0.2.6"
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.4",
