@@ -1,5 +1,5 @@
-const LOOP_DETECTION_GRACE_MS = 1_000;
-export const PAUSE_POSITION_TOLERANCE_MS = 500;
+export const PAUSE_POSITION_TOLERANCE_MS = 750;
+const PLAYING_FALLBACK_TOLERANCE_MS = 10_000;
 export const RESUME_CONFIRMATION_PROGRESS_MS = 100;
 
 type PlaybackSample = {
@@ -37,8 +37,9 @@ export class PlaybackClock {
   apply(
     previous: PlaybackSample,
     media: PlaybackSample,
-    sameVariant: boolean,
+    sameSong: boolean,
     sampledAtMs: number,
+    allowPlayingDiscontinuity = true,
   ): ClockUpdate {
     if (!media.hasSession) {
       this.sampledAtMs = sampledAtMs;
@@ -47,19 +48,25 @@ export class PlaybackClock {
       return { selectedPositionMs: 0, livePositionMs: null, usedLivePosition: false };
     }
 
-    const wasPlaying = sameVariant && previous.isPlaying;
+    const wasPlaying = sameSong && previous.isPlaying;
     const livePositionMs = wasPlaying
       ? this.estimate(previous, sampledAtMs)
       : this.pausedPositionAnchorMs;
     this.sampledAtMs = sampledAtMs;
 
-    if (media.isPlaying || !sameVariant) {
+    if (media.isPlaying || !sameSong) {
       this.pausedPositionAnchorMs = null;
-      this.positionAnchorMs = media.positionMs;
+      const useLivePosition =
+        media.isPlaying &&
+        sameSong &&
+        !allowPlayingDiscontinuity &&
+        livePositionMs !== null &&
+        Math.abs(media.positionMs - livePositionMs) > PLAYING_FALLBACK_TOLERANCE_MS;
+      this.positionAnchorMs = useLivePosition ? livePositionMs : media.positionMs;
       return {
-        selectedPositionMs: media.positionMs,
+        selectedPositionMs: this.positionAnchorMs,
         livePositionMs,
-        usedLivePosition: false,
+        usedLivePosition: useLivePosition,
       };
     }
 
@@ -74,9 +81,9 @@ export class PlaybackClock {
     return { selectedPositionMs, livePositionMs, usedLivePosition };
   }
 
-  shouldDeferResume(previous: PlaybackSample, media: PlaybackSample, sameVariant: boolean) {
+  shouldDeferResume(previous: PlaybackSample, media: PlaybackSample, sameSong: boolean) {
     const resumingFromUnavailable =
-      previous.status === "Paused session unavailable" && media.isPlaying && sameVariant;
+      previous.status === "Paused session unavailable" && media.isPlaying && sameSong;
     if (!resumingFromUnavailable) {
       this.pendingResumePositionMs = null;
       return false;
@@ -94,14 +101,8 @@ export class PlaybackClock {
     return true;
   }
 
-  syncedPosition(media: PlaybackSample, nowMs: number, lastTimedLineMs: number) {
-    const position = this.estimate(media, nowMs);
-    const duration = reliableLoopDuration(media.durationMs, lastTimedLineMs);
-    if (media.isPlaying && duration && position >= duration + LOOP_DETECTION_GRACE_MS) {
-      return position % duration;
-    }
-    if (duration && !media.isPlaying) return clamp(position, 0, duration);
-    return Math.max(0, position);
+  syncedPosition(media: PlaybackSample, nowMs: number) {
+    return Math.max(0, this.estimate(media, nowMs));
   }
 
   pausedPosition() {
@@ -109,14 +110,6 @@ export class PlaybackClock {
   }
 }
 
-function reliableLoopDuration(durationMs: number | null, lastTimedLineMs: number) {
-  return durationMs && durationMs >= lastTimedLineMs ? durationMs : null;
-}
-
 function playbackRate(rate: number | null) {
   return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : 1;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }

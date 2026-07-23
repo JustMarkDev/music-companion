@@ -27,12 +27,12 @@ describe("PlaybackClock", () => {
     expect(clock.estimate(sample({ playbackRate: Number.NaN }), 2_000)).toBe(61_000);
   });
 
-  it("keeps the live estimate for a pause discrepancy at 500 ms", () => {
+  it("keeps the live estimate for a pause discrepancy at 750 ms", () => {
     const clock = new PlaybackClock(0, 60_000);
     const previous = sample();
     const update = clock.apply(
       previous,
-      sample({ isPlaying: false, status: "Paused", positionMs: 60_500 }),
+      sample({ isPlaying: false, status: "Paused", positionMs: 60_250 }),
       true,
       1_000,
     );
@@ -40,15 +40,41 @@ describe("PlaybackClock", () => {
     expect(clock.estimate(sample({ isPlaying: false }), 2_000)).toBe(61_000);
   });
 
-  it("accepts a pause discrepancy larger than 500 ms as a seek", () => {
+  it("accepts a pause discrepancy larger than 750 ms as a seek", () => {
     const clock = new PlaybackClock(0, 60_000);
     const update = clock.apply(
       sample(),
-      sample({ isPlaying: false, status: "Paused", positionMs: 60_499 }),
+      sample({ isPlaying: false, status: "Paused", positionMs: 60_249 }),
       true,
       1_000,
     );
-    expect(update).toMatchObject({ selectedPositionMs: 60_499, usedLivePosition: false });
+    expect(update).toMatchObject({ selectedPositionMs: 60_249, usedLivePosition: false });
+  });
+
+  it("rejects a stale fallback sample that would rewind playing lyrics", () => {
+    const clock = new PlaybackClock(0, 32_476);
+    const update = clock.apply(
+      sample({ positionMs: 32_476 }),
+      sample({ positionMs: 126 }),
+      true,
+      2_966,
+      false,
+    );
+    expect(update.selectedPositionMs).toBe(35_442);
+    expect(clock.syncedPosition(sample(), 2_966)).toBe(35_442);
+  });
+
+  it("accepts a five-second seek from a fallback sample", () => {
+    const clock = new PlaybackClock(0, 10_000);
+    const update = clock.apply(
+      sample({ positionMs: 10_000 }),
+      sample({ positionMs: 16_000, playbackRate: 0 }),
+      true,
+      1_000,
+      false,
+    );
+    expect(update.selectedPositionMs).toBe(16_000);
+    expect(clock.syncedPosition(sample(), 1_000)).toBe(16_000);
   });
 
   it("always freezes the live estimate when the paused session is unavailable", () => {
@@ -81,20 +107,24 @@ describe("PlaybackClock", () => {
     ).toBe(false);
   });
 
-  it("wraps reliable loops only after the one-second grace period", () => {
-    const clock = new PlaybackClock(0, 180_500);
-    expect(clock.syncedPosition(sample(), 0, 170_000)).toBe(180_500);
-    const wrappedClock = new PlaybackClock(0, 181_001);
-    expect(wrappedClock.syncedPosition(sample(), 0, 170_000)).toBe(1_001);
+  it("does not wrap an advancing clock at a stale YouTube duration", () => {
+    const clock = new PlaybackClock(0, 65_946);
+    expect(clock.syncedPosition(sample({ durationMs: 64_000 }), 0)).toBe(65_946);
   });
 
-  it("does not wrap against a duration shorter than the lyric timeline", () => {
+  it("does not wrap when the clock advances beyond the reported duration", () => {
     const clock = new PlaybackClock(0, 190_000);
-    expect(clock.syncedPosition(sample(), 0, 185_000)).toBe(190_000);
+    expect(clock.syncedPosition(sample(), 0)).toBe(190_000);
   });
 
-  it("clamps a paused clock to a reliable duration", () => {
+  it("does not clamp a paused clock to a stale duration", () => {
     const clock = new PlaybackClock(0, 190_000);
-    expect(clock.syncedPosition(sample({ isPlaying: false }), 0, 170_000)).toBe(180_000);
+    expect(clock.syncedPosition(sample({ isPlaying: false }), 0)).toBe(190_000);
+  });
+
+  it("follows an authoritative position reset when playback loops", () => {
+    const clock = new PlaybackClock(0, 179_000);
+    clock.apply(sample({ positionMs: 179_000 }), sample({ positionMs: 1_000 }), true, 1_000);
+    expect(clock.syncedPosition(sample({ positionMs: 1_000 }), 1_000)).toBe(1_000);
   });
 });

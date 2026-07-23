@@ -19,6 +19,7 @@ import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { LyricsCache } from "./lyrics-cache";
 import {
   getLocalLyricsNotice,
+  isSameSong,
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
   parseLyrics,
@@ -983,11 +984,11 @@ async function pollMedia(reason = "manual") {
     }
     const nextVariant = playbackVariant(nextMedia);
     const startsNewVariant = startsNewPlaybackVariant(currentPlaybackVariant, nextVariant);
-    const sameVariant = Boolean(nextVariant && currentPlaybackVariant && !startsNewVariant);
-    if (shouldDeferResume(nextMedia, sameVariant, reason, requestDurationMs)) {
+    const sameSong = isSameSong(currentPlaybackVariant, nextVariant);
+    if (shouldDeferResume(nextMedia, sameSong, reason, requestDurationMs)) {
       return;
     }
-    syncMediaClock(nextMedia, sameVariant, sampledAtMs, reason, requestDurationMs);
+    syncMediaClock(nextMedia, sameSong, sampledAtMs, reason, requestDurationMs);
     currentMedia = nextMedia;
 
     if (nextVariant && startsNewVariant) {
@@ -1134,18 +1135,12 @@ function getSyncedPositionMs() {
     return (demoState.positionMs + elapsed + SYNC_OFFSET_MS + duration) % duration;
   }
 
-  const lastTimedLineMs = lyricsLines.reduce(
-    (latest, line) => Math.max(latest, line.timeMs ?? 0),
-    0,
-  );
-  return (
-    playbackClock.syncedPosition(currentMedia, performance.now(), lastTimedLineMs) + SYNC_OFFSET_MS
-  );
+  return playbackClock.syncedPosition(currentMedia, performance.now()) + SYNC_OFFSET_MS;
 }
 
 function syncMediaClock(
   media: MediaState,
-  sameVariant: boolean,
+  sameSong: boolean,
   sampledAtMs: number,
   reason: string,
   requestDurationMs: number,
@@ -1157,13 +1152,27 @@ function syncMediaClock(
     });
   }
 
-  const wasPlaying = sameVariant && currentMedia.isPlaying;
+  const wasPlaying = sameSong && currentMedia.isPlaying;
   const playbackChanged = currentMedia.isPlaying !== media.isPlaying;
   const previousPausedPosition = playbackClock.pausedPosition();
-  const update = playbackClock.apply(currentMedia, media, sameVariant, sampledAtMs);
+  const update = playbackClock.apply(
+    currentMedia,
+    media,
+    sameSong,
+    sampledAtMs,
+    reason !== "fallback-poll",
+  );
 
-  if (media.isPlaying || !sameVariant) {
-    if (!sameVariant || playbackChanged) {
+  if (media.isPlaying || !sameSong) {
+    if (media.isPlaying && update.usedLivePosition) {
+      logSync("ignored discontinuous fallback sample", {
+        reason,
+        requestDurationMs: Math.round(requestDurationMs),
+        reportedPositionMs: formatSyncTimestamp(media.positionMs),
+        livePositionMs: formatSyncTimestamp(Math.round(update.selectedPositionMs)),
+        differenceMs: Math.round(media.positionMs - update.selectedPositionMs),
+      });
+    } else if (!sameSong || playbackChanged) {
       logSync("media state applied", {
         reason,
         requestDurationMs: Math.round(requestDurationMs),
@@ -1200,11 +1209,11 @@ function syncMediaClock(
 
 function shouldDeferResume(
   media: MediaState,
-  sameVariant: boolean,
+  sameSong: boolean,
   reason: string,
   requestDurationMs: number,
 ) {
-  const deferred = playbackClock.shouldDeferResume(currentMedia, media, sameVariant);
+  const deferred = playbackClock.shouldDeferResume(currentMedia, media, sameSong);
   window.clearTimeout(resumeConfirmationTimer);
   if (!deferred) return false;
 

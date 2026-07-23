@@ -65,6 +65,10 @@ export function isSameCachedVariant(left: PlaybackVariant, right: PlaybackVarian
   return Math.abs(left.durationMs - right.durationMs) <= PLAYBACK_VARIANT_TOLERANCE_MS;
 }
 
+export function isSameSong(current: PlaybackVariant | null, next: PlaybackVariant | null) {
+  return Boolean(current && next && current.metadataKey === next.metadataKey);
+}
+
 export function startsNewPlaybackVariant(
   current: PlaybackVariant | null,
   next: PlaybackVariant | null,

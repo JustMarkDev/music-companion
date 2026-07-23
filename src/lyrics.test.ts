@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getLocalLyricsNotice,
   isSameCachedVariant,
+  isSameSong,
   normalizeLyricsMetadata,
   parseLyrics,
   playbackVariant,
@@ -63,10 +64,11 @@ describe("playback variants", () => {
     expect(startsNewPlaybackVariant(unknown, known)).toBe(true);
   });
 
-  it("treats materially different durations as new active variants", () => {
-    expect(
-      startsNewPlaybackVariant(playbackVariant(media(180_000)), playbackVariant(media(190_000))),
-    ).toBe(true);
+  it("uses duration for lyric variants without breaking song continuity", () => {
+    const current = playbackVariant(media(180_000));
+    const next = playbackVariant(media(190_000));
+    expect(startsNewPlaybackVariant(current, next)).toBe(true);
+    expect(isSameSong(current, next)).toBe(true);
   });
 });
 
