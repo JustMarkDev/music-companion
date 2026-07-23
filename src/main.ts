@@ -15,6 +15,31 @@ import {
   X,
 } from "lucide";
 import "./styles.css";
+import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
+import { LyricsCache } from "./lyrics-cache";
+import {
+  getLocalLyricsNotice,
+  normalizeDisplayMetadata,
+  normalizeLyricsMetadata,
+  parseLyrics,
+  playbackVariant,
+  selectLyricsDisplay,
+  startsNewPlaybackVariant,
+  variantToken,
+  type LyricLine,
+  type LyricsMode,
+  type LyricsResult,
+  type PlaybackVariant,
+} from "./lyrics";
+import { PlaybackClock, PAUSE_POSITION_TOLERANCE_MS } from "./playback-clock";
+import {
+  decodeSettings,
+  DEFAULT_HOTKEYS,
+  isHexColor,
+  normalizeHexColor,
+  type HotkeyAction,
+  type SettingsState,
+} from "./settings";
 
 type MediaState = {
   hasSession: boolean;
@@ -40,46 +65,6 @@ type HotkeyStatus = {
 
 let hotkeyStatuses: HotkeyStatus[] = [];
 
-type LyricsResult = {
-  source: string;
-  trackName: string;
-  artistName: string;
-  albumName: string;
-  duration: number | null;
-  instrumental: boolean;
-  syncedLyrics: string | null;
-  romanizedSyncedLyrics?: string | null;
-  plainLyrics: string | null;
-};
-
-type AccentMode = "dynamic" | "manual";
-type BackdropMaterial = "mica" | "acrylic";
-
-const INSTRUMENTAL_BREAK_ICON = "♪";
-
-type SettingsState = {
-  clickThrough: boolean;
-  opacity: number;
-  blurIntensity: number;
-  fontSize: number;
-  lineSpacing: number;
-  romanizedLyrics: boolean;
-  startAtLogin: boolean;
-  accentMode: AccentMode;
-  accentColor: string;
-  backdropMaterial: BackdropMaterial;
-  hotkeys: Record<HotkeyAction, string>;
-};
-
-type HotkeyAction = "pinned" | "next" | "previous" | "playPause";
-
-const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
-  pinned: "Ctrl+Shift+KeyL",
-  next: "Ctrl+ArrowRight",
-  previous: "Ctrl+ArrowLeft",
-  playPause: "Ctrl+Shift+Space",
-};
-
 const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   pinned: "Pinned mode",
   next: "Next song",
@@ -87,43 +72,11 @@ const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   playPause: "Pause song",
 };
 
-type CachedLyrics = {
-  cachedAt: number;
-  result: LyricsResult;
-};
-
-type LyricLine = {
-  timeMs: number | null;
-  endTimeMs: number | null;
-  text: string;
-  words: string[];
-};
-
-const DEFAULT_SETTINGS: SettingsState = {
-  clickThrough: false,
-  opacity: 0,
-  blurIntensity: 100,
-  fontSize: 1,
-  lineSpacing: 0.5,
-  romanizedLyrics: true,
-  startAtLogin: false,
-  accentMode: "dynamic",
-  accentColor: "#22e6c7",
-  backdropMaterial: "acrylic",
-  hotkeys: { ...DEFAULT_HOTKEYS },
-};
-
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
 const MAIN_WINDOW_GEOMETRY_STORAGE_KEY = "music-companion-main-window-geometry-v2";
-const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v3";
-const MAX_PERSISTED_LYRICS = 200;
-const INTRODUCTION_THRESHOLD_MS = 3_000;
 const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
-const LOOP_DETECTION_GRACE_MS = 1_000;
-const PAUSE_POSITION_TOLERANCE_MS = 750;
 const RESUME_CONFIRMATION_DELAY_MS = 250;
-const RESUME_CONFIRMATION_PROGRESS_MS = 100;
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -151,32 +104,24 @@ const appWindow = tauriAvailable ? getCurrentWindow() : null;
 const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
-const lyricCache = loadLyricsCache();
+const lyricCache = new LyricsCache(localStorage);
 // Rust survives frontend reloads during development, so keep request IDs newer
 // than any IDs issued by the previous WebView document.
 let lyricsRequestId = Date.now();
-let lyricCacheGeneration = 0;
 
 let settings = loadSettings();
 let currentMedia: MediaState = demoState;
-let currentTrackKey = "";
+let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
+let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
 let lyricsLines: LyricLine[] = tauriAvailable ? [] : parseLyrics(demoLyrics);
 let currentLyricsResult: LyricsResult | null = null;
 let activeLineIndex = 2;
-let lyricsMode:
-  | "synced"
-  | "unsynced"
-  | "instrumental"
-  | "excluded"
-  | "searching"
-  | "missing"
-  | "error" = tauriAvailable ? "searching" : "synced";
+let lyricsMode: LyricsMode = tauriAvailable ? "searching" : "synced";
 let lyricsNotice = "";
 let settingsOpen = false;
 let pollTimer = 0;
 let animationFrame = 0;
-let mediaSampledAtMs = performance.now();
-let mediaPositionAnchorMs = demoState.positionMs;
+const playbackClock = new PlaybackClock(performance.now(), demoState.positionMs);
 const demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lastScrolledLineIndex = -1;
@@ -184,9 +129,7 @@ let pollInFlight = false;
 let pollQueued = false;
 let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
-let pausedPositionAnchorMs: number | null = null;
 let resumeConfirmationTimer = 0;
-let pendingResumeConfirmation: { positionMs: number } | null = null;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -815,16 +758,6 @@ function wireHotkeyInputs() {
   });
 }
 
-function keyboardEventToAccelerator(event: KeyboardEvent) {
-  const parts: string[] = [];
-  if (event.ctrlKey) parts.push("Ctrl");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.altKey) parts.push("Alt");
-  if (event.metaKey) parts.push("Super");
-  parts.push(event.code);
-  return parts.join("+");
-}
-
 async function setHotkey(action: HotkeyAction, accelerator: string, retryFailed = true) {
   if (!tauriAvailable) {
     settings.hotkeys[action] = accelerator;
@@ -882,17 +815,6 @@ async function applySavedHotkeys() {
     await setHotkey(action, settings.hotkeys[action], false);
   }
   await safeInvoke("retry_failed_hotkeys");
-}
-
-function formatAccelerator(accelerator: string) {
-  return accelerator
-    .replace(/Key([A-Z])/g, "$1")
-    .replace("ArrowRight", "Right Arrow")
-    .replace("ArrowLeft", "Left Arrow")
-    .replace("ArrowUp", "Up Arrow")
-    .replace("ArrowDown", "Down Arrow")
-    .split("+")
-    .join(" + ");
 }
 
 function wireWindowEvents() {
@@ -1059,21 +981,25 @@ async function pollMedia(reason = "manual") {
       pollQueued = true;
       return;
     }
-    if (shouldDeferResume(nextMedia, reason, requestDurationMs)) {
+    const nextVariant = playbackVariant(nextMedia);
+    const startsNewVariant = startsNewPlaybackVariant(currentPlaybackVariant, nextVariant);
+    const sameVariant = Boolean(nextVariant && currentPlaybackVariant && !startsNewVariant);
+    if (shouldDeferResume(nextMedia, sameVariant, reason, requestDurationMs)) {
       return;
     }
-    const nextTrackKey = trackKey(nextMedia);
-    syncMediaClock(nextMedia, sampledAtMs, reason, requestDurationMs);
+    syncMediaClock(nextMedia, sameVariant, sampledAtMs, reason, requestDurationMs);
     currentMedia = nextMedia;
 
-    if (nextTrackKey && nextTrackKey !== currentTrackKey) {
-      currentTrackKey = nextTrackKey;
+    if (nextVariant && startsNewVariant) {
+      currentPlaybackVariant = nextVariant;
+      currentTrackKey = variantToken(nextVariant);
       lyricsRequestId += 1;
       void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
-      void loadLyrics(currentMedia, nextTrackKey);
+      void loadLyrics(currentMedia, nextVariant);
     }
 
-    if (!nextTrackKey) {
+    if (!nextVariant) {
+      currentPlaybackVariant = null;
       currentTrackKey = "";
       lyricsLines = [];
       lyricsMode = "missing";
@@ -1094,7 +1020,8 @@ async function pollMedia(reason = "manual") {
   }
 }
 
-async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media)) {
+async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
+  const expectedTrackKey = variantToken(expectedVariant);
   if (!media.hasSession || !media.title) {
     if (currentTrackKey === expectedTrackKey) {
       lyricsLines = [];
@@ -1116,17 +1043,16 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   }
 
   lyricsNotice = "";
-  const key = trackKey(media);
   const lyricsMetadata = normalizeLyricsMetadata(media);
-  if (lyricCache.has(key)) {
-    console.info("[latency] lyrics cache hit", { key });
-    if (currentTrackKey === key) {
-      applyLyrics(lyricCache.get(key) ?? null, localNotice);
+  if (lyricCache.has(expectedVariant)) {
+    console.info("[latency] lyrics cache hit", { key: expectedTrackKey });
+    if (currentTrackKey === expectedTrackKey) {
+      applyLyrics(lyricCache.get(expectedVariant) ?? null, localNotice);
     }
     return;
   }
 
-  if (currentTrackKey === key) {
+  if (currentTrackKey === expectedTrackKey) {
     lyricsLines = [];
     lyricsMode = "searching";
     invalidateLyricsRender();
@@ -1134,7 +1060,7 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
   }
 
   try {
-    const cacheGeneration = lyricCacheGeneration;
+    const cacheGeneration = lyricCache.requestGeneration();
     const startedAt = performance.now();
     const requestId = lyricsRequestId;
     const result = await invoke<LyricsResult | null>("fetch_lyrics", {
@@ -1143,22 +1069,20 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
       durationMs: media.durationMs,
       requestId,
     });
-    if (cacheGeneration === lyricCacheGeneration) {
-      lyricCache.set(key, result);
-      if (result) {
-        persistLyricsCache(key, result);
-      }
+    const requestIsCurrent = requestId === lyricsRequestId && currentTrackKey === expectedTrackKey;
+    if (requestIsCurrent) {
+      lyricCache.putIfCurrent(cacheGeneration, expectedVariant, result);
     }
     console.info("[latency] lyrics ready", {
-      key,
+      key: expectedTrackKey,
       durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
       found: Boolean(result),
     });
-    if (currentTrackKey === key) {
+    if (requestIsCurrent) {
       applyLyrics(result, localNotice);
     }
   } catch {
-    if (currentTrackKey === key) {
+    if (currentTrackKey === expectedTrackKey) {
       lyricsLines = [];
       lyricsMode = "error";
       invalidateLyricsRender();
@@ -1168,152 +1092,17 @@ async function loadLyrics(media: MediaState, expectedTrackKey = trackKey(media))
 }
 
 function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null = null) {
-  const currentNotice = fallbackNotice ?? getLocalLyricsNotice(currentMedia.title);
-  const variantFallback = currentNotice === "Instrumental" ? null : currentNotice;
   currentLyricsResult = result;
-  lyricsNotice = "";
-  if (!result) {
-    lyricsLines = [];
-    lyricsMode = variantFallback ? "excluded" : "missing";
-    lyricsNotice = variantFallback ?? "";
-    invalidateLyricsRender();
-    return;
-  }
-
-  if (result.instrumental) {
-    lyricsLines = [createLyricLine(null, "Instrumental")];
-    lyricsMode = "instrumental";
-    invalidateLyricsRender();
-    return;
-  }
-
-  const displayedLyrics =
-    settings.romanizedLyrics && result.romanizedSyncedLyrics
-      ? result.romanizedSyncedLyrics
-      : result.syncedLyrics;
-  if (displayedLyrics) {
-    lyricsLines = parseLyrics(displayedLyrics);
-    lyricsMode = "synced";
-    invalidateLyricsRender();
-    return;
-  }
-
-  if (result.plainLyrics) {
-    lyricsLines = [];
-    lyricsMode = variantFallback ? "excluded" : "unsynced";
-    lyricsNotice = variantFallback ?? "No Synced Lyrics";
-    invalidateLyricsRender();
-    return;
-  }
-
-  lyricsLines = [];
-  lyricsMode = variantFallback ? "excluded" : "missing";
-  lyricsNotice = variantFallback ?? "";
-  invalidateLyricsRender();
-}
-
-function getLocalLyricsNotice(title: string): string | null {
-  if (/\binstrumental\b/i.test(title)) {
-    return "Instrumental";
-  }
-
-  const slowed = /\bslowed(?:\s+down)?\b/i.test(title);
-  const reverb = /\breverb(?:erated)?\b/i.test(title);
-  if (slowed && reverb) {
-    return "Slowed + Reverb - No Lyrics";
-  }
-
-  const variants: Array<[RegExp, string]> = [
-    [/\bslowed(?:\s+down)?\b/i, "Slowed"],
-    [/\breverb(?:erated)?\b/i, "Reverb"],
-    [/\bremix(?:ed)?\b/i, "Remix"],
-    [/\bsped[\s-]*up\b|\bspeed[\s-]*up\b/i, "Sped Up"],
-    [/\bnightcore\b/i, "Nightcore"],
-    [/\bkaraoke\b/i, "Karaoke"],
-    [/(?:[([\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live"],
-    [/\bcover\b/i, "Cover"],
-  ];
-
-  const match = variants.find(([pattern]) => pattern.test(title));
-  return match ? `${match[1]} - No Lyrics` : null;
-}
-
-function parseTimeParts(minutes: string, seconds: string, fraction = "0") {
-  return (
-    Number(minutes) * 60_000 + Number(seconds) * 1000 + Number(fraction.padEnd(3, "0").slice(0, 3))
+  const display = selectLyricsDisplay(
+    result,
+    currentMedia.title,
+    settings.romanizedLyrics,
+    fallbackNotice,
   );
-}
-
-function splitWords(value: string) {
-  return value.trim().match(/\S+/g) ?? [];
-}
-
-function estimateLineDuration(line: LyricLine) {
-  return clamp(line.words.length * 460, 1400, 7200);
-}
-
-function parseLyrics(raw: string): LyricLine[] {
-  const lines: LyricLine[] = [];
-  const pattern = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
-  const metadataPattern = /^\[[a-z]+:/i;
-
-  for (const rawLine of raw.split(/\r?\n/)) {
-    if (metadataPattern.test(rawLine.trim())) {
-      continue;
-    }
-
-    const matches = [...rawLine.matchAll(pattern)];
-    const textWithWordTags = rawLine.replace(pattern, "").trim();
-
-    if (matches.length === 0 && textWithWordTags) {
-      lines.push(createLyricLine(null, textWithWordTags));
-      continue;
-    }
-
-    for (const match of matches) {
-      lines.push(createLyricLine(parseTimeParts(match[1], match[2], match[3]), textWithWordTags));
-    }
-  }
-
-  const sortedLines = lines.sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0));
-  const firstTimedLine = sortedLines.find((line) => line.timeMs !== null);
-  if (firstTimedLine && firstTimedLine.timeMs! > INTRODUCTION_THRESHOLD_MS) {
-    sortedLines.unshift(createLyricLine(0, ""));
-  }
-
-  return finalizeLyricTimings(sortedLines);
-}
-
-function createLyricLine(timeMs: number | null, textWithWordTags: string): LyricLine {
-  const text = stripWordTags(textWithWordTags);
-  return {
-    timeMs,
-    endTimeMs: null,
-    text: text || INSTRUMENTAL_BREAK_ICON,
-    words: splitWords(text),
-  };
-}
-
-function stripWordTags(textWithWordTags: string) {
-  return textWithWordTags
-    .replace(/<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function finalizeLyricTimings(lines: LyricLine[]) {
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.timeMs === null) {
-      continue;
-    }
-
-    const nextTimedLine = lines.slice(index + 1).find((candidate) => candidate.timeMs !== null);
-    const fallbackEnd = line.timeMs + estimateLineDuration(line);
-    line.endTimeMs = Math.max(line.timeMs + 320, nextTimedLine?.timeMs ?? fallbackEnd);
-  }
-
-  return lines;
+  lyricsLines = display.lines;
+  lyricsMode = display.mode;
+  lyricsNotice = display.notice;
+  invalidateLyricsRender();
 }
 
 function updateActiveLine(positionMs = getSyncedPositionMs()) {
@@ -1345,78 +1134,36 @@ function getSyncedPositionMs() {
     return (demoState.positionMs + elapsed + SYNC_OFFSET_MS + duration) % duration;
   }
 
-  const position = getEstimatedMediaPositionMs(performance.now()) + SYNC_OFFSET_MS;
-  const durationMs = getReliableLoopDurationMs();
-  if (currentMedia.isPlaying && durationMs && position >= durationMs + LOOP_DETECTION_GRACE_MS) {
-    return position % durationMs;
-  }
-  // WMTC duration metadata can be stale while a track is playing. Clamping an
-  // advancing clock to it freezes lyric synchronization until the session is
-  // refreshed (for example, by pausing and resuming).
-  return durationMs && !currentMedia.isPlaying
-    ? clamp(position, 0, durationMs)
-    : Math.max(0, position);
-}
-
-function getReliableLoopDurationMs() {
-  const durationMs = currentMedia.durationMs;
-  if (!durationMs) {
-    return null;
-  }
-
   const lastTimedLineMs = lyricsLines.reduce(
     (latest, line) => Math.max(latest, line.timeMs ?? 0),
     0,
   );
-  return durationMs >= lastTimedLineMs ? durationMs : null;
-}
-
-function getEstimatedMediaPositionMs(nowMs: number) {
-  if (!currentMedia.isPlaying) {
-    return mediaPositionAnchorMs;
-  }
-
-  const elapsed = Math.max(0, nowMs - mediaSampledAtMs);
-  return mediaPositionAnchorMs + elapsed * getPlaybackRate();
-}
-
-function getPlaybackRate() {
-  const rate = currentMedia.playbackRate;
-  return typeof rate === "number" && Number.isFinite(rate) && rate > 0 ? rate : 1;
+  return (
+    playbackClock.syncedPosition(currentMedia, performance.now(), lastTimedLineMs) + SYNC_OFFSET_MS
+  );
 }
 
 function syncMediaClock(
   media: MediaState,
+  sameVariant: boolean,
   sampledAtMs: number,
   reason: string,
   requestDurationMs: number,
 ) {
-  if (!media.hasSession) {
-    if (currentMedia.hasSession) {
-      logSync("media session cleared", {
-        reason,
-        requestDurationMs: Math.round(requestDurationMs),
-      });
-    }
-    mediaSampledAtMs = sampledAtMs;
-    mediaPositionAnchorMs = 0;
-    pausedPositionAnchorMs = null;
-    return;
+  if (!media.hasSession && currentMedia.hasSession) {
+    logSync("media session cleared", {
+      reason,
+      requestDurationMs: Math.round(requestDurationMs),
+    });
   }
 
-  const isSameTrack = trackKey(media) !== "" && trackKey(media) === trackKey(currentMedia);
-  const wasPlaying = isSameTrack && currentMedia.isPlaying;
+  const wasPlaying = sameVariant && currentMedia.isPlaying;
   const playbackChanged = currentMedia.isPlaying !== media.isPlaying;
-  const livePositionMs = wasPlaying
-    ? getEstimatedMediaPositionMs(sampledAtMs)
-    : pausedPositionAnchorMs;
+  const previousPausedPosition = playbackClock.pausedPosition();
+  const update = playbackClock.apply(currentMedia, media, sameVariant, sampledAtMs);
 
-  // The backend converts WMTC Position + LastUpdatedTime + PlaybackRate into
-  // a position at sampling time. A playing sample is authoritative, while a
-  // paused sample is reconciled with the live frontend estimate below.
-  mediaSampledAtMs = sampledAtMs;
-  if (media.isPlaying || !isSameTrack) {
-    if (!isSameTrack || playbackChanged) {
+  if (media.isPlaying || !sameVariant) {
+    if (!sameVariant || playbackChanged) {
       logSync("media state applied", {
         reason,
         requestDurationMs: Math.round(requestDurationMs),
@@ -1427,21 +1174,10 @@ function syncMediaClock(
         playbackRate: media.playbackRate,
       });
     }
-    pausedPositionAnchorMs = null;
-    mediaPositionAnchorMs = media.positionMs;
     return;
   }
 
-  const useLivePosition =
-    livePositionMs !== null &&
-    (media.status === "Paused session unavailable" ||
-      Math.abs(media.positionMs - livePositionMs) <= PAUSE_POSITION_TOLERANCE_MS);
-
-  const previousPausedAnchorMs = pausedPositionAnchorMs;
-  const pausedPositionMs =
-    useLivePosition && livePositionMs !== null ? livePositionMs : media.positionMs;
-
-  if (wasPlaying || previousPausedAnchorMs !== pausedPositionMs) {
+  if (wasPlaying || previousPausedPosition !== update.selectedPositionMs) {
     logSync("pause position reconciled", {
       reason,
       requestDurationMs: Math.round(requestDurationMs),
@@ -1449,61 +1185,35 @@ function syncMediaClock(
       status: media.status,
       reportedPositionMs: formatSyncTimestamp(media.positionMs),
       livePositionMs: formatSyncTimestamp(
-        livePositionMs === null ? null : Math.round(livePositionMs),
+        update.livePositionMs === null ? null : Math.round(update.livePositionMs),
       ),
-      differenceMs: livePositionMs === null ? null : Math.round(media.positionMs - livePositionMs),
-      selectedPositionMs: formatSyncTimestamp(Math.round(pausedPositionMs)),
-      usedLivePosition: useLivePosition,
+      differenceMs:
+        update.livePositionMs === null
+          ? null
+          : Math.round(media.positionMs - update.livePositionMs),
+      selectedPositionMs: formatSyncTimestamp(Math.round(update.selectedPositionMs)),
+      usedLivePosition: update.usedLivePosition,
       toleranceMs: PAUSE_POSITION_TOLERANCE_MS,
     });
   }
-
-  // Freeze the live frontend estimate as soon as playback pauses. WMTC
-  // position samples can arrive late or be quantized; only accept a material
-  // correction, which is most likely a seek while paused.
-  pausedPositionAnchorMs = pausedPositionMs;
-  mediaPositionAnchorMs = pausedPositionAnchorMs;
 }
 
-function shouldDeferResume(media: MediaState, reason: string, requestDurationMs: number) {
-  const resumingFromUnavailableSession =
-    currentMedia.status === "Paused session unavailable" &&
-    media.isPlaying &&
-    trackKey(media) !== "" &&
-    trackKey(media) === trackKey(currentMedia);
+function shouldDeferResume(
+  media: MediaState,
+  sameVariant: boolean,
+  reason: string,
+  requestDurationMs: number,
+) {
+  const deferred = playbackClock.shouldDeferResume(currentMedia, media, sameVariant);
+  window.clearTimeout(resumeConfirmationTimer);
+  if (!deferred) return false;
 
-  if (!resumingFromUnavailableSession) {
-    pendingResumeConfirmation = null;
-    window.clearTimeout(resumeConfirmationTimer);
-    return false;
-  }
-
-  const previousCandidate = pendingResumeConfirmation?.positionMs;
-  if (
-    previousCandidate !== undefined &&
-    media.positionMs >= previousCandidate + RESUME_CONFIRMATION_PROGRESS_MS
-  ) {
-    logSync("resume confirmed", {
-      reason,
-      requestDurationMs: Math.round(requestDurationMs),
-      firstPositionMs: previousCandidate,
-      confirmedPositionMs: media.positionMs,
-      progressMs: media.positionMs - previousCandidate,
-    });
-    pendingResumeConfirmation = null;
-    window.clearTimeout(resumeConfirmationTimer);
-    return false;
-  }
-
-  pendingResumeConfirmation = { positionMs: media.positionMs };
   logSync("deferred unconfirmed resume", {
     reason,
     requestDurationMs: Math.round(requestDurationMs),
     candidatePositionMs: media.positionMs,
-    pausedPositionMs: pausedPositionAnchorMs,
-    requiredProgressMs: RESUME_CONFIRMATION_PROGRESS_MS,
+    pausedPositionMs: playbackClock.pausedPosition(),
   });
-  window.clearTimeout(resumeConfirmationTimer);
   resumeConfirmationTimer = window.setTimeout(() => {
     void pollMedia("resume-confirmation");
   }, RESUME_CONFIRMATION_DELAY_MS);
@@ -1865,53 +1575,7 @@ function applyGradient() {
 }
 
 function loadSettings(): SettingsState {
-  try {
-    const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    const loaded = stored ? JSON.parse(stored) : {};
-    const fontSize = loadFontSizeSetting(loaded.fontSize);
-    return {
-      clickThrough: Boolean(loaded.clickThrough),
-      opacity: loadNumericSetting(loaded.opacity, DEFAULT_SETTINGS.opacity, 0, 1),
-      blurIntensity: loadNumericSetting(
-        loaded.blurIntensity,
-        DEFAULT_SETTINGS.blurIntensity,
-        1,
-        100,
-      ),
-      fontSize,
-      lineSpacing: loadLineSpacingSetting(loaded.lineSpacing, fontSize),
-      romanizedLyrics:
-        typeof loaded.romanizedLyrics === "boolean"
-          ? loaded.romanizedLyrics
-          : DEFAULT_SETTINGS.romanizedLyrics,
-      startAtLogin:
-        typeof loaded.startAtLogin === "boolean"
-          ? loaded.startAtLogin
-          : DEFAULT_SETTINGS.startAtLogin,
-      accentMode: loaded.accentMode === "manual" ? "manual" : "dynamic",
-      accentColor: isHexColor(loaded.accentColor)
-        ? normalizeHexColor(loaded.accentColor)
-        : DEFAULT_SETTINGS.accentColor,
-      backdropMaterial: loaded.backdropMaterial === "mica" ? "mica" : "acrylic",
-      hotkeys: {
-        pinned:
-          typeof loaded.hotkeys?.pinned === "string"
-            ? loaded.hotkeys.pinned
-            : DEFAULT_HOTKEYS.pinned,
-        next: typeof loaded.hotkeys?.next === "string" ? loaded.hotkeys.next : DEFAULT_HOTKEYS.next,
-        previous:
-          typeof loaded.hotkeys?.previous === "string"
-            ? loaded.hotkeys.previous
-            : DEFAULT_HOTKEYS.previous,
-        playPause:
-          typeof loaded.hotkeys?.playPause === "string"
-            ? loaded.hotkeys.playPause
-            : DEFAULT_HOTKEYS.playPause,
-      },
-    };
-  } catch {
-    return { ...DEFAULT_SETTINGS, hotkeys: { ...DEFAULT_HOTKEYS } };
-  }
+  return decodeSettings(localStorage.getItem(SETTINGS_STORAGE_KEY));
 }
 
 function saveSettings() {
@@ -1921,163 +1585,9 @@ function saveSettings() {
   }
 }
 
-function loadLyricsCache(): Map<string, LyricsResult | null> {
-  try {
-    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
-    const entries = stored ? (JSON.parse(stored) as [string, CachedLyrics][]) : [];
-    return new Map(
-      entries
-        .filter(
-          (entry): entry is [string, CachedLyrics] =>
-            Array.isArray(entry) &&
-            typeof entry[0] === "string" &&
-            typeof entry[1]?.cachedAt === "number" &&
-            typeof entry[1]?.result === "object" &&
-            entry[1].result !== null,
-        )
-        .slice(-MAX_PERSISTED_LYRICS)
-        .map(([key, cached]) => [key, cached.result]),
-    );
-  } catch {
-    localStorage.removeItem(LYRICS_CACHE_STORAGE_KEY);
-    return new Map();
-  }
-}
-
-function persistLyricsCache(key: string, result: LyricsResult) {
-  try {
-    const stored = localStorage.getItem(LYRICS_CACHE_STORAGE_KEY);
-    const entries = stored ? (JSON.parse(stored) as [string, CachedLyrics][]) : [];
-    const nextEntries = entries.filter(([storedKey]) => storedKey !== key);
-    nextEntries.push([key, { cachedAt: Date.now(), result }]);
-    localStorage.setItem(
-      LYRICS_CACHE_STORAGE_KEY,
-      JSON.stringify(nextEntries.slice(-MAX_PERSISTED_LYRICS)),
-    );
-  } catch (error) {
-    console.warn("Unable to persist the lyrics cache", error);
-  }
-}
-
 function clearLyricsCache() {
-  lyricCacheGeneration += 1;
   lyricCache.clear();
-  localStorage.removeItem(LYRICS_CACHE_STORAGE_KEY);
   console.info("[latency] lyrics cache cleared");
-}
-
-function loadNumericSetting(value: unknown, fallback: number, minimum: number, maximum: number) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? clamp(value, minimum, maximum)
-    : fallback;
-}
-
-function loadFontSizeSetting(value: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return DEFAULT_SETTINGS.fontSize;
-  }
-
-  // Migrate values saved by versions that stored the lyric size in pixels.
-  const remValue = value > 3 ? value / 16 : value;
-  return clamp(remValue, 0.5, 3);
-}
-
-function loadLineSpacingSetting(value: unknown, fontSize: number) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return DEFAULT_SETTINGS.lineSpacing;
-  }
-
-  // Migrate values saved by versions that stored line spacing in pixels.
-  const emValue = value > 1.2 ? value / (fontSize * 16) : value;
-  return clamp(Math.round(emValue * 20) / 20, 0.1, 1.2);
-}
-
-function trackKey(media: MediaState) {
-  if (!media.hasSession || !media.title) {
-    return "";
-  }
-  // Album metadata is not stable across all WMTC providers and may briefly
-  // disappear during a seek. It must not make the same track look new.
-  const lyricsMetadata = normalizeLyricsMetadata(media);
-  return `${normalizeTrackField(lyricsMetadata.artist)}::${normalizeTrackField(lyricsMetadata.title)}`;
-}
-
-function normalizeLyricsMetadata(media: Pick<MediaState, "artist" | "title">) {
-  const artist = normalizeLyricsArtist(media.artist);
-  const title = media.title.trim();
-  const normalizedTitle = normalizeLyricsTitle(title);
-  const combinedTitle = normalizedTitle.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
-
-  if (!combinedTitle) {
-    return { artist, title: normalizedTitle };
-  }
-
-  const titleArtist = combinedTitle[1].trim();
-  const songTitle = combinedTitle[2].trim();
-  const hasVideoDescriptor = normalizedTitle !== title;
-  if (
-    !hasVideoDescriptor &&
-    normalizeArtistComparison(titleArtist) !== normalizeArtistComparison(artist)
-  ) {
-    return { artist, title: normalizedTitle };
-  }
-
-  // YouTube can expose a channel handle as the WMTC artist even though the
-  // human-readable artist is present in an official video's title.
-  return { artist: titleArtist, title: songTitle };
-}
-
-function normalizeDisplayMetadata(media: Pick<MediaState, "artist" | "title">) {
-  const metadata = normalizeLyricsMetadata(media);
-  return { ...metadata, title: normalizeLyricsTitle(metadata.title) };
-}
-
-function normalizeLyricsTitle(title: string) {
-  let normalized = title.trim();
-  while (true) {
-    const labelStart = Math.max(normalized.lastIndexOf("("), normalized.lastIndexOf("["));
-    if (labelStart < 0) {
-      return normalized;
-    }
-    const closingBracket = normalized[labelStart] === "(" ? ")" : "]";
-    if (!normalized.endsWith(closingBracket)) {
-      return normalized;
-    }
-    const label = normalized.slice(labelStart + 1, -1);
-    if (!isVideoDescriptor(label)) {
-      return normalized;
-    }
-    normalized = normalized.slice(0, labelStart).trimEnd();
-  }
-}
-
-function isVideoDescriptor(label: string) {
-  const normalized = label.trim();
-  return (
-    /^(?:official\s+)?(?:(?:music|lyric(?:s)?|hd|4k)\s+)*video(?:\s+(?:hd|4k))?$/i.test(
-      normalized,
-    ) || /^(?:official\s+)?(?:audio|visuali[sz]er)$/i.test(normalized)
-  );
-}
-
-function normalizeLyricsArtist(artist: string) {
-  const syntheticChannel = /(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i.test(artist);
-  const normalized = artist.replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "").trim();
-  if (!syntheticChannel) {
-    return normalized;
-  }
-
-  return normalized
-    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
-    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2");
-}
-
-function normalizeArtistComparison(artist: string) {
-  return normalizeTrackField(artist).replace(/[^\p{L}\p{N}]/gu, "");
-}
-
-function normalizeTrackField(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function hashHue(input: string) {
@@ -2086,14 +1596,6 @@ function hashHue(input: string) {
     hash = (hash * 31 + input.charCodeAt(index)) | 0;
   }
   return Math.abs(hash) % 360;
-}
-
-function isHexColor(value: unknown): value is string {
-  return typeof value === "string" && /^#?[\da-f]{6}$/i.test(value);
-}
-
-function normalizeHexColor(value: string) {
-  return `#${value.replace(/^#/, "").toUpperCase()}`;
 }
 
 function escapeHtml(value: string) {
@@ -2107,8 +1609,4 @@ function escapeHtml(value: string) {
     };
     return map[char];
   });
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }

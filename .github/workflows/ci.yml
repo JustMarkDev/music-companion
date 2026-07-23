@@ -64,6 +64,9 @@ jobs:
       - name: Check frontend
         run: bun run check
 
+      - name: Test frontend
+        run: bun run test
+
       - name: Lint frontend
         run: bun run lint
 

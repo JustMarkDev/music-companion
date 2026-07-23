@@ -16,6 +16,8 @@ use tauri::{
 };
 use tauri_plugin_updater::UpdaterExt;
 
+mod hotkeys;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MediaState {
@@ -32,77 +34,14 @@ struct MediaState {
     playing_session_count: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HotkeyStatus {
-    action: String,
-    accelerator: String,
-    registered: bool,
-    error: Option<String>,
-    conflict_action: Option<String>,
-}
-
-static HOTKEY_STATUSES: OnceLock<Mutex<Vec<HotkeyStatus>>> = OnceLock::new();
-static HOTKEY_RECORDING: AtomicBool = AtomicBool::new(false);
-
 #[tauri::command]
-fn get_hotkey_statuses() -> Vec<HotkeyStatus> {
-    HOTKEY_STATUSES
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .map(|statuses| statuses.clone())
-        .unwrap_or_default()
+fn get_hotkey_statuses() -> Vec<hotkeys::HotkeyStatus> {
+    hotkeys::statuses()
 }
 
 #[tauri::command]
 fn set_hotkey_recording(app: tauri::AppHandle, recording: bool) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-
-    let was_recording = HOTKEY_RECORDING.swap(recording, Ordering::AcqRel);
-    if recording {
-        if was_recording {
-            return Ok(());
-        }
-        if let Err(error) = app.global_shortcut().unregister_all() {
-            HOTKEY_RECORDING.store(false, Ordering::Release);
-            return Err(format!(
-                "Unable to suspend shortcuts while recording: {error}"
-            ));
-        }
-        return Ok(());
-    }
-
-    if !was_recording {
-        return Ok(());
-    }
-
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|error| format!("Unable to reset shortcuts after recording: {error}"))?;
-
-    let shortcuts_to_restore = {
-        let mut statuses = HOTKEY_STATUSES
-            .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .map_err(|_| "Hotkey registry is unavailable".to_string())?;
-        let shortcuts = statuses
-            .iter()
-            .filter(|status| status.registered)
-            .cloned()
-            .collect::<Vec<_>>();
-        for status in &mut *statuses {
-            if status.registered {
-                status.registered = false;
-            }
-        }
-        shortcuts
-    };
-
-    for status in shortcuts_to_restore {
-        let _ = register_hotkey(app.clone(), status.action, status.accelerator);
-    }
-    let _ = app.emit("hotkey-statuses-changed", ());
-    Ok(())
+    hotkeys::set_recording(app, recording)
 }
 
 #[tauri::command]
@@ -110,91 +49,8 @@ fn register_hotkey(
     app: tauri::AppHandle,
     action: String,
     accelerator: String,
-) -> Result<HotkeyStatus, String> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
-
-    let shortcut = accelerator
-        .parse::<Shortcut>()
-        .map_err(|error| format!("Invalid shortcut: {error}"))?;
-    let mut statuses = HOTKEY_STATUSES
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .map_err(|_| "Hotkey registry is unavailable".to_string())?;
-
-    let conflict_action = statuses
-        .iter()
-        .find(|status| {
-            status.action != action && status.registered && status.accelerator == accelerator
-        })
-        .map(|status| status.action.clone());
-    let current = statuses
-        .iter()
-        .find(|status| status.action == action)
-        .cloned();
-
-    if let Some(current) = &current {
-        if current.accelerator == accelerator && current.registered {
-            return Ok(current.clone());
-        }
-    }
-
-    if let Some(conflict_action) = conflict_action {
-        return Ok(HotkeyStatus {
-            action,
-            accelerator,
-            registered: false,
-            error: Some(format!(
-                "Shortcut is already registered for {conflict_action}"
-            )),
-            conflict_action: Some(conflict_action),
-        });
-    }
-
-    if let Some(current) = &current {
-        if current.registered {
-            if let Ok(old_shortcut) = current.accelerator.parse::<Shortcut>() {
-                let _ = app.global_shortcut().unregister(old_shortcut);
-            }
-        }
-    }
-
-    let status = match app.global_shortcut().register(shortcut) {
-        Ok(()) => {
-            println!("[hotkey] registered {accelerator} for {action}");
-            HotkeyStatus {
-                action: action.clone(),
-                accelerator,
-                registered: true,
-                error: None,
-                conflict_action: None,
-            }
-        }
-        Err(error) => {
-            eprintln!("[hotkey] unable to register {accelerator} for {action}: {error}");
-            let failed = HotkeyStatus {
-                action: action.clone(),
-                accelerator,
-                registered: false,
-                error: Some(error.to_string()),
-                conflict_action: None,
-            };
-            let rolled_back = current.as_ref().is_some_and(|current| {
-                current.registered
-                    && current
-                        .accelerator
-                        .parse::<Shortcut>()
-                        .is_ok_and(|shortcut| app.global_shortcut().register(shortcut).is_ok())
-            });
-            if !rolled_back {
-                statuses.retain(|item| item.action != action);
-                statuses.push(failed.clone());
-            }
-            return Ok(failed);
-        }
-    };
-    statuses.retain(|item| item.action != action);
-    statuses.push(status.clone());
-    Ok(status)
+) -> Result<hotkeys::HotkeyStatus, String> {
+    hotkeys::register(app, action, accelerator)
 }
 
 impl MediaState {
@@ -359,6 +215,30 @@ mod media_state_tests {
         assert_eq!(retained.title, "Track");
         assert_eq!(retained.playback_rate, None);
     }
+
+    #[test]
+    fn keeps_a_reported_media_session_instead_of_the_cache() {
+        let reported = state(true, true, 90_000);
+        let retained = retain_cached_media_when_session_disappears(
+            reported.clone(),
+            Some(state(true, false, 60_000)),
+        );
+
+        assert_eq!(retained.position_ms, reported.position_ms);
+        assert_eq!(retained.is_playing, reported.is_playing);
+    }
+
+    #[test]
+    fn keeps_no_session_when_there_is_no_valid_cached_session() {
+        let reported = state(false, false, 0);
+        let retained = retain_cached_media_when_session_disappears(
+            reported.clone(),
+            Some(state(false, false, 60_000)),
+        );
+
+        assert!(!retained.has_session);
+        assert_eq!(retained.position_ms, reported.position_ms);
+    }
 }
 
 #[tauri::command]
@@ -452,34 +332,11 @@ fn release_hotkeys_and_exit(app: &tauri::AppHandle) {
 
 #[tauri::command]
 fn retry_failed_hotkeys(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        for delay in [250, 750, 1_500] {
-            std::thread::sleep(Duration::from_millis(delay));
-            let failed = get_hotkey_statuses()
-                .into_iter()
-                .filter(|status| !status.registered)
-                .collect::<Vec<_>>();
-            if failed.is_empty() {
-                return;
-            }
-            let mut recovered = false;
-            for status in failed {
-                recovered |= register_hotkey(
-                    app.clone(),
-                    status.action.clone(),
-                    status.accelerator.clone(),
-                )
-                .is_ok_and(|status| status.registered);
-            }
-            if recovered {
-                let _ = app.emit("hotkey-statuses-changed", ());
-            }
-        }
-    });
+    hotkeys::retry_failed(app);
 }
 
 pub fn run() {
-    use tauri_plugin_global_shortcut::{Code, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::{Code, ShortcutState};
     use tauri_plugin_window_state::StateFlags;
 
     let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
@@ -487,24 +344,7 @@ pub fn run() {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            if HOTKEY_RECORDING.load(Ordering::Acquire) {
-                return;
-            }
-            let action = HOTKEY_STATUSES
-                .get()
-                .and_then(|statuses| statuses.lock().ok())
-                .and_then(|statuses| {
-                    statuses
-                        .iter()
-                        .find(|status| {
-                            status.registered
-                                && status
-                                    .accelerator
-                                    .parse::<Shortcut>()
-                                    .is_ok_and(|registered| &registered == shortcut)
-                        })
-                        .map(|status| status.action.clone())
-                });
+            let action = hotkeys::action_for(shortcut);
             if action.as_deref() == Some("pinned") {
                 println!("[hotkey] pinned-mode hotkey used");
                 let _ = app.emit("toggle-overlay-lock", ());
@@ -1255,6 +1095,18 @@ mod media {
             assert_eq!(
                 current_timeline_position(179_000, 180_000, 1_000_000_000, 105_000, 1.0, true),
                 184_000
+            );
+        }
+
+        #[test]
+        fn keeps_the_reported_position_for_invalid_timeline_metadata() {
+            assert_eq!(
+                current_timeline_position(60_000, 180_000, 0, 102_500, 1.0, true),
+                60_000
+            );
+            assert_eq!(
+                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, f64::NAN, true,),
+                60_000
             );
         }
     }

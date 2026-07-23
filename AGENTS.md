@@ -1,5 +1,19 @@
 # Repository instructions
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as local Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Uses the default five canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Uses a single-context layout. See `docs/agents/domain.md`.
+
 ## Repository scope
 
 Music Companion is a Windows 10/11 desktop lyrics overlay built with Tauri 2, TypeScript, Rust, Bun, and Vite+. Preserve Windows-only behavior and the current Tauri/frontend boundary unless a task explicitly changes them.
