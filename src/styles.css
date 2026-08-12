@@ -228,10 +228,8 @@ button {
   transform: translateY(1px);
 }
 
-.icon-button svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.1;
+.icon-button i {
+  font-size: 16px;
 }
 
 .icon-button.danger:hover {
@@ -985,11 +983,9 @@ input[type="text"][readonly] {
 }
 
 .toast-icon {
-  width: 18px;
-  height: 18px;
+  font-size: 18px;
   margin-top: 1px;
   color: var(--settings-accent);
-  stroke-width: 2.2;
 }
 
 .toast-error .toast-icon {
