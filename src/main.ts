@@ -3,17 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import {
-  CircleCheck,
-  createIcons,
-  Maximize2,
-  Menu,
-  Minus,
-  RotateCcw,
-  Settings,
-  TriangleAlert,
-  X,
-} from "lucide";
+import "@phosphor-icons/web/regular";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { LyricsCache } from "./lyrics-cache";
@@ -147,20 +137,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="window-actions">
           <div class="secondary-actions">
             <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
-              <i data-lucide="settings"></i>
+              <i class="ph ph-gear"></i>
             </button>
             <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
-              <i data-lucide="minus"></i>
+              <i class="ph ph-minus"></i>
             </button>
             <button class="icon-button" id="maximize" title="Maximize" aria-label="Maximize">
-              <i data-lucide="maximize-2"></i>
+              <i class="ph ph-arrows-out"></i>
             </button>
           </div>
           <button class="icon-button danger" id="close" title="Hide" aria-label="Hide">
-            <i data-lucide="x"></i>
+            <i class="ph ph-x"></i>
           </button>
           <button class="icon-button compact-menu-toggle" id="compact-menu-toggle" title="Window menu" aria-label="Window menu" aria-expanded="false">
-            <i data-lucide="menu"></i>
+            <i class="ph ph-list"></i>
           </button>
           <div class="compact-menu" id="compact-menu" hidden>
             <button data-action="settings">Settings</button>
@@ -183,7 +173,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <p>Make the overlay feel at home on your desktop.</p>
           </div>
           <button class="icon-button" id="settings-close" title="Close settings" aria-label="Close settings">
-            <i data-lucide="x"></i>
+            <i class="ph ph-x"></i>
           </button>
         </div>
 
@@ -286,19 +276,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="settings-card system-group">
             <div class="hotkey-setting">
               <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + L</button></span>
+              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + L</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Next song</strong><small>Skip to the next track</small></span>
-              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Right Arrow</button></span>
+              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Right Arrow</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Previous song</strong><small>Return to the previous track</small></span>
-              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Left Arrow</button></span>
+              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Left Arrow</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
-              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i data-lucide="rotate-ccw"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + Space</button></span>
+              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + Space</button></span>
             </div>
             <div class="cache-setting">
               <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
@@ -324,9 +314,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
 `;
 
-createIcons({
-  icons: { CircleCheck, Maximize2, Menu, Minus, RotateCcw, Settings, TriangleAlert, X },
-});
 void renderAppVersion();
 
 if (isSettingsWindow) {
@@ -681,7 +668,7 @@ function showToast(title: string, description?: string, variant: "success" | "er
   toast.className = `toast toast-${variant} toast-visible`;
   toast.setAttribute("role", "status");
   toast.innerHTML = `
-    <i class="toast-icon" data-lucide="${variant === "error" ? "triangle-alert" : "circle-check"}" aria-hidden="true"></i>
+    <i class="toast-icon ph ${variant === "error" ? "ph-warning" : "ph-check-circle"}" aria-hidden="true"></i>
     <div class="toast-content">
       <p class="toast-title"></p>
       ${description ? '<p class="toast-description"></p>' : ""}
@@ -691,7 +678,6 @@ function showToast(title: string, description?: string, variant: "success" | "er
   if (descriptionElement) descriptionElement.textContent = description ?? "";
   region.append(toast);
   updateToastStack(region);
-  createIcons({ icons: { CircleCheck, TriangleAlert }, attrs: { "aria-hidden": "true" } });
   window.setTimeout(() => {
     toast.classList.add("toast-exiting");
     updateToastStack(region);
@@ -884,9 +870,8 @@ function renderHotkeyStatuses() {
     warning.className = "hotkey-warning";
     warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
     warning.setAttribute("aria-label", warning.title);
-    warning.innerHTML = '<i data-lucide="triangle-alert" aria-hidden="true"></i>';
+    warning.innerHTML = '<i class="ph ph-warning" aria-hidden="true"></i>';
     element.prepend(warning);
-    createIcons({ icons: { TriangleAlert } });
   });
 }
 
