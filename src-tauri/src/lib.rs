@@ -1117,8 +1117,8 @@ mod romanization {
     use lindera::dictionary::load_dictionary;
     use lindera::mode::Mode;
     use lindera::segmenter::Segmenter;
-    use lindera::tokenizer::Tokenizer;
     use pinyin::ToPinyin;
+    use std::borrow::Cow;
     use std::sync::OnceLock;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1185,20 +1185,16 @@ mod romanization {
     }
 
     fn romanize_japanese(text: &str) -> String {
-        static TOKENIZER: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-        let tokenizer = TOKENIZER.get_or_init(|| {
+        static SEGMENTER: OnceLock<Result<Segmenter, String>> = OnceLock::new();
+        let segmenter = SEGMENTER.get_or_init(|| {
             let dictionary =
                 load_dictionary("embedded://ipadic").map_err(|error| error.to_string())?;
-            Ok(Tokenizer::new(Segmenter::new(
-                Mode::Normal,
-                dictionary,
-                None,
-            )))
+            Ok(Segmenter::new(Mode::Normal, dictionary, None))
         });
-        let Ok(tokenizer) = tokenizer else {
+        let Ok(segmenter) = segmenter else {
             return romanize_japanese_without_segmentation(text);
         };
-        let Ok(mut tokens) = tokenizer.tokenize(text) else {
+        let Ok(mut tokens) = segmenter.segment(Cow::Borrowed(text)) else {
             return romanize_japanese_without_segmentation(text);
         };
 
