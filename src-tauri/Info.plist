@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shown when the AppleScript fallback first asks to control Music or Spotify,
+	     which only happens when the MediaRemote adapter is unavailable. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Music Companion needs to control Music and Spotify to read the current track and change playback.</string>
+</dict>
+</plist>

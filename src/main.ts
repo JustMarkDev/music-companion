@@ -28,9 +28,42 @@ import {
   DEFAULT_HOTKEYS,
   isHexColor,
   normalizeHexColor,
+  PLATFORM,
+  type BackdropMaterial,
   type HotkeyAction,
   type SettingsState,
 } from "./settings";
+
+// Windows composes the overlay with Mica and Acrylic; macOS uses the closest
+// Liquid Glass variants, so each platform is labelled in its own terms.
+const MATERIAL_COPY: Record<
+  typeof PLATFORM,
+  Record<BackdropMaterial, { label: string; description: string }>
+> = {
+  windows: {
+    acrylic: {
+      label: "Acrylic",
+      description: "Live frosted-glass blur of windows behind the overlay.",
+    },
+    mica: {
+      label: "Mica",
+      description: "Efficient opaque backdrop tinted from your desktop wallpaper.",
+    },
+  },
+  macos: {
+    acrylic: {
+      label: "Clear",
+      description: "Lightly frosted glass that reveals more of the windows behind the overlay.",
+    },
+    mica: {
+      label: "Regular",
+      description: "Standard glass with a heavier frosted finish.",
+    },
+  },
+};
+
+const materialCopy = MATERIAL_COPY[PLATFORM];
+const osName = PLATFORM === "macos" ? "macOS" : "Windows";
 
 type MediaState = {
   hasSession: boolean;
@@ -221,10 +254,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="settings-card material-setting">
             <div class="segmented-control" id="backdrop-material" role="radiogroup" aria-label="Window material">
-              <button type="button" data-backdrop-material="acrylic" role="radio">Acrylic</button>
-              <button type="button" data-backdrop-material="mica" role="radio">Mica</button>
+              <button type="button" data-backdrop-material="acrylic" role="radio">${materialCopy.acrylic.label}</button>
+              <button type="button" data-backdrop-material="mica" role="radio">${materialCopy.mica.label}</button>
             </div>
-            <p id="material-description">Live frosted-glass blur of windows behind the overlay.</p>
+            <p id="material-description">${materialCopy.acrylic.description}</p>
           </div>
         </section>
 
@@ -255,7 +288,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="settings-card switch-group">
             <label class="switch-row" for="start-login">
-              <span><strong>Start at login</strong><small>Launch automatically with Windows</small></span>
+              <span><strong>Start at login</strong><small>Launch automatically with ${osName}</small></span>
               <input id="start-login" type="checkbox" role="switch" />
               <span class="switch-control" aria-hidden="true"></span>
             </label>
@@ -276,19 +309,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="settings-card system-group">
             <div class="hotkey-setting">
               <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + L</button></span>
+              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.pinned)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Next song</strong><small>Skip to the next track</small></span>
-              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Right Arrow</button></span>
+              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.next)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Previous song</strong><small>Return to the previous track</small></span>
-              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Left Arrow</button></span>
+              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.previous)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
-              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">Ctrl + Shift + Space</button></span>
+              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.playPause)}</button></span>
             </div>
             <div class="cache-setting">
               <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
@@ -830,7 +863,7 @@ function wireWindowEvents() {
   void listen("toggle-overlay-lock", toggleOverlayLock);
   void listen("media-state-changed", () => {
     mediaEventSequence += 1;
-    void pollMedia("wmtc-event");
+    void pollMedia("media-event");
   });
   void listen("lyrics-cache-cleared", () => {
     clearLyricsCache();
@@ -1001,7 +1034,7 @@ async function pollMedia(reason = "manual") {
     pollStartedAtMs = 0;
     if (pollQueued) {
       pollQueued = false;
-      void pollMedia("queued-wmtc-event");
+      void pollMedia("queued-media-event");
     }
   }
 }
@@ -1258,7 +1291,7 @@ function renderLyrics() {
   lastScrolledLineIndex = -1;
 
   if (!currentMedia.hasSession) {
-    list.innerHTML = `<p class="empty-state">Play something in a Windows media app.</p>`;
+    list.innerHTML = `<p class="empty-state">Play something in a media app.</p>`;
     return;
   }
 
@@ -1447,9 +1480,7 @@ function renderSettings() {
     button.setAttribute("aria-checked", String(selected));
   });
   document.querySelector<HTMLElement>("#material-description")!.textContent =
-    settings.backdropMaterial === "mica"
-      ? "Efficient opaque backdrop tinted from your desktop wallpaper."
-      : "Live frosted-glass blur of windows behind the overlay.";
+    materialCopy[settings.backdropMaterial].description;
   document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
   const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
   accentHex.value = settings.accentColor;

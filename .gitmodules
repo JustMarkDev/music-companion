@@ -1,0 +1,3 @@
+[submodule "src-tauri/vendor/mediaremote-adapter"]
+	path = src-tauri/vendor/mediaremote-adapter
+	url = https://github.com/ungive/mediaremote-adapter.git

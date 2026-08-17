@@ -1,7 +1,7 @@
 [package]
 name = "music-companion"
 version = "1.2.2"
-description = "Windows lyrics overlay built with Tauri"
+description = "Windows and macOS lyrics overlay built with Tauri"
 authors = ["Music Companion"]
 edition = "2021"
 
@@ -15,7 +15,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+# `macos-private-api` backs `macOSPrivateApi` in tauri.macos.conf.json, which the
+# transparent overlay and the Liquid Glass backdrop depend on. It compiles to
+# nothing on Windows.
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 urlencoding = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
@@ -25,6 +28,7 @@ pinyin = "0.11.0"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2.10.1"
+tauri-plugin-autostart = "2.5.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -36,4 +40,10 @@ windows = { version = "0.58", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
-winreg = "0.56"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# MediaRemote is entitlement-gated since macOS 15.4, so now-playing data comes from
+# the vendored adapter running under system Perl. See `src/media_macos.rs`.
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSResponder", "NSWindow"] }
+tauri-plugin-liquid-glass = "0.1.6"

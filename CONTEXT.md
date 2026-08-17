@@ -1,6 +1,6 @@
 # Music Companion
 
-Music Companion follows the media playing on Windows and presents lyrics synchronized to that playback.
+Music Companion follows the media playing on Windows and macOS and presents lyrics synchronized to that playback.
 
 ## Language
 
@@ -12,7 +12,7 @@ A particular rendition of a song whose duration can require different synchroniz
 _Avoid_: Track when discussing duration-sensitive lyric identity
 
 **Media session**:
-Windows' current report of a player's media and playback state. A media session may temporarily disappear while its playback variant remains current.
+The operating system's current report of a player's media and playback state, from Windows Media Transport Controls or from macOS `MediaRemote`. A media session may temporarily disappear while its playback variant remains current.
 
 **Playback clock**:
 Music Companion's estimate of the current position within a playback variant, used to synchronize lyric lines.

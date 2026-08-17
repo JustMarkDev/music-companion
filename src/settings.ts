@@ -1,6 +1,7 @@
 export type AccentMode = "dynamic" | "manual";
 export type BackdropMaterial = "mica" | "acrylic";
 export type HotkeyAction = "pinned" | "next" | "previous" | "playPause";
+export type Platform = "windows" | "macos";
 
 export type SettingsState = {
   clickThrough: boolean;
@@ -16,12 +17,39 @@ export type SettingsState = {
   hotkeys: Record<HotkeyAction, string>;
 };
 
-export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
+const WINDOWS_HOTKEYS: Record<HotkeyAction, string> = {
   pinned: "Ctrl+Shift+KeyL",
   next: "Ctrl+ArrowRight",
   previous: "Ctrl+ArrowLeft",
   playPause: "Ctrl+Shift+Space",
 };
+
+// macOS reserves Ctrl+Arrow for Mission Control, so the transport shortcuts add
+// Command. Super is the accelerator name the global-shortcut plugin expects.
+const MACOS_HOTKEYS: Record<HotkeyAction, string> = {
+  pinned: "Shift+Super+KeyL",
+  next: "Ctrl+Super+ArrowRight",
+  previous: "Ctrl+Super+ArrowLeft",
+  playPause: "Shift+Super+Space",
+};
+
+export function defaultHotkeysFor(platform: Platform): Record<HotkeyAction, string> {
+  return { ...(platform === "macos" ? MACOS_HOTKEYS : WINDOWS_HOTKEYS) };
+}
+
+/**
+ * Stored settings are decoded before any command can resolve, so the platform has
+ * to be known synchronously. Both supported webviews report it unambiguously.
+ */
+export function detectPlatform(
+  userAgent: string = globalThis.navigator?.userAgent ?? "",
+): Platform {
+  return /mac os x|macintosh/i.test(userAgent) ? "macos" : "windows";
+}
+
+export const PLATFORM: Platform = detectPlatform();
+
+export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = defaultHotkeysFor(PLATFORM);
 
 export const DEFAULT_SETTINGS: SettingsState = {
   clickThrough: false,

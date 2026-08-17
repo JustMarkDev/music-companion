@@ -13,7 +13,9 @@
     "format:check": "vp format --check",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build --target x86_64-pc-windows-msvc"
+    "tauri:build": "tauri build",
+    "tauri:build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "tauri:build:macos": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",

@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "windows"))]
-compile_error!("Music Companion is currently Windows-only.");
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+compile_error!("Music Companion supports Windows and macOS only.");
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,6 +17,18 @@ use tauri::{
 use tauri_plugin_updater::UpdaterExt;
 
 mod hotkeys;
+
+// Each platform provides its own media, backdrop, and stacking backend behind a
+// shared interface, so the orchestration below stays platform-neutral.
+#[cfg(target_os = "macos")]
+#[path = "media_macos.rs"]
+mod media;
+#[cfg(target_os = "macos")]
+#[path = "z_order_macos.rs"]
+mod overlay_z_order;
+#[cfg(target_os = "macos")]
+#[path = "backdrop_macos.rs"]
+mod persistent_backdrop;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,7 +126,7 @@ async fn get_media_state() -> Result<MediaState, String> {
         .is_err()
     {
         return Ok(cached_media_state()
-            .unwrap_or_else(|| MediaState::no_session("Windows media session is starting")));
+            .unwrap_or_else(|| MediaState::no_session("Media session is starting")));
     }
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -132,9 +144,9 @@ async fn get_media_state() -> Result<MediaState, String> {
     match tokio::time::timeout(MEDIA_QUERY_WAIT, receiver).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Ok(cached_media_state()
-            .unwrap_or_else(|| MediaState::no_session("Windows media session reader stopped"))),
+            .unwrap_or_else(|| MediaState::no_session("Media session reader stopped"))),
         Err(_) => Ok(cached_media_state()
-            .unwrap_or_else(|| MediaState::no_session("Windows media session is starting"))),
+            .unwrap_or_else(|| MediaState::no_session("Media session is starting"))),
     }
 }
 
@@ -173,8 +185,8 @@ fn retain_cached_media_when_session_disappears(
         return state;
     };
 
-    // Some players unregister their WMTC session when playback is paused.
-    // Keep the latest track visible and freeze its clock until Windows reports
+    // Some players unregister their media session when playback is paused.
+    // Keep the latest track visible and freeze its clock until the system reports
     // another session, rather than clearing the overlay immediately.
     cached.is_playing = false;
     cached.playback_rate = None;
@@ -203,7 +215,7 @@ mod media_state_tests {
     }
 
     #[test]
-    fn retains_and_pauses_cached_track_when_windows_drops_the_session() {
+    fn retains_and_pauses_cached_track_when_the_system_drops_the_session() {
         let retained = retain_cached_media_when_session_disappears(
             state(false, false, 0),
             Some(state(true, true, 60_000)),
@@ -264,21 +276,45 @@ async fn fetch_lyrics(
     result
 }
 
+/// The autostart plugin registers a `Run` key on Windows and a launch agent on
+/// macOS, which keeps one implementation for both platforms.
 #[tauri::command]
-fn get_start_at_login() -> Result<bool, String> {
-    startup::get_start_at_login()
+fn get_start_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn set_start_at_login(enabled: bool) -> Result<(), String> {
-    startup::set_start_at_login(enabled)
+fn set_start_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|error| error.to_string())
+    } else {
+        autolaunch.disable().map_err(|error| error.to_string())
+    }
 }
 
 #[tauri::command]
 fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String> {
     window
         .set_always_on_top(enabled)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    // Tauri drops the overlay back to the standard floating level, which is below
+    // fullscreen windows. Restore the level the overlay needs.
+    #[cfg(target_os = "macos")]
+    if enabled {
+        if let Some(overlay) = window.get_webview_window("main") {
+            overlay_z_order::apply(&overlay)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -308,6 +344,14 @@ fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     window
         .set_always_on_top(true)
         .map_err(|error| error.to_string())?;
+
+    // macOS orders windows strictly by level, so the standard always-on-top level
+    // would leave the settings window stuck behind the raised overlay. Matching the
+    // overlay's level restores the Windows behaviour, where focus decides which of
+    // the two is in front.
+    #[cfg(target_os = "macos")]
+    overlay_z_order::apply(&window)?;
+
     window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -327,6 +371,7 @@ fn release_hotkeys_and_exit(app: &tauri::AppHandle) {
     if let Err(error) = app.global_shortcut().unregister_all() {
         eprintln!("[hotkey] unable to unregister shortcuts while quitting: {error}");
     }
+    media::shutdown();
     app.exit(0);
 }
 
@@ -367,7 +412,7 @@ pub fn run() {
                 std::thread::spawn(move || {
                     match media::send_transport_control(&action, !uses_same_media_key) {
                         Ok(accepted) => println!(
-                            "[media-control] Windows API received {action}; accepted={accepted}"
+                            "[media-control] system media API received {action}; accepted={accepted}"
                         ),
                         Err(error) => eprintln!("[media-control] {action} failed: {error}"),
                     }
@@ -376,7 +421,7 @@ pub fn run() {
         })
         .build();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -384,7 +429,16 @@ pub fn run() {
                 .with_denylist(&["main"])
                 .build(),
         )
-        .plugin(shortcut_plugin)
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(shortcut_plugin);
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_liquid_glass::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             get_media_state,
             get_hotkey_statuses,
@@ -425,6 +479,13 @@ pub fn run() {
 
 fn start_automatic_update(app: tauri::AppHandle) {
     if cfg!(debug_assertions) {
+        return;
+    }
+
+    // Replacing the app bundle in place requires a Developer ID signature that
+    // Gatekeeper accepts. Until release signing is configured, macOS updates are
+    // installed manually. See the release notes in README.md.
+    if cfg!(target_os = "macos") {
         return;
     }
 
@@ -475,6 +536,13 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
             }
         });
+
+    // A template icon lets the macOS menu bar recolour the glyph for light, dark,
+    // and tinted appearances.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon_as_template(true);
+    }
 
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -735,6 +803,7 @@ mod overlay_z_order {
     }
 }
 
+#[cfg(target_os = "windows")]
 mod media {
     use super::MediaState;
     use std::{
@@ -771,6 +840,10 @@ mod media {
             }
         });
     }
+
+    /// WMTC event subscriptions are released with the process, so there is nothing
+    /// to tear down here. macOS needs this hook to stop its helper process.
+    pub fn shutdown() {}
 
     fn run_event_monitor(app: tauri::AppHandle) -> windows::core::Result<()> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
@@ -1857,38 +1930,5 @@ mod lyrics {
 
             assert_eq!(results[0].track_name.as_deref(), Some("Self Aware"));
         }
-    }
-}
-
-mod startup {
-    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-
-    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const APP_NAME: &str = "Music Companion";
-
-    pub fn get_start_at_login() -> Result<bool, String> {
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run = hkcu
-            .open_subkey(RUN_KEY)
-            .map_err(|error| error.to_string())?;
-        Ok(run.get_value::<String, _>(APP_NAME).is_ok())
-    }
-
-    pub fn set_start_at_login(enabled: bool) -> Result<(), String> {
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let (run, _) = hkcu
-            .create_subkey(RUN_KEY)
-            .map_err(|error| error.to_string())?;
-
-        if enabled {
-            let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-            let value = format!("\"{}\"", exe.display());
-            run.set_value(APP_NAME, &value)
-                .map_err(|error| error.to_string())?;
-        } else {
-            let _ = run.delete_value(APP_NAME);
-        }
-
-        Ok(())
     }
 }

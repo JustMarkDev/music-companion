@@ -1,5 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { decodeSettings, DEFAULT_SETTINGS } from "./settings";
+import { decodeSettings, defaultHotkeysFor, DEFAULT_SETTINGS, detectPlatform } from "./settings";
+
+describe("platform defaults", () => {
+  it("detects the host platform from either supported webview", () => {
+    expect(
+      detectPlatform(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+      ),
+    ).toBe("macos");
+    expect(
+      detectPlatform(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/120",
+      ),
+    ).toBe("windows");
+  });
+
+  it("keeps macOS transport hotkeys clear of Mission Control", () => {
+    const macos = defaultHotkeysFor("macos");
+
+    expect(macos.next).toBe("Ctrl+Super+ArrowRight");
+    expect(macos.previous).toBe("Ctrl+Super+ArrowLeft");
+    for (const accelerator of Object.values(macos)) {
+      expect(accelerator).toContain("Super");
+    }
+  });
+
+  it("leaves the Windows defaults unchanged", () => {
+    expect(defaultHotkeysFor("windows")).toEqual({
+      pinned: "Ctrl+Shift+KeyL",
+      next: "Ctrl+ArrowRight",
+      previous: "Ctrl+ArrowLeft",
+      playPause: "Ctrl+Shift+Space",
+    });
+  });
+
+  it("hands out independent copies", () => {
+    const first = defaultHotkeysFor("macos");
+    first.next = "Changed";
+
+    expect(defaultHotkeysFor("macos").next).toBe("Ctrl+Super+ArrowRight");
+  });
+});
 
 describe("decodeSettings", () => {
   it("returns independent defaults for malformed data", () => {

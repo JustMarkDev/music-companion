@@ -1,6 +1,6 @@
 # Contributing to Music Companion
 
-Focused bug fixes, tests, documentation, accessibility improvements, and features within Music Companion's Windows lyrics-overlay scope are welcome.
+Focused bug fixes, tests, documentation, accessibility improvements, and features within Music Companion's Windows and macOS lyrics-overlay scope are welcome.
 
 ## Before you start
 
@@ -10,12 +10,22 @@ Focused bug fixes, tests, documentation, accessibility improvements, and feature
 
 ## Local setup
 
-Use Windows 10 or 11 with Bun, Node.js 20 or newer, stable Rust with the MSVC toolchain, and Microsoft WebView2 Runtime.
+Use Bun, Node.js 20 or newer, and stable Rust on either supported platform.
 
-```powershell
+- Windows 10 or 11 with the Rust MSVC toolchain and Microsoft WebView2 Runtime.
+- macOS 11 or later with Xcode Command Line Tools and CMake (`brew install cmake`),
+  which `build.rs` needs to compile the bundled MediaRemote adapter.
+
+Clone with `--recurse-submodules`, or run `git submodule update --init --recursive`
+in an existing clone, so the macOS adapter source is present.
+
+```bash
 bun install --frozen-lockfile
 bun run tauri:dev
 ```
+
+Changes to platform backends should be checked on both platforms when possible.
+State in the pull request which platforms you verified.
 
 ## Making changes
 
