@@ -37,7 +37,7 @@ jobs:
             frontend=true
           fi
 
-          if grep -Eq '^(src-tauri/|package\.json$|bun\.lock$|\.gitattributes$|\.gitignore$|\.github/workflows/)' <<<"$files"; then
+          if grep -Eq '^(src-tauri/|package\.json$|bun\.lock$|\.gitattributes$|\.gitignore$|\.gitmodules$|\.github/workflows/)' <<<"$files"; then
             native=true
           fi
 
@@ -80,25 +80,42 @@ jobs:
         run: bun audit
 
   native-checks:
-    name: Rust and Tauri checks
+    name: Rust and Tauri checks (${{ matrix.name }})
     needs: detect-changed-areas
     if: needs.detect-changed-areas.outputs.native == 'true'
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          - name: macOS
+            os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.targets }}
           components: rustfmt, clippy
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
+
+      # build.rs compiles the vendored MediaRemote adapter with CMake.
+      - name: Verify CMake is available
+        if: runner.os == 'macOS'
+        run: cmake --version || brew install cmake
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

@@ -1,4 +1,4 @@
-name: Release Windows
+name: Release
 
 on:
   push:
@@ -10,8 +10,18 @@ permissions:
 
 jobs:
   verify:
-    name: Verify tagged commit
-    runs-on: windows-latest
+    name: Verify tagged commit (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          - name: macOS
+            os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
@@ -19,6 +29,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -28,11 +40,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.targets }}
           components: rustfmt, clippy
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
+
+      # build.rs compiles the vendored MediaRemote adapter with CMake.
+      - name: Verify CMake is available
+        if: runner.os == 'macOS'
+        run: cmake --version || brew install cmake
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -68,7 +85,7 @@ jobs:
         working-directory: src-tauri
         run: cargo audit
 
-  release:
+  release-windows:
     name: Build and publish Windows installers
     runs-on: windows-latest
     needs: verify
@@ -101,10 +118,64 @@ jobs:
           tagName: v__VERSION__
           releaseName: Music Companion v__VERSION__
           releaseBody: |
-            Music Companion per Windows.
+            Music Companion per Windows e macOS.
 
-            Scarica l'installer NSIS (`.exe`).
+            - Windows: scarica l'installer NSIS (`.exe`).
+            - macOS: scarica il `.dmg` universale (Apple Silicon e Intel).
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
           args: --target x86_64-pc-windows-msvc
+
+  release-macos:
+    name: Build and publish macOS disk image
+    runs-on: macos-latest
+    # The Windows job owns the release body and the updater manifest, so it has to
+    # create the release first.
+    needs: release-windows
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Verify CMake is available
+        run: cmake --version || brew install cmake
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional. Without a Developer ID the disk image is published unsigned
+          # and users must confirm the first launch through Gatekeeper. Adding
+          # these secrets enables signing and notarization with no other change.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: v__VERSION__
+          releaseDraft: false
+          prerelease: false
+          # macOS auto-update stays off until release signing is configured, so
+          # this job must not overwrite the Windows updater manifest.
+          includeUpdaterJson: false
+          args: --target universal-apple-darwin

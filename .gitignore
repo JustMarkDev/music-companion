@@ -5,6 +5,7 @@ dist-ssr/
 .codex-logs/
 
 src-tauri/target/
+src-tauri/resources/macos/
 
 *.pdb
 *.log

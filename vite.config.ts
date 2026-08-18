@@ -3,7 +3,9 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   clearScreen: false,
   fmt: {
-    ignorePatterns: ["src-tauri/gen/**"],
+    // `src-tauri/vendor` is the pinned MediaRemote adapter submodule, which must
+    // stay byte-identical to upstream.
+    ignorePatterns: ["src-tauri/gen/**", "src-tauri/vendor/**"],
   },
   server: {
     port: 1421,
@@ -29,7 +31,15 @@ export default defineConfig({
         cache: false,
       },
       "tauri:build": {
+        command: "tauri build",
+        cache: false,
+      },
+      "tauri:build:windows": {
         command: "tauri build --target x86_64-pc-windows-msvc",
+        cache: false,
+      },
+      "tauri:build:macos": {
+        command: "tauri build --target universal-apple-darwin",
         cache: false,
       },
     },
