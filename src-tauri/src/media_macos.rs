@@ -659,6 +659,7 @@ mod tests {
         let script = super::supervised_stream_script(&super::AdapterPaths {
             framework: "/Apps/Music Companion.app/Frameworks/MediaRemoteAdapter.framework".into(),
             script: "/Apps/Music Companion.app/Resources/mediaremote-adapter.pl".into(),
+            test_client: "/Apps/Music Companion.app/Resources/MediaRemoteAdapterTestClient".into(),
         });
 
         // A TERM trap covers a clean quit and the process-ID poll covers a crash,
