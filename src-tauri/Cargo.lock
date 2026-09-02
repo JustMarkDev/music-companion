@@ -515,6 +515,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "crawdad"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87fbd1ecd2ed790e11c8fbe034f9b3e7687404818d1bdfd8218d26ec645ec7c5"
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2089,9 +2095,9 @@ dependencies = [
 
 [[package]]
 name = "lindera"
-version = "5.0.2"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96b4e6eab73ca2a20b2aaed86fc4ff2e33619cc28f70f7610ae9229522d8b9e7"
+checksum = "65015f4b12a1b869058a602e3cf7b39239ca1fbedd4b451bc9bb2fd2c9989eee"
 dependencies = [
  "anyhow",
  "lindera-dictionary",
@@ -2107,12 +2113,13 @@ dependencies = [
 
 [[package]]
 name = "lindera-dictionary"
-version = "5.1.0"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "880e2dcb1128fc0ab57a00d43c954e0b6c5df3999e3ec084080570534d94b6ce"
+checksum = "647b3dd3102151b82d6995f5fafdb4fe512f8b65b5f92ccf6bfde2ba33596423"
 dependencies = [
  "anyhow",
  "byteorder",
+ "crawdad",
  "csv",
  "daachorse 4.0.0",
  "encoding_rs",
@@ -2138,9 +2145,9 @@ dependencies = [
 
 [[package]]
 name = "lindera-ipadic"
-version = "5.1.0"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42612d0bda9dfeec88c36d5a377c8c1bacaff8f568b9dc585898367ffa20262"
+checksum = "5d01d06a14be0253c6f11cd48e3acebb0698aee3b199715e8ffae0c6f3111eb8"
 dependencies = [
  "lindera-dictionary",
 ]
