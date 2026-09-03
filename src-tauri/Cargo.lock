@@ -516,9 +516,9 @@ dependencies = [
 
 [[package]]
 name = "crawdad"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87fbd1ecd2ed790e11c8fbe034f9b3e7687404818d1bdfd8218d26ec645ec7c5"
+checksum = "abed0ad19907fc8472dae05f0418dfa82fdf0eaef18427c7c7cc4e42db41534b"
 
 [[package]]
 name = "crc32fast"
@@ -641,9 +641,9 @@ checksum = "6f55d7153ba3b507595872a3874803f07a8a81d1e888abed8e5db7da0597d6e2"
 
 [[package]]
 name = "daachorse"
-version = "4.0.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d358f1fa877be3097baa74c1fc22288626450392cb37d844f850baa60e6439a0"
+checksum = "cd10668980c9e7ba8aa2e616207d9ec52f7db66ebb47db857ed1f3c342530dad"
 
 [[package]]
 name = "darling"
@@ -2095,9 +2095,9 @@ dependencies = [
 
 [[package]]
 name = "lindera"
-version = "5.3.0"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65015f4b12a1b869058a602e3cf7b39239ca1fbedd4b451bc9bb2fd2c9989eee"
+checksum = "2ba619c086410a8d3b82f0208e45a8d496d895a8b883fe8975713abd340957db"
 dependencies = [
  "anyhow",
  "lindera-dictionary",
@@ -2113,15 +2113,15 @@ dependencies = [
 
 [[package]]
 name = "lindera-dictionary"
-version = "5.3.0"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "647b3dd3102151b82d6995f5fafdb4fe512f8b65b5f92ccf6bfde2ba33596423"
+checksum = "5c1b3280d38586314078049deb66f332f544765cc23b683c56c28e335cabcb20"
 dependencies = [
  "anyhow",
  "byteorder",
  "crawdad",
  "csv",
- "daachorse 4.0.0",
+ "daachorse 5.0.0",
  "encoding_rs",
  "encoding_rs_io",
  "flate2",
@@ -2145,9 +2145,9 @@ dependencies = [
 
 [[package]]
 name = "lindera-ipadic"
-version = "5.3.0"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d01d06a14be0253c6f11cd48e3acebb0698aee3b199715e8ffae0c6f3111eb8"
+checksum = "e51282ba30864e7b1eea0740f03ed0ddd9f58de85bc1315be4847005e45949fe"
 dependencies = [
  "lindera-dictionary",
 ]
