@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
-    "@voidzero-dev/vite-plus-core": "^0.2.9",
+    "@voidzero-dev/vite-plus-core": "^0.3.0",
     "typescript": "^7.0.2",
     "vite-plus": "^0.3.0"
   },
