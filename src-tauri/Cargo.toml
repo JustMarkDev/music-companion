@@ -23,7 +23,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "nat
 urlencoding = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 ib-romaji = "0.2.1"
-lindera = { version = "5.0.2", default-features = false, features = ["embed-ipadic"] }
+lindera = { version = "6.0.0", default-features = false, features = ["embed-ipadic"] }
 pinyin = "0.11.0"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"
