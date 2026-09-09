@@ -1,85 +1,84 @@
-# Repository instructions
+# Music Companion agent guide
 
-## Agent skills
+## Scope
 
-### Issue tracker
+Music Companion is a lyrics overlay for Windows 10/11 and macOS 11 or later. It
+uses Tauri 2, TypeScript, Rust, Bun, and Vite+. Preserve observable behavior on
+both platforms unless the task explicitly narrows or changes support.
 
-Issues are tracked as local Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+## Architecture invariants
 
-### Triage labels
+- Keep platform integration, networking, persistence, tray and menu bar behavior,
+  and updates in Rust. Keep overlay and settings presentation in the frontend.
+- Keep shared Rust orchestration platform-neutral. The `media`,
+  `persistent_backdrop`, and `overlay_z_order` modules must expose the same
+  interface through their Windows and macOS implementations; contain platform
+  branching inside those backends.
+- Treat `src-tauri/vendor/` as a pinned upstream submodule. Change its pin to
+  adopt upstream work; leave vendored contents untouched.
+- Use Bun exclusively for frontend dependencies and scripts. Keep `dist/`,
+  `node_modules/`, `src-tauri/target/`, and `src-tauri/resources/macos/` as
+  uncommitted generated output.
 
-Uses the default five canonical triage labels. See `docs/agents/triage-labels.md`.
+Start frontend behavior work in `src/main.ts` and the focused modules under
+`src/`. Start shared Tauri work in `src-tauri/src/lib.rs`; the macOS media,
+backdrop, and stacking backends live in their adjacent `*_macos.rs` files.
 
-### Domain docs
+## Sources of truth
 
-Uses a single-context layout. See `docs/agents/domain.md`.
+- Inspect `package.json` and `bun.lock` for frontend commands or dependencies.
+- Inspect `src-tauri/Cargo.toml` for Rust dependencies and targets.
+- For window, packaging, or updater work, inspect the shared and
+  platform-specific `src-tauri/tauri*.conf.json` files together.
+- Before changing CI or releases, read the matching file in `.github/workflows/`.
+- Check user-facing behavior and platform prerequisites against `README.md`.
+  Update any statement that the change makes inaccurate.
 
-## Repository scope
+For issue or spec work, use local Markdown under `.scratch/<feature-slug>/`.
+Place the spec at `spec.md` and numbered implementation tickets at
+`issues/<NN>-<slug>.md`. Record triage in a `Status:` line using one of
+`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`;
+append discussion under `## Comments`.
 
-Music Companion is a Windows 10/11 and macOS 11+ desktop lyrics overlay built with Tauri 2, TypeScript, Rust, Bun, and Vite+. Preserve behavior on both platforms and the current Tauri/frontend boundary unless a task explicitly changes them.
+## Change boundaries
 
-- Relevant source areas: `src/`, `src-tauri/src/`, `src-tauri/build.rs`, `src-tauri/tauri*.conf.json`, and `.github/workflows/`.
-- Platform backends sit behind one shared interface. `media`, `persistent_backdrop`, and `overlay_z_order` each resolve to a Windows or macOS implementation, so shared orchestration must not branch on the platform.
-- `src-tauri/vendor/` is a pinned upstream submodule. Do not edit or reformat it; change the pin instead.
-- Instruction precedence: follow this root guidance, then the closest applicable nested `AGENTS.md` or `AGENTS.override.md` for scoped work.
-- Scoped instruction files: none.
+- Preserve the current Tauri/frontend boundary and both-platform behavior while
+  making the smallest coherent change that satisfies the request.
+- Obtain approval before adding or replacing a dependency. Present its
+  maintenance, security, size, licensing, and platform-compatibility tradeoffs.
+- Obtain approval before destructive operations, publishing, handling
+  credentials, irreversible migrations, or materially expanding the requested
+  scope.
+- Keep user work and unrelated changes intact. Keep the final diff focused on
+  the request.
+- Preserve the CI contract: changed-area frontend and Rust/Tauri jobs feed the
+  stable `Pull request validation` gate, and native validation runs on Windows
+  and macOS. Dependabot remains separate from pull-request CI.
+- Preserve the release contract: approved `v*` tags publish a signed Windows
+  x86-64 NSIS installer with updater metadata and a universal macOS DMG. Apply
+  release version bumps on `main`. Without Apple Developer ID secrets, publish
+  the macOS DMG unsigned and leave its updater disabled.
 
-## Repository navigation
+## Verification
 
-| Path                                | Purpose                                                             |
-| ----------------------------------- | ------------------------------------------------------------------- |
-| `src/main.ts`                       | Overlay UI, settings, lyric parsing, and synchronization            |
-| `src/settings.ts`                   | Settings decoding and per-platform hotkey defaults                  |
-| `src/styles.css`                    | Overlay and settings presentation                                   |
-| `src-tauri/src/lib.rs`              | Shared commands, WMTC integration, LRCLIB access, tray, and updater |
-| `src-tauri/src/media_macos.rs`      | macOS now-playing reader and transport control                      |
-| `src-tauri/src/backdrop_macos.rs`   | macOS overlay backdrop                                              |
-| `src-tauri/src/z_order_macos.rs`    | macOS overlay stacking                                              |
-| `src-tauri/build.rs`                | Builds and stages the macOS MediaRemote adapter                     |
-| `src-tauri/tauri.conf.json`         | Shared window and updater configuration                             |
-| `src-tauri/tauri.windows.conf.json` | NSIS packaging and Windows updater install mode                     |
-| `src-tauri/tauri.macos.conf.json`   | App and DMG packaging plus the bundled adapter                      |
-| `.github/workflows/ci.yml`          | Changed-area pull-request validation and stable required gate       |
-| `.github/workflows/release.yml`     | Verification and publication for approved `v*` tags                 |
+Run focused checks first, then every applicable check below. A change is
+verified only when each applicable check passes, or the final report names the
+check that could not run and the concrete reason.
 
-## Verified commands
+- After frontend or shared-configuration changes, run `bun run test`,
+  `bun run check`, `bun run lint`, `bun run format:check`, and `bun run build`.
+- After Rust or Tauri changes, run
+  `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`,
+  `cargo test --manifest-path src-tauri/Cargo.toml`, and
+  `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`.
+- After dependency changes, run `bun audit`. Run `cargo audit` from `src-tauri`
+  when Rust dependencies change.
+- Use stable Rust with MSVC on Windows and Xcode Command Line
+  Tools plus CMake on macOS. Initialize submodules before macOS builds. Verify
+  platform-backend changes on both operating systems when practical, and state
+  which platforms were exercised.
 
-Use Bun for frontend dependencies and scripts, stable Rust MSVC for native code on Windows, and stable Rust with Xcode Command Line Tools and CMake on macOS. Clone submodules before building for macOS.
-
-| Task                      | Command                                                                                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| Setup/install             | `bun install --frozen-lockfile`                                                                     |
-| Development               | `bun run tauri:dev`                                                                                 |
-| Test                      | `cargo test --manifest-path src-tauri/Cargo.toml`                                                   |
-| Lint                      | `bun run lint` and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` |
-| Format check              | `bun run format:check` and `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`              |
-| Format                    | `bun run format` and `cargo fmt --manifest-path src-tauri/Cargo.toml`                               |
-| Type-check                | `bun run check`                                                                                     |
-| Build                     | `bun run build`                                                                                     |
-| Package                   | `bun run tauri:build`, or `bun run tauri:build:windows` / `bun run tauri:build:macos`               |
-| Dependency/security audit | `bun audit` and, from `src-tauri`, `cargo audit`                                                    |
-| Release                   | Apply the version bump on `main`, tag that commit with `v*`, and push the approved tag              |
-
-## Architecture and dependency constraints
-
-- Keep platform integration, networking, persistence, tray and menu bar behavior, and updates in Rust; keep overlay and settings presentation in the frontend.
-- Do not introduce another package manager or commit generated `dist/`, `node_modules/`, `src-tauri/target/`, or `src-tauri/resources/macos/` output.
-- Ask before adding or replacing a dependency, and explain its maintenance, security, size, licensing, and compatibility tradeoffs.
-- Keep pull-request validation split into frontend and Rust/Tauri changed areas, with `Pull request validation` as the stable required gate. Rust/Tauri checks run on Windows and macOS. Dependabot is not PR CI.
-- Releases are approved GitHub releases built from `v*` tags: signed Windows x86-64 NSIS installers with Tauri updater metadata, plus a universal macOS `.dmg`. Release version bumps happen on `main`, not a feature branch.
-- macOS release signing, notarization, and automatic updates are wired but inactive until Apple Developer ID secrets exist. Keep them degrading to an unsigned build rather than failing.
-
-## Working and autonomy policy
-
-- For requests to answer, explain, review, diagnose, or plan, inspect the relevant materials and report the result. Do not implement changes unless the request also asks for them.
-- For requests to change, build, or fix, make the requested in-scope local changes and run relevant non-destructive validation without asking first.
-- Require confirmation before destructive operations, external writes, publishing, handling credentials, purchases, irreversible migrations, or a material expansion of scope.
-- Preserve user changes and unrelated work. Do not silently overwrite, revert, or reformat outside the requested scope.
-
-## Verification and completion
-
-- Run targeted checks first, then every applicable repository-defined check above when practical.
-- Report checks that could not run and why.
-- Do not invent commands, claim unverified behavior, or declare completion while required work remains.
-- Update tests and documentation when observable behavior changes.
-- Leave no placeholder, credential, unrelated generated file, or unexplained behavior change.
+Update tests for changed behavior and documentation for user-visible behavior.
+Before completion, inspect the diff and confirm that it contains no placeholder,
+credential, unrelated generated file, accidental reformatting, or unexplained
+behavior change.
