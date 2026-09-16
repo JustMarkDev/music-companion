@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LyricsCache, LYRICS_CACHE_STORAGE_KEY } from "./lyrics-cache";
+import { LyricsCache, LYRICS_CACHE_STORAGE_KEY, MAX_PERSISTED_LYRICS } from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
 
 class MemoryStorage {
@@ -90,11 +90,11 @@ describe("LyricsCache", () => {
     expect(storage.getItem(LYRICS_CACHE_STORAGE_KEY)).toBeNull();
   });
 
-  it("persists at most two hundred results", () => {
+  it("persists at most one thousand results", () => {
     const storage = new MemoryStorage();
     let now = 0;
     const cache = new LyricsCache(storage, () => now++);
-    for (let index = 0; index < 205; index += 1) {
+    for (let index = 0; index < MAX_PERSISTED_LYRICS + 5; index += 1) {
       cache.putIfCurrent(
         cache.requestGeneration(),
         { metadataKey: `artist::song-${index}`, durationMs: 180_000 },
@@ -102,6 +102,52 @@ describe("LyricsCache", () => {
       );
     }
     const persisted = JSON.parse(storage.getItem(LYRICS_CACHE_STORAGE_KEY) ?? "[]") as unknown[];
-    expect(persisted).toHaveLength(200);
+    expect(persisted).toHaveLength(MAX_PERSISTED_LYRICS);
+  });
+
+  it("omits plain lyrics from storage when synced lyrics are present", () => {
+    const storage = new MemoryStorage();
+    const cache = new LyricsCache(storage);
+    cache.putIfCurrent(cache.requestGeneration(), variant(180_000), {
+      ...lyrics("Synced"),
+      plainLyrics: "Plain fallback that should not be stored",
+      romanizedSyncedLyrics: null,
+    });
+
+    const persisted = JSON.parse(storage.getItem(LYRICS_CACHE_STORAGE_KEY) ?? "[]") as Array<{
+      result: LyricsResult;
+    }>;
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].result.plainLyrics).toBeNull();
+    expect(persisted[0].result).not.toHaveProperty("romanizedSyncedLyrics");
+    expect(cache.get(variant(180_000))?.syncedLyrics).toContain("Synced");
+  });
+
+  it("evicts oldest entries when storage rejects the full payload", () => {
+    const storage = new MemoryStorage();
+    const originalSetItem = storage.setItem.bind(storage);
+    storage.setItem = (key, value) => {
+      if (key === LYRICS_CACHE_STORAGE_KEY) {
+        const parsed = JSON.parse(value) as unknown[];
+        if (parsed.length > 8) {
+          throw new Error("QuotaExceededError");
+        }
+      }
+      originalSetItem(key, value);
+    };
+
+    const cache = new LyricsCache(storage);
+    for (let index = 0; index < 12; index += 1) {
+      cache.putIfCurrent(
+        cache.requestGeneration(),
+        { metadataKey: `artist::song-${index}`, durationMs: 180_000 },
+        lyrics(`Song ${index}`),
+      );
+    }
+
+    const persisted = JSON.parse(storage.getItem(LYRICS_CACHE_STORAGE_KEY) ?? "[]") as unknown[];
+    expect(persisted.length).toBeGreaterThan(0);
+    expect(persisted.length).toBeLessThanOrEqual(8);
+    expect(cache.has({ metadataKey: "artist::song-11", durationMs: 180_000 })).toBe(true);
   });
 });

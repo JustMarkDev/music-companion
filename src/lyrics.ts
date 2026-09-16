@@ -213,12 +213,16 @@ function createLyricLine(timeMs: number | null, textWithWordTags: string): Lyric
 }
 
 function finalizeLyricTimings(lines: LyricLine[]) {
-  for (let index = 0; index < lines.length; index += 1) {
+  let nextTimedIndex: number | null = null;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (line.timeMs === null) continue;
-    const next = lines.slice(index + 1).find((candidate) => candidate.timeMs !== null);
     const estimated = clamp(line.words.length * 460, 1400, 7200);
-    line.endTimeMs = Math.max(line.timeMs + 320, next?.timeMs ?? line.timeMs + estimated);
+    line.endTimeMs = Math.max(
+      line.timeMs + 320,
+      nextTimedIndex === null ? line.timeMs + estimated : lines[nextTimedIndex].timeMs!,
+    );
+    nextTimedIndex = index;
   }
   return lines;
 }

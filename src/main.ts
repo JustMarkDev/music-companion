@@ -3,9 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import "@phosphor-icons/web/regular";
+import "@fontsource-variable/manrope";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
+import { icons, toastIcon } from "./icons";
 import { LyricsCache } from "./lyrics-cache";
 import {
   getLocalLyricsNotice,
@@ -148,6 +149,7 @@ let animationFrame = 0;
 const playbackClock = new PlaybackClock(performance.now(), demoState.positionMs);
 const demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
+let lyricsRenderGeneration = 0;
 let lastScrolledLineIndex = -1;
 let pollInFlight = false;
 let pollQueued = false;
@@ -170,20 +172,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="window-actions">
           <div class="secondary-actions">
             <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
-              <i class="ph ph-gear"></i>
+              ${icons.cog}
             </button>
             <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
-              <i class="ph ph-minus"></i>
+              ${icons.minus}
             </button>
             <button class="icon-button" id="maximize" title="Maximize" aria-label="Maximize">
-              <i class="ph ph-arrows-out"></i>
+              ${icons.arrowsPointingOut}
             </button>
           </div>
           <button class="icon-button danger" id="close" title="Hide" aria-label="Hide">
-            <i class="ph ph-x"></i>
+            ${icons.xMark}
           </button>
           <button class="icon-button compact-menu-toggle" id="compact-menu-toggle" title="Window menu" aria-label="Window menu" aria-expanded="false">
-            <i class="ph ph-list"></i>
+            ${icons.bars3}
           </button>
           <div class="compact-menu" id="compact-menu" hidden>
             <button data-action="settings">Settings</button>
@@ -206,7 +208,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <p>Make the overlay feel at home on your desktop.</p>
           </div>
           <button class="icon-button" id="settings-close" title="Close settings" aria-label="Close settings">
-            <i class="ph ph-x"></i>
+            ${icons.xMark}
           </button>
         </div>
 
@@ -309,22 +311,22 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="settings-card system-group">
             <div class="hotkey-setting">
               <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.pinned)}</button></span>
+              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.pinned)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Next song</strong><small>Skip to the next track</small></span>
-              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.next)}</button></span>
+              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.next)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Previous song</strong><small>Return to the previous track</small></span>
-              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.previous)}</button></span>
+              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.previous)}</button></span>
             </div>
             <div class="hotkey-setting">
               <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
-              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey"><i class="ph ph-arrow-counter-clockwise"></i></button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.playPause)}</button></span>
+              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.playPause)}</button></span>
             </div>
             <div class="cache-setting">
-              <span><strong>Lyrics cache</strong><small>Remove saved lyrics from this device</small></span>
+              <span><strong>Lyrics cache</strong><small>Up to 1000 songs saved on this device</small></span>
               <button class="clear-cache-button" id="clear-lyrics-cache">Clear</button>
             </div>
           </div>
@@ -701,7 +703,7 @@ function showToast(title: string, description?: string, variant: "success" | "er
   toast.className = `toast toast-${variant} toast-visible`;
   toast.setAttribute("role", "status");
   toast.innerHTML = `
-    <i class="toast-icon ph ${variant === "error" ? "ph-warning" : "ph-check-circle"}" aria-hidden="true"></i>
+    ${toastIcon(variant)}
     <div class="toast-content">
       <p class="toast-title"></p>
       ${description ? '<p class="toast-description"></p>' : ""}
@@ -903,7 +905,7 @@ function renderHotkeyStatuses() {
     warning.className = "hotkey-warning";
     warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
     warning.setAttribute("aria-label", warning.title);
-    warning.innerHTML = '<i class="ph ph-warning" aria-hidden="true"></i>';
+    warning.innerHTML = icons.exclamationTriangle;
     element.prepend(warning);
   });
 }
@@ -1028,6 +1030,9 @@ async function pollMedia(reason = "manual") {
     renderChrome();
     renderLyrics();
     applyGradient();
+    if (currentMedia.isPlaying) {
+      ensureSyncLoop();
+    }
   } catch {
   } finally {
     pollInFlight = false;
@@ -1063,10 +1068,11 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
 
   lyricsNotice = "";
   const lyricsMetadata = normalizeLyricsMetadata(media);
-  if (lyricCache.has(expectedVariant)) {
+  const cachedResult = lyricCache.get(expectedVariant);
+  if (cachedResult !== undefined) {
     console.info("[latency] lyrics cache hit", { key: expectedTrackKey });
     if (currentTrackKey === expectedTrackKey) {
-      applyLyrics(lyricCache.get(expectedVariant) ?? null, localNotice);
+      applyLyrics(cachedResult, localNotice);
     }
     return;
   }
@@ -1341,9 +1347,19 @@ function startSyncLoop() {
   window.cancelAnimationFrame(animationFrame);
   const tick = () => {
     updateSyncFrame();
-    animationFrame = window.requestAnimationFrame(tick);
+    // Keep the clock hot while audio is moving; stop burning frames when paused.
+    if (!tauriAvailable || currentMedia.isPlaying) {
+      animationFrame = window.requestAnimationFrame(tick);
+      return;
+    }
+    animationFrame = 0;
   };
   animationFrame = window.requestAnimationFrame(tick);
+}
+
+function ensureSyncLoop() {
+  if (animationFrame) return;
+  startSyncLoop();
 }
 
 function updateSyncFrame() {
@@ -1421,7 +1437,7 @@ function getLyricsRenderKey() {
   const romanizedMode = settings.romanizedLyrics ? "romanized" : "original";
 
   if (!currentMedia.hasSession) {
-    return `no-session:${romanizedMode}`;
+    return `no-session:${romanizedMode}:${lyricsRenderGeneration}`;
   }
 
   if (
@@ -1432,20 +1448,21 @@ function getLyricsRenderKey() {
     lyricsMode === "instrumental" ||
     lyricsMode === "excluded"
   ) {
-    return `${lyricsMode}:${currentTrackKey}:${romanizedMode}`;
+    return `${lyricsMode}:${currentTrackKey}:${romanizedMode}:${lyricsNotice}:${lyricsRenderGeneration}`;
   }
 
   if (lyricsLines.length === 0) {
-    return `missing:${currentTrackKey}:${romanizedMode}`;
+    return `missing:${currentTrackKey}:${romanizedMode}:${lyricsRenderGeneration}`;
   }
 
-  return `${lyricsMode}:${romanizedMode}:${lyricsLines
-    .map((line) => `${line.timeMs ?? "x"}:${line.text}:${line.words.length}`)
-    .join("|")}`;
+  // Content changes always bump lyricsRenderGeneration via invalidateLyricsRender,
+  // so polling can skip a full DOM rebuild without hashing every lyric line.
+  return `${lyricsMode}:${romanizedMode}:${currentTrackKey}:${lyricsRenderGeneration}`;
 }
 
 function invalidateLyricsRender() {
   renderedLyricsKey = "";
+  lyricsRenderGeneration += 1;
 }
 
 function renderSettings() {
