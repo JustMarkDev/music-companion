@@ -158,19 +158,42 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build and publish release
-        uses: tauri-apps/tauri-action@v1
+      # GitHub expands missing secrets to empty strings. tauri-cli treats a present
+      # APPLE_CERTIFICATE env var as "sign this build" and then fails on
+      # `security import` with a blank payload. Only forward non-empty values so
+      # unsigned DMGs still publish; adding real secrets enables signing with no
+      # other workflow change.
+      - name: Configure optional Apple signing
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional. Without a Developer ID the disk image is published unsigned
-          # and users must confirm the first launch through Gatekeeper. Adding
-          # these secrets enables signing and notarization with no other change.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for key in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID
+          do
+            val="${!key}"
+            if [ -n "$val" ]; then
+              {
+                echo "${key}<<EOF"
+                printf '%s\n' "$val"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
           releaseDraft: false
