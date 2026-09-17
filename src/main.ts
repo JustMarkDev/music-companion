@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
-import "@fontsource-variable/manrope";
+import "@fontsource-variable/source-sans-3";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { icons, toastIcon } from "./icons";
@@ -234,8 +234,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
             <div class="range-control">
               <label class="range-label" for="font-size">
-                <span><strong>Lyric size</strong><small>Active and surrounding lines</small></span>
-                <output id="font-size-value">1rem</output>
+                <span><strong>Lyric size</strong><small>Scales with the overlay size</small></span>
+                <output id="font-size-value">100%</output>
               </label>
               <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
             </div>
@@ -1516,7 +1516,8 @@ function renderSettingValues() {
     `${Math.round(settings.opacity * 100)}%`;
   document.querySelector<HTMLOutputElement>("#blur-intensity-value")!.value =
     `${settings.blurIntensity}%`;
-  document.querySelector<HTMLOutputElement>("#font-size-value")!.value = `${settings.fontSize}rem`;
+  document.querySelector<HTMLOutputElement>("#font-size-value")!.value =
+    `${Math.round(settings.fontSize * 100)}%`;
   document.querySelector<HTMLOutputElement>("#line-spacing-value")!.value =
     `${settings.lineSpacing}em`;
   renderRangeProgress();
@@ -1536,7 +1537,7 @@ function applySettings() {
   const overlay = document.querySelector<HTMLElement>("#overlay");
   root.style.setProperty("--overlay-opacity", String(settings.opacity));
   root.style.setProperty("--backdrop-blur", `${settings.blurIntensity * 0.2}px`);
-  root.style.setProperty("--lyric-size", `${settings.fontSize}rem`);
+  root.style.setProperty("--lyric-size-scale", String(settings.fontSize));
   root.style.setProperty("--line-spacing", `${settings.lineSpacing}em`);
   applyGradient();
   renderSettingValues();

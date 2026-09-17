@@ -1,13 +1,13 @@
 :root {
   color-scheme: dark;
-  font-family: "Manrope Variable", Manrope, "Segoe UI", system-ui, sans-serif;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", "Segoe UI", system-ui, sans-serif;
   font-optical-sizing: auto;
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   --overlay-opacity: 1;
   --backdrop-blur: 20px;
-  --lyric-size: 1.5rem;
+  --lyric-size-scale: 1;
   --active-lyric-scale: 1.075;
   --line-spacing: 0.4em;
   --bg-saturation: 100%;
@@ -68,7 +68,7 @@ button {
   border: 0;
   border-radius: 0;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent) 20%, transparent), transparent 44px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 52px),
     var(--surface);
   box-shadow: none;
   backdrop-filter: none;
@@ -206,7 +206,9 @@ button {
   display: grid;
   width: 26px;
   height: 26px;
+  padding: 0;
   place-items: center;
+  line-height: 0;
   color: var(--text);
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -228,8 +230,10 @@ button {
 }
 
 .icon-button svg {
+  display: block;
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
 }
 
 .icon-button.danger:hover {
@@ -270,6 +274,7 @@ button {
 }
 
 .lyrics-viewport {
+  position: relative;
   min-height: 0;
   overflow: hidden;
   padding: 42px 0 0;
@@ -281,7 +286,8 @@ button {
   overflow: hidden auto;
   scroll-behavior: smooth;
   scrollbar-width: none;
-  font-size: var(--lyric-size);
+  /* User setting is a multiplier; base size grows with the window so fullscreen stays readable. */
+  font-size: calc(var(--lyric-size-scale, 1) * clamp(0.95rem, 0.4rem + 2.2vmin, 3.75rem));
 }
 
 .lyrics-viewport,
@@ -326,8 +332,8 @@ button {
 }
 
 .lyric-line.far {
-  opacity: 0.42;
-  filter: blur(0.2px);
+  opacity: 0.38;
+  filter: blur(1.35px);
 }
 
 @keyframes line-arrive {
@@ -816,8 +822,10 @@ input[type="text"][readonly] {
 }
 
 .hotkey-reset {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
   padding: 3px;
+  line-height: 0;
   color: rgba(220, 230, 236, 0.6);
   background: transparent;
   border: 0;
@@ -829,6 +837,7 @@ input[type="text"][readonly] {
 }
 
 .hotkey-reset svg {
+  display: block;
   width: 14px;
   height: 14px;
 }
@@ -845,12 +854,15 @@ input[type="text"][readonly] {
 }
 
 .hotkey-warning {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
   color: #f6bd55;
   cursor: help;
 }
 
 .hotkey-warning svg {
+  display: block;
   width: 15px;
   height: 15px;
   stroke-width: 2.25;
@@ -984,6 +996,7 @@ input[type="text"][readonly] {
 }
 
 .toast-icon {
+  display: block;
   width: 18px;
   height: 18px;
   flex-shrink: 0;
