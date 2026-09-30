@@ -55,9 +55,12 @@ Rules:
 
 - Verify every finding in the code. Do not report a guess, a pattern match, or
   something the compiler or type checker already rejects.
-- Do not report a conditional finding ("if the library does X"). Check what the
-  library actually does (read its source with `gh api` or the vendored copy) and
-  report only what you confirmed. If you cannot confirm it, drop it.
+- Do not report a conditional finding ("if the library does X"). Confirm what
+  the library does with at most two `gh api` reads of its upstream source at the
+  version in `Cargo.lock` or `bun.lock`, or with the vendored copy. The runner
+  has no Rust toolchain or cargo registry: never run `find /`, search the web, or
+  fetch docs.rs. If two reads do not confirm it, drop the finding.
+- Budget: about 25 tool calls in total. Stop exploring and report what you have.
 - No style nits, no formatting, no praise, no restating the diff.
 - Ignore problems that already existed and that the PR does not touch or worsen.
 - At most 8 new findings per run. Keep the most severe and most certain.
