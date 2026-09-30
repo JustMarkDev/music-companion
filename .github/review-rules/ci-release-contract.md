@@ -3,6 +3,7 @@ paths:
   - .github/workflows/**
   - src-tauri/tauri*.conf.json
 ---
+
 Keep the CI contract: changed-area frontend and Rust/Tauri jobs feed the stable
 `Pull request validation` gate, native validation runs on Windows and macOS, and
 Dependabot stays separate from pull-request CI. Keep the release contract: `v*`

@@ -6,6 +6,7 @@ permission:
   edit: deny
   task: deny
 ---
+
 You receive one candidate review finding: path, line, claim, and failure scenario.
 Read the code at that path and its callers and callees, then try to disprove the
 claim. Do not post, comment, resolve, or change anything on GitHub.
