@@ -36,11 +36,9 @@ export function formatAccelerator(accelerator: string, platform: Platform = PLAT
     return parts.join(" + ");
   }
 
-  const modifiers = parts.filter((part) => part in MACOS_SYMBOLS);
+  const symbol = (part: string) => MACOS_SYMBOLS[part] ?? part;
+  const modifiers = MACOS_MODIFIER_ORDER.filter((modifier) => parts.includes(modifier));
   const keys = parts.filter((part) => !(part in MACOS_SYMBOLS));
-  const symbols = MACOS_MODIFIER_ORDER.filter((modifier) => modifiers.includes(modifier))
-    .map((modifier) => MACOS_SYMBOLS[modifier])
-    .join("");
 
-  return `${symbols}${keys.join(" + ")}`;
+  return [...modifiers, ...keys].map(symbol).join(" + ");
 }
