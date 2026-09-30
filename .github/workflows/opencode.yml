@@ -44,14 +44,19 @@ jobs:
           prompt: >-
             ${{ github.event_name == 'pull_request' && 'Review this pull request. Follow .github/opencode-review.md exactly: verify and resolve earlier findings, find new problems, post them as one inline GitHub review, then reply with the summary.' || '' }}
 
-      # Keep one summary visible: collapse older opencode summaries as outdated.
-      - name: Collapse outdated summaries
+      # Keep one clean summary: drop the action's run-link footer, collapse older summaries.
+      - name: Tidy summaries
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" |
-            jq -r '[.[][] | select(.user.type == "Bot" and (.body | startswith("## Review ·")))] | .[:-1][].node_id' |
+          summaries=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" |
+            jq '[.[][] | select(.user.type == "Bot" and (.body | startswith("## Review ·")))]')
+          jq -c '.[-1] // empty | {id, body: (.body | sub("\\n+\\[github run\\]\\([^)]*\\)\\s*$"; ""))}' <<< "$summaries" |
+            while read -r c; do
+              jq -r .body <<< "$c" | gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$(jq -r .id <<< "$c")" -F body=@-
+            done
+          jq -r '.[:-1][].node_id' <<< "$summaries" |
             while read -r id; do
               gh api graphql -f id="$id" -f query='mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { minimizedComment { isMinimized } } }'
             done
