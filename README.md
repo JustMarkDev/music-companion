@@ -85,7 +85,8 @@ Developer ID credentials are added to the release workflow, with no code change.
 Start Music Companion and play a track in any player the system reports. Move the
 pointer near the top of the overlay to reveal its controls. Drag the top area to
 move it, resize it from the window edges, and open settings with the gear button,
-a double-click, or a right-click in the lyric area.
+a double-click, or a right-click in the lyric area. Switching to Music Companion with
+Alt+Tab or Cmd+Tab moves the pointer onto the top area, ready to drag.
 
 Closing the overlay hides it. On Windows it hides to the system tray, and on macOS
 it hides to the menu bar while staying in the Dock. If click-through mode makes the

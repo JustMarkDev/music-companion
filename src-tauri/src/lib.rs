@@ -12,7 +12,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WebviewWindow, WindowEvent,
+    Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_updater::UpdaterExt;
 
@@ -354,7 +354,7 @@ fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
     window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
+    focus_without_cursor_warp(&window).map_err(|error| error.to_string())?;
     window
         .emit("settings-window-opened", ())
         .map_err(|error| error.to_string())
@@ -467,14 +467,105 @@ pub fn run() {
             start_automatic_update(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            WindowEvent::Focused(true) if !SKIP_FOCUS_CURSOR_WARP.swap(false, Ordering::SeqCst) => {
+                move_cursor_to_title_bar(window);
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("failed to run Music Companion");
+}
+
+/// Where the pointer lands, in logical pixels below the window's top edge. This is
+/// inside the drag strip of both the overlay and the settings header.
+const TITLE_BAR_CURSOR_OFFSET: f64 = 16.0;
+
+/// Where to warp the pointer so a window that just took focus can be dragged at once,
+/// or `None` when the pointer is already over the window, as after a click. All values
+/// are physical pixels except `scale`.
+fn title_bar_cursor_target(
+    cursor: (f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+) -> Option<(f64, f64)> {
+    let inside = cursor.0 >= origin.0
+        && cursor.0 < origin.0 + size.0
+        && cursor.1 >= origin.1
+        && cursor.1 < origin.1 + size.1;
+    (!inside).then(|| {
+        (
+            origin.0 + size.0 / 3.0,
+            origin.1 + TITLE_BAR_CURSOR_OFFSET * scale,
+        )
+    })
+}
+
+/// Set just before a programmatic focus so the resulting focus event leaves the pointer
+/// alone; only keyboard switching should move it.
+static SKIP_FOCUS_CURSOR_WARP: AtomicBool = AtomicBool::new(false);
+
+/// Focuses a window without moving the pointer to its title bar.
+fn focus_without_cursor_warp(window: &WebviewWindow) -> tauri::Result<()> {
+    // An already focused window raises no event, which would leave the flag set.
+    if !window.is_focused()? {
+        SKIP_FOCUS_CURSOR_WARP.store(true, Ordering::SeqCst);
+    }
+    let result = window.set_focus();
+    if result.is_err() {
+        SKIP_FOCUS_CURSOR_WARP.store(false, Ordering::SeqCst);
+    }
+    result
+}
+
+/// Moves the pointer onto the title bar after Cmd+Tab or Alt+Tab focuses a window.
+fn move_cursor_to_title_bar(window: &tauri::Window) {
+    let (Ok(cursor), Ok(origin), Ok(size), Ok(scale)) = (
+        window.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+        window.scale_factor(),
+    ) else {
+        return;
+    };
+    if let Some((x, y)) = title_bar_cursor_target(
+        (cursor.x, cursor.y),
+        (f64::from(origin.x), f64::from(origin.y)),
+        (f64::from(size.width), f64::from(size.height)),
+        scale,
+    ) {
+        // tao takes client-area coordinates on Windows and adds the inner position on
+        // macOS, so both want the target relative to the inner position.
+        let Ok(inner) = window.inner_position() else {
+            return;
+        };
+        let _ = window.set_cursor_position(PhysicalPosition::new(
+            x - f64::from(inner.x),
+            y - f64::from(inner.y),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod title_bar_cursor_tests {
+    use super::title_bar_cursor_target;
+
+    #[test]
+    fn moves_a_pointer_outside_the_window_onto_its_title_bar() {
+        let target = title_bar_cursor_target((10.0, 10.0), (100.0, 200.0), (600.0, 400.0), 2.0);
+        assert_eq!(target, Some((300.0, 232.0)));
+    }
+
+    #[test]
+    fn leaves_a_pointer_that_is_already_over_the_window() {
+        let target = title_bar_cursor_target((150.0, 250.0), (100.0, 200.0), (600.0, 400.0), 2.0);
+        assert_eq!(target, None);
+    }
 }
 
 fn start_automatic_update(app: tauri::AppHandle) {
@@ -555,7 +646,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.show();
-    let _ = window.set_focus();
+    let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
 }
 

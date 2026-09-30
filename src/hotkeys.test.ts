@@ -31,10 +31,10 @@ describe("hotkey accelerators", () => {
     expect(formatAccelerator("Ctrl+ArrowRight", "windows")).toBe("Ctrl + Right Arrow");
   });
 
-  it("renders macOS modifiers as glyphs in system order", () => {
-    expect(formatAccelerator("Shift+Super+KeyL", "macos")).toBe("⇧⌘L");
-    expect(formatAccelerator("Ctrl+Super+ArrowRight", "macos")).toBe("⌃⌘Right Arrow");
-    expect(formatAccelerator("Ctrl+Shift+Alt+Super+KeyL", "macos")).toBe("⌃⌥⇧⌘L");
+  it("renders macOS modifiers as spaced glyphs with Command first", () => {
+    expect(formatAccelerator("Shift+Super+KeyL", "macos")).toBe("⌘ + ⇧ + L");
+    expect(formatAccelerator("Ctrl+Super+ArrowRight", "macos")).toBe("⌘ + ⌃ + Right Arrow");
+    expect(formatAccelerator("Ctrl+Shift+Alt+Super+KeyL", "macos")).toBe("⌘ + ⌃ + ⌥ + ⇧ + L");
   });
 
   it("keeps unmodified macOS keys readable", () => {
