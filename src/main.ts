@@ -64,6 +64,7 @@ const MATERIAL_COPY: Record<
 };
 
 const materialCopy = MATERIAL_COPY[PLATFORM];
+document.documentElement.dataset.platform = PLATFORM;
 const osName = PLATFORM === "macos" ? "macOS" : "Windows";
 
 type MediaState = {

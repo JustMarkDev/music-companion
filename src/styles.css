@@ -7,6 +7,7 @@
   text-rendering: optimizeLegibility;
   --overlay-opacity: 1;
   --backdrop-blur: 20px;
+  --window-radius: 0px;
   --lyric-size-scale: 1;
   --active-lyric-scale: 1.075;
   --line-spacing: 0.4em;
@@ -23,6 +24,11 @@
   letter-spacing: 0.01em;
 }
 
+/* macOS draws frameless windows square, so the overlay rounds itself. */
+:root[data-platform="macos"] {
+  --window-radius: 12px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -35,6 +41,7 @@ body,
   margin: 0;
   overflow: hidden;
   background: transparent;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -66,7 +73,7 @@ button {
   overflow: hidden;
   color: var(--text);
   border: 0;
-  border-radius: 0;
+  border-radius: var(--window-radius);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 52px),
     var(--surface);
@@ -96,6 +103,7 @@ button {
   border-bottom: 0;
   opacity: 0;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
   cursor: grab;
   transition: opacity 140ms ease;
@@ -461,6 +469,7 @@ button {
   padding: 18px 28px 14px;
   background: transparent;
   cursor: grab;
+  -webkit-user-select: none;
   user-select: none;
 }
 

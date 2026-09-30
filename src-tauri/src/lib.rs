@@ -12,7 +12,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WebviewWindow, WindowEvent,
+    Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_updater::UpdaterExt;
 
@@ -467,14 +467,86 @@ pub fn run() {
             start_automatic_update(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            WindowEvent::Focused(true) => move_cursor_to_title_bar(window),
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("failed to run Music Companion");
+}
+
+/// Where the pointer lands, in logical pixels below the window's top edge. This is
+/// inside the drag strip of both the overlay and the settings header.
+const TITLE_BAR_CURSOR_OFFSET: f64 = 16.0;
+
+/// Where to warp the pointer so a window that just took focus can be dragged at once,
+/// or `None` when the pointer is already over the window, as after a click. All values
+/// are physical pixels except `scale`.
+fn title_bar_cursor_target(
+    cursor: (f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+) -> Option<(f64, f64)> {
+    let inside = cursor.0 >= origin.0
+        && cursor.0 < origin.0 + size.0
+        && cursor.1 >= origin.1
+        && cursor.1 < origin.1 + size.1;
+    (!inside).then(|| {
+        (
+            origin.0 + size.0 / 3.0,
+            origin.1 + TITLE_BAR_CURSOR_OFFSET * scale,
+        )
+    })
+}
+
+/// Moves the pointer onto the title bar after Cmd+Tab or Alt+Tab focuses a window.
+fn move_cursor_to_title_bar(window: &tauri::Window) {
+    let (Ok(cursor), Ok(origin), Ok(size), Ok(scale)) = (
+        window.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+        window.scale_factor(),
+    ) else {
+        return;
+    };
+    if let Some((x, y)) = title_bar_cursor_target(
+        (cursor.x, cursor.y),
+        (f64::from(origin.x), f64::from(origin.y)),
+        (f64::from(size.width), f64::from(size.height)),
+        scale,
+    ) {
+        // tao warps to screen coordinates on Windows but adds the window's inner position
+        // on macOS, so macOS gets the offset from that position instead.
+        let (x, y) = match window.inner_position() {
+            Ok(inner) if cfg!(target_os = "macos") => {
+                (x - f64::from(inner.x), y - f64::from(inner.y))
+            }
+            _ => (x, y),
+        };
+        let _ = window.set_cursor_position(PhysicalPosition::new(x, y));
+    }
+}
+
+#[cfg(test)]
+mod title_bar_cursor_tests {
+    use super::title_bar_cursor_target;
+
+    #[test]
+    fn moves_a_pointer_outside_the_window_onto_its_title_bar() {
+        let target = title_bar_cursor_target((10.0, 10.0), (100.0, 200.0), (600.0, 400.0), 2.0);
+        assert_eq!(target, Some((300.0, 232.0)));
+    }
+
+    #[test]
+    fn leaves_a_pointer_that_is_already_over_the_window() {
+        let target = title_bar_cursor_target((150.0, 250.0), (100.0, 200.0), (600.0, 400.0), 2.0);
+        assert_eq!(target, None);
+    }
 }
 
 fn start_automatic_update(app: tauri::AppHandle) {
