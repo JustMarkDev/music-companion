@@ -55,6 +55,9 @@ Rules:
 
 - Verify every finding in the code. Do not report a guess, a pattern match, or
   something the compiler or type checker already rejects.
+- Do not report a conditional finding ("if the library does X"). Check what the
+  library actually does (read its source with `gh api` or the vendored copy) and
+  report only what you confirmed. If you cannot confirm it, drop it.
 - No style nits, no formatting, no praise, no restating the diff.
 - Ignore problems that already existed and that the PR does not touch or worsen.
 - At most 8 new findings per run. Keep the most severe and most certain.
