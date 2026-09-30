@@ -108,7 +108,7 @@ problem: function, cause, expected behavior.>
 
 Your final message is the PR summary. Use exactly this shape:
 
-````
+```
 ## Review · <sha7>
 
 <Verdict: one of "✅ No blocking issues", "⚠️ N open findings", "🚫 Critical issues open".>
@@ -129,7 +129,7 @@ Your final message is the PR summary. Use exactly this shape:
 <One combined, self-contained instruction that fixes every open and new finding, one bullet per finding with path, lines, cause, expected behavior.>
 
 </details>
-````
+```
 
 - 🆕 new this run, ⏳ still open, ✅ fixed this run (from Phase 1). Omit rows that
   do not exist. Omit the table and the `<details>` block if there is nothing to

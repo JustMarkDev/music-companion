@@ -354,7 +354,7 @@ fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
     window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
+    focus_without_cursor_warp(&window).map_err(|error| error.to_string())?;
     window
         .emit("settings-window-opened", ())
         .map_err(|error| error.to_string())
@@ -472,7 +472,9 @@ pub fn run() {
                 let _ = window.hide();
                 api.prevent_close();
             }
-            WindowEvent::Focused(true) => move_cursor_to_title_bar(window),
+            WindowEvent::Focused(true) if !SKIP_FOCUS_CURSOR_WARP.swap(false, Ordering::SeqCst) => {
+                move_cursor_to_title_bar(window);
+            }
             _ => {}
         })
         .run(tauri::generate_context!())
@@ -504,6 +506,19 @@ fn title_bar_cursor_target(
     })
 }
 
+/// Set just before a programmatic focus so the resulting focus event leaves the pointer
+/// alone; only keyboard switching should move it.
+static SKIP_FOCUS_CURSOR_WARP: AtomicBool = AtomicBool::new(false);
+
+/// Focuses a window without moving the pointer to its title bar.
+fn focus_without_cursor_warp(window: &WebviewWindow) -> tauri::Result<()> {
+    // An already focused window raises no event, which would leave the flag set.
+    if !window.is_focused()? {
+        SKIP_FOCUS_CURSOR_WARP.store(true, Ordering::SeqCst);
+    }
+    window.set_focus()
+}
+
 /// Moves the pointer onto the title bar after Cmd+Tab or Alt+Tab focuses a window.
 fn move_cursor_to_title_bar(window: &tauri::Window) {
     let (Ok(cursor), Ok(origin), Ok(size), Ok(scale)) = (
@@ -520,15 +535,15 @@ fn move_cursor_to_title_bar(window: &tauri::Window) {
         (f64::from(size.width), f64::from(size.height)),
         scale,
     ) {
-        // tao warps to screen coordinates on Windows but adds the window's inner position
-        // on macOS, so macOS gets the offset from that position instead.
-        let (x, y) = match window.inner_position() {
-            Ok(inner) if cfg!(target_os = "macos") => {
-                (x - f64::from(inner.x), y - f64::from(inner.y))
-            }
-            _ => (x, y),
+        // tao takes client-area coordinates on Windows and adds the inner position on
+        // macOS, so both want the target relative to the inner position.
+        let Ok(inner) = window.inner_position() else {
+            return;
         };
-        let _ = window.set_cursor_position(PhysicalPosition::new(x, y));
+        let _ = window.set_cursor_position(PhysicalPosition::new(
+            x - f64::from(inner.x),
+            y - f64::from(inner.y),
+        ));
     }
 }
 
@@ -627,7 +642,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.show();
-    let _ = window.set_focus();
+    let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
 }
 
