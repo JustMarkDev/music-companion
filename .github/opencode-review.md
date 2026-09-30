@@ -12,10 +12,19 @@ Check it with `gh api /installation/repositories --jq .total_count`; if that
 fails, `unset GH_TOKEN`. Get the PR number, head SHA, and repository with
 `gh pr view --json number,headRefOid` and `gh repo view --json nameWithOwner`.
 
+## Phase 0: CI results
+
+Find CI for the head SHA: `gh run list --workflow ci.yml --commit <sha> --json databaseId,status,conclusion`.
+If a run failed, read `gh run view <id> --log-failed | tail -n 150`. If it is still
+running, use the latest completed run on the branch and say so. Treat a failure
+that the diff caused as a finding (cite the failing check); ignore failures the
+diff does not touch. Never run builds or tests yourself; the runner has no
+toolchain.
+
 ## Phase 1: verify earlier findings
 
 1. List review threads:
-   `gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{author{login} body path line}}}}}}}' -f o=OWNER -f r=REPO -F n=NUMBER`
+   `gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{author{login} body path line reactionGroups{content users{totalCount}}}}}}}}}' -f o=OWNER -f r=REPO -F n=NUMBER`
 2. Keep unresolved threads whose first comment is by a bot (`github-actions` or the opencode app). For each,
    read the current code at that path (not only the diff) and decide:
    - **Fixed**: the failure scenario can no longer happen. Reply in the thread
@@ -31,6 +40,10 @@ fails, `unset GH_TOKEN`. Get the PR number, head SHA, and repository with
      the evidence. Never argue twice.
 3. Resolved threads are closed. Never repost a finding that already has a thread,
    resolved or not.
+4. Learn from feedback, statelessly. A bot comment with a 👎 (`THUMBS_DOWN`)
+   reaction, or a human reply that calls it wrong or intended, in any thread
+   (resolved or not), means this kind of finding is unwanted here. Do not report
+   the same pattern elsewhere in this PR.
 
 ## Phase 2: find new problems
 
@@ -51,6 +64,9 @@ before judging. Report only:
 - changed behavior with no updated test, or user-visible behavior with an
   inaccurate `README.md`
 
+Before judging, read each file in `.github/review-rules/` whose `paths` globs
+match a changed file, and apply it as review criteria.
+
 Rules:
 
 - Verify every finding in the code. Do not report a guess, a pattern match, or
@@ -60,9 +76,12 @@ Rules:
   version in `Cargo.lock` or `bun.lock`, or with the vendored copy. The runner
   has no Rust toolchain or cargo registry: never run `find /`, search the web, or
   fetch docs.rs. If two reads do not confirm it, drop the finding.
-- Budget: about 25 tool calls in total. Stop exploring and report what you have.
 - No style nits, no formatting, no praise, no restating the diff.
 - Ignore problems that already existed and that the PR does not touch or worsen.
+- Before reporting, verify each candidate with the `verifier` subagent: one Task
+  call per finding, all in a single message so they run in parallel. Pass the
+  path, line, claim, and failure scenario. Drop every finding that comes back
+  `REJECTED`.
 - At most 8 new findings per run. Keep the most severe and most certain.
 - A finding needs a concrete failure scenario: input or state, then wrong result.
 
@@ -71,7 +90,8 @@ Rules:
 ### Inline review
 
 If there are new findings, post ONE review with `gh api --method POST
-repos/{owner}/{repo}/pulls/{number}/reviews --input review.json`. Set
+repos/{owner}/{repo}/pulls/{number}/reviews --input -` with the JSON piped on stdin
+(heredoc). Do not write files. Set
 `"event": "COMMENT"`, `"body": ""`, `"commit_id"` to the head SHA, and one entry
 in `"comments"` per finding with `path`, `line`, `side: "RIGHT"`, `body`. Use
 `start_line` for ranges. Each `line` must be inside a diff hunk, or the API

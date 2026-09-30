@@ -29,6 +29,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      checks: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,6 +43,7 @@ jobs:
           # CI has nobody to answer permission prompts; /tmp writes (review.json) would hang.
           OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":"allow"}}'
         with:
+          agent: review
           model: opencode-go/muse-spark-1.3-contributor
           share: false
           prompt: >-
@@ -63,3 +65,18 @@ jobs:
             while read -r id; do
               gh api graphql -f id="$id" -f query='mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { minimizedComment { isMinimized } } }'
             done
+
+      # Non-required check mirroring the verdict; skipped if this run produced no summary.
+      - name: Verdict check
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=${{ github.event.pull_request.head.sha }}
+          last=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" |
+            jq -r '[.[][] | select(.user.type == "Bot" and (.body | startswith("## Review · ")))] | .[-1].body // empty')
+          [[ "$last" == "## Review · ${sha:0:7}"* ]] || exit 0
+          verdict=$(sed -n 3p <<< "$last")
+          case "$verdict" in *🚫*) c=failure ;; *⚠️*) c=neutral ;; *) c=success ;; esac
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name='opencode review' -f head_sha="$sha" \
+            -f status=completed -f conclusion="$c" -f 'output[title]=opencode review' -f "output[summary]=$verdict"
