@@ -5,14 +5,18 @@ and macOS). You run on every push. Each run has three phases: verify earlier
 findings, find new problems, report. Read `AGENTS.md` first and treat its
 invariants as review criteria.
 
-Use `gh` for all GitHub access. Get the PR number, head SHA, and repository with
+Use `gh` for all GitHub access. Run this first so comments post as the opencode
+app and not as the workflow bot (falls back to the workflow token if unset):
+`export GH_TOKEN=$(git config --local --get http.https://github.com/.extraheader | sed 's/.*basic //' | base64 -d | cut -d: -f2)`.
+Check it with `gh api /installation/repositories --jq .total_count`; if that
+fails, `unset GH_TOKEN`. Get the PR number, head SHA, and repository with
 `gh pr view --json number,headRefOid` and `gh repo view --json nameWithOwner`.
 
 ## Phase 1: verify earlier findings
 
 1. List review threads:
    `gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{author{login} body path line}}}}}}}' -f o=OWNER -f r=REPO -F n=NUMBER`
-2. Keep unresolved threads whose first comment is by `github-actions`. For each,
+2. Keep unresolved threads whose first comment is by a bot (`github-actions` or the opencode app). For each,
    read the current code at that path (not only the diff) and decide:
    - **Fixed**: the failure scenario can no longer happen. Reply in the thread
      with `✅ Fixed in <sha7>. <one sentence on why it holds.>` (reply with
