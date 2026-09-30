@@ -107,7 +107,7 @@ struct LyricsResult {
     plain_lyrics: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct LrclibLyrics {
     track_name: Option<String>,
@@ -1476,6 +1476,7 @@ mod romanization {
     #[cfg(test)]
     mod tests {
         use super::romanize_lrc;
+        use std::time::{Duration, Instant};
 
         #[test]
         fn romanizes_japanese_lyrics_without_changing_timestamps() {
@@ -1512,6 +1513,75 @@ mod romanization {
         #[test]
         fn ignores_lyrics_that_are_already_latin() {
             assert_eq!(romanize_lrc("[00:01.00] Hello world"), None);
+        }
+
+        fn report_ops_per_sec(name: &str, mut work: impl FnMut()) {
+            for _ in 0..8 {
+                work();
+            }
+            let started = Instant::now();
+            let mut iterations = 0usize;
+            while started.elapsed() < Duration::from_millis(400) {
+                work();
+                iterations += 1;
+            }
+            let ops = iterations as f64 / started.elapsed().as_secs_f64();
+            println!("curriculum_metric name={name} unit=ops_per_sec value={ops:.2}");
+            assert!(iterations > 0, "{name} completed zero iterations");
+        }
+
+        fn sample_lrc(lines: &[&str]) -> String {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(index, text)| format!("[00:{index:02}.00] {text}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        #[test]
+        #[ignore = "curriculum bench; run via bun run bench:rust"]
+        fn curriculum_metric_romanize_japanese_lrc() {
+            let lyrics = sample_lrc(&[
+                "今日はいい天気ですね",
+                "明日は学校へ行く",
+                "ありがとうございます",
+                "君の名は何ですか",
+                "桜の花が咲きました",
+            ]);
+            report_ops_per_sec("romanize_japanese_lrc", || {
+                assert!(romanize_lrc(&lyrics).is_some());
+            });
+        }
+
+        #[test]
+        #[ignore = "curriculum bench; run via bun run bench:rust"]
+        fn curriculum_metric_romanize_chinese_lrc() {
+            let lyrics = sample_lrc(&[
+                "中国人喜欢喝茶",
+                "今天天气很好",
+                "我喜欢学习音乐",
+                "春天来了花开了",
+                "月亮代表我的心",
+            ]);
+            report_ops_per_sec("romanize_chinese_lrc", || {
+                assert!(romanize_lrc(&lyrics).is_some());
+            });
+        }
+
+        #[test]
+        #[ignore = "curriculum bench; run via bun run bench:rust"]
+        fn curriculum_metric_romanize_korean_lrc() {
+            let lyrics = sample_lrc(&[
+                "한글은 아름답습니다",
+                "오늘 날씨가 좋아요",
+                "나는 음악을 좋아해요",
+                "친구와 함께 가요",
+                "밤하늘에 별이 빛나요",
+            ]);
+            report_ops_per_sec("romanize_korean_lrc", || {
+                assert!(romanize_lrc(&lyrics).is_some());
+            });
         }
     }
 }
@@ -1983,6 +2053,64 @@ mod lyrics {
             });
 
             assert_eq!(results[0].track_name.as_deref(), Some("Self Aware"));
+        }
+
+        fn report_ops_per_sec(name: &str, mut work: impl FnMut()) {
+            for _ in 0..8 {
+                work();
+            }
+            let started = std::time::Instant::now();
+            let mut iterations = 0usize;
+            while started.elapsed() < std::time::Duration::from_millis(400) {
+                work();
+                iterations += 1;
+            }
+            let ops = iterations as f64 / started.elapsed().as_secs_f64();
+            println!("curriculum_metric name={name} unit=ops_per_sec value={ops:.2}");
+            assert!(iterations > 0, "{name} completed zero iterations");
+        }
+
+        #[test]
+        #[ignore = "curriculum bench; run via bun run bench:rust"]
+        fn curriculum_metric_lrclib_rank_candidates() {
+            let normalized_artist = normalize("Temper City");
+            let normalized_title = canonical_title("Self Aware", &normalized_artist);
+            let expected_duration_ms = Some(181_000);
+            let mut candidates = Vec::with_capacity(64);
+            for index in 0..60 {
+                candidates.push(candidate(
+                    &format!("Different Song {index}"),
+                    &format!("Different Artist {index}"),
+                    181.0 + (index as f64) * 0.01,
+                ));
+            }
+            candidates.push(candidate_with_metadata(
+                "Temper City - Self Aware",
+                "DanceHype",
+                Some("Self Aware Temper City"),
+                181.0,
+                true,
+            ));
+            candidates.push(candidate_with_metadata(
+                "Self Aware",
+                "Temper City",
+                Some("Self Aware"),
+                181.0,
+                false,
+            ));
+
+            report_ops_per_sec("lrclib_rank_candidates", || {
+                let mut ranked = candidates.clone();
+                ranked.sort_by_key(|item| {
+                    ranking_key(
+                        item,
+                        &normalized_title,
+                        &normalized_artist,
+                        expected_duration_ms,
+                    )
+                });
+                assert_eq!(ranked[0].artist_name.as_deref(), Some("DanceHype"));
+            });
         }
     }
 }
