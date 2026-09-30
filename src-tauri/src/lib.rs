@@ -516,7 +516,11 @@ fn focus_without_cursor_warp(window: &WebviewWindow) -> tauri::Result<()> {
     if !window.is_focused()? {
         SKIP_FOCUS_CURSOR_WARP.store(true, Ordering::SeqCst);
     }
-    window.set_focus()
+    let result = window.set_focus();
+    if result.is_err() {
+        SKIP_FOCUS_CURSOR_WARP.store(false, Ordering::SeqCst);
+    }
+    result
 }
 
 /// Moves the pointer onto the title bar after Cmd+Tab or Alt+Tab focuses a window.
