@@ -4,8 +4,6 @@
 //! Glass, and the plugin used here falls back to `NSVisualEffectView` on earlier
 //! versions, so both settings stay meaningful across supported releases.
 
-use std::sync::Once;
-
 use objc2::ffi::class_addMethod;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::sel;
@@ -36,8 +34,6 @@ pub fn apply(window: &WebviewWindow, intensity: u8, material: &str) -> Result<()
     Ok(())
 }
 
-static ACTIVE_OVERRIDE: Once = Once::new();
-
 extern "C-unwind" fn always_active(_this: &AnyObject, _cmd: Sel) -> Bool {
     Bool::YES
 }
@@ -57,20 +53,19 @@ fn keep_glass_active(window: &WebviewWindow) {
         };
         // SAFETY: `ns_window` is a live `NSWindow`, and this closure runs on the main thread.
         let class: &AnyClass = unsafe { (*handle.cast::<AnyObject>()).class() };
-        ACTIVE_OVERRIDE.call_once(|| {
-            // SAFETY: `always_active` matches the `BOOL _hasActiveAppearance` signature. The
-            // call is a no-op if the class already defines its own implementation.
-            unsafe {
-                class_addMethod(
-                    class as *const AnyClass as *mut AnyClass,
-                    sel!(_hasActiveAppearance),
-                    std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> Bool, Imp>(
-                        always_active,
-                    ),
-                    c"B@:".as_ptr(),
-                );
-            }
-        });
+        // SAFETY: `always_active` matches the `BOOL _hasActiveAppearance` signature. The call
+        // is idempotent and a no-op if the class already defines its own implementation, so
+        // it runs for every window in case the windows do not share one subclass.
+        unsafe {
+            class_addMethod(
+                class as *const AnyClass as *mut AnyClass,
+                sel!(_hasActiveAppearance),
+                std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> Bool, Imp>(
+                    always_active,
+                ),
+                c"B@:".as_ptr(),
+            );
+        }
     });
 }
 
