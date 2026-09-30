@@ -39,6 +39,8 @@ jobs:
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CI has nobody to answer permission prompts; /tmp writes (review.json) would hang.
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":"allow"}}'
         with:
           model: opencode-go/muse-spark-1.3-contributor
           share: false
