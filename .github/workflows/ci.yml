@@ -1,17 +1,25 @@
-name: Pull request validation
+name: CI
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+# Pushes to main are never cancelled: the release job runs at the end.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   detect-changed-areas:
     name: Detect changed areas
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       frontend: ${{ steps.changes.outputs.frontend }}
       native: ${{ steps.changes.outputs.native }}
@@ -25,10 +33,15 @@ jobs:
         id: changes
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          files="$(git diff --name-only "$BASE_SHA" HEAD)"
+          # No usable base (first push, force push): treat every file as changed.
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            files="$(git diff --name-only "$BASE_SHA" HEAD)"
+          else
+            files="$(git ls-files)"
+          fi
 
           frontend=false
           native=false
@@ -49,6 +62,7 @@ jobs:
     needs: detect-changed-areas
     if: needs.detect-changed-areas.outputs.frontend == 'true'
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -84,6 +98,7 @@ jobs:
     needs: detect-changed-areas
     if: needs.detect-changed-areas.outputs.native == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -130,10 +145,11 @@ jobs:
         working-directory: src-tauri
         run: cargo audit
 
-  pull-request-validation:
-    name: Pull request validation
-    if: always() && github.event.pull_request.draft == false
+  gate:
+    name: CI
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - detect-changed-areas
       - frontend-checks
@@ -160,3 +176,12 @@ jobs:
           else
             test "$NATIVE_RESULT" = skipped
           fi
+
+  release:
+    name: Release
+    needs: gate
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

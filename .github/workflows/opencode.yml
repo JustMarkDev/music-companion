@@ -14,11 +14,12 @@ concurrency:
 
 jobs:
   opencode:
-    # PRs: skip drafts and fork PRs (no secret access). Comments: only trusted users can trigger /oc.
+    # PRs: skip drafts, fork PRs and Dependabot PRs (no secret access). Comments: only trusted users can trigger /oc.
     if: >-
       (github.event_name == 'pull_request' &&
         !github.event.pull_request.draft &&
-        github.event.pull_request.head.repo.full_name == github.repository) ||
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]') ||
       (github.event_name != 'pull_request' &&
         (startsWith(github.event.comment.body, '/oc') || startsWith(github.event.comment.body, '/opencode')) &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
