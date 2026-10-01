@@ -25,7 +25,7 @@ jobs:
       native: ${{ steps.changes.outputs.native }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
         with:
           fetch-depth: 0
 
@@ -65,10 +65,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@main
         with:
           bun-version: latest
 
@@ -114,7 +114,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
         with:
           submodules: recursive
 

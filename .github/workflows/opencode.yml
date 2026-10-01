@@ -32,7 +32,7 @@ jobs:
       issues: write
       checks: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@main
         with:
           fetch-depth: 0
           persist-credentials: false

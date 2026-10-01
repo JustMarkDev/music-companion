@@ -24,12 +24,12 @@ jobs:
       version: ${{ steps.release.outputs.version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@main
         with:
           node-version: lts/*
 
@@ -38,7 +38,7 @@ jobs:
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx -y -p semantic-release@25 -p @semantic-release/exec@7 -p @semantic-release/git@11 semantic-release
+        run: npx -y -p semantic-release@latest -p @semantic-release/exec@latest -p @semantic-release/git@latest semantic-release
 
   release-windows:
     name: Build and publish Windows installers
@@ -51,12 +51,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
         with:
           ref: v${{ needs.release.outputs.version }}
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@main
         with:
           bun-version: latest
 
@@ -70,7 +70,7 @@ jobs:
 
       # Uploads to the draft release created above; the publish job releases it.
       - name: Build and upload installers
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@dev
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -92,13 +92,13 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@main
         with:
           ref: v${{ needs.release.outputs.version }}
           submodules: recursive
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@main
         with:
           bun-version: latest
 
@@ -146,7 +146,7 @@ jobs:
           done
 
       - name: Build and upload disk image
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@dev
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
