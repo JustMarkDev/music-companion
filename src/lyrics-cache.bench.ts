@@ -1,4 +1,4 @@
-import { bench, describe } from "vitest";
+import { describe, test } from "vite-plus/test";
 import { LyricsCache } from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
 
@@ -48,13 +48,16 @@ describe("lyrics cache", () => {
   const hotCache = filledCache(500);
   const probe = variant(250, 181_000);
 
-  bench("lyrics_cache_get_hot", () => {
-    hotCache.get(probe);
-  });
-
-  bench("lyrics_cache_put_persist", () => {
-    const cache = new LyricsCache(new MemoryStorage());
-    const generation = cache.requestGeneration();
-    cache.putIfCurrent(generation, variant(1, 180_000), lyrics(1));
+  test("lyrics cache", async ({ bench }) => {
+    await bench.compare(
+      bench("lyrics_cache_get_hot", () => {
+        hotCache.get(probe);
+      }),
+      bench("lyrics_cache_put_persist", () => {
+        const cache = new LyricsCache(new MemoryStorage());
+        const generation = cache.requestGeneration();
+        cache.putIfCurrent(generation, variant(1, 180_000), lyrics(1));
+      }),
+    );
   });
 });

@@ -2,6 +2,10 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   clearScreen: false,
+  lint: {
+    options: { typeAware: true, typeCheck: true },
+    ignorePatterns: ["src-tauri/**"],
+  },
   fmt: {
     // `src-tauri/vendor` is the pinned MediaRemote adapter submodule, which must
     // stay byte-identical to upstream.

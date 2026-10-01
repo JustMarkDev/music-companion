@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, type ResizeDirection } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource-variable/source-sans-3";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
@@ -35,6 +35,7 @@ import {
   type SettingsState,
 } from "./settings";
 
+type ResizeDirection = Parameters<ReturnType<typeof getCurrentWindow>["startResizeDragging"]>[0];
 // Windows composes the overlay with Mica and Acrylic; macOS uses the closest
 // Liquid Glass variants, so each platform is labelled in its own terms.
 const MATERIAL_COPY: Record<

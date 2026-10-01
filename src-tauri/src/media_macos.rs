@@ -154,11 +154,11 @@ pub fn start_event_monitor(app: tauri::AppHandle) {
 /// orphaned Perl process behind. The supervisor's `TERM` trap stops the reader it
 /// started.
 pub fn shutdown() {
-    if let Ok(mut child) = STREAM_CHILD.lock() {
-        if let Some(mut running) = child.take() {
-            let _ = running.kill();
-            let _ = running.wait();
-        }
+    if let Ok(mut child) = STREAM_CHILD.lock()
+        && let Some(mut running) = child.take()
+    {
+        let _ = running.kill();
+        let _ = running.wait();
     }
 }
 
@@ -223,11 +223,11 @@ fn run_adapter_stream(app: tauri::AppHandle) {
             continue;
         };
 
-        if let Ok(mut slot) = STREAM_CHILD.lock() {
-            if let Some(mut previous) = slot.replace(child) {
-                let _ = previous.kill();
-                let _ = previous.wait();
-            }
+        if let Ok(mut slot) = STREAM_CHILD.lock()
+            && let Some(mut previous) = slot.replace(child)
+        {
+            let _ = previous.kill();
+            let _ = previous.wait();
         }
 
         for line in BufReader::new(stdout).lines() {
@@ -564,7 +564,7 @@ fn run_applescript(script: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        current_timeline_position, media_state_from_adapter, now_playing_script, UNIT_SEPARATOR,
+        UNIT_SEPARATOR, current_timeline_position, media_state_from_adapter, now_playing_script,
     };
 
     #[test]

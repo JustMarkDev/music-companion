@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decodeSettings, defaultHotkeysFor, DEFAULT_SETTINGS, detectPlatform } from "./settings";
 
 describe("platform defaults", () => {

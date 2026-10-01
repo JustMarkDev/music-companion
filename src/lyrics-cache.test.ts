@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { LyricsCache, LYRICS_CACHE_STORAGE_KEY, MAX_PERSISTED_LYRICS } from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
 

@@ -6,13 +6,18 @@
     "dev": "vp dev --host 127.0.0.1 --port 1421",
     "build": "vp build",
     "preview": "vp preview --host 127.0.0.1",
-    "test": "vp test run",
-    "bench": "vitest bench --run",
+    "bench": "vp test bench",
     "bench:rust": "cargo test --manifest-path src-tauri/Cargo.toml --release -- --ignored --nocapture curriculum_metric_",
-    "check": "vp check",
-    "lint": "vp lint",
-    "format": "vp format",
-    "format:check": "vp format --check",
+    "check": "bun run check:js && bun run check:rust",
+    "check:js": "vp check",
+    "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && bun run lint:rust",
+    "lint": "vp lint && bun run lint:rust",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
+    "format": "vp fmt && bun run format:rust",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "test": "bun run test:js && bun run test:rust",
+    "test:js": "vp test run",
+    "test:rust": "cargo nextest run --manifest-path src-tauri/Cargo.toml --locked",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
@@ -21,19 +26,18 @@
   },
   "dependencies": {
     "@fontsource-variable/source-sans-3": "^5.3.0",
-    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-global-shortcut": "^2.4.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.0",
-    "@voidzero-dev/vite-plus-core": "^0.3.3",
+    "@tauri-apps/cli": "^2.12.1",
+    "@voidzero-dev/vite-plus-core": "^1.0.0",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.3.3"
+    "vite-plus": "^1.0.0"
   },
   "overrides": {
     "nanoid": "^3.3.16",
     "postcss": "^8.5.23",
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.1",
-    "vitest": "4.1.11"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0"
   }
 }

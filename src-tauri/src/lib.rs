@@ -4,15 +4,15 @@ compile_error!("Music Companion supports Windows and macOS only.");
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 use tauri::{
+    Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_updater::UpdaterExt;
 
@@ -196,7 +196,7 @@ fn retain_cached_media_when_session_disappears(
 
 #[cfg(test)]
 mod media_state_tests {
-    use super::{retain_cached_media_when_session_disappears, MediaState};
+    use super::{MediaState, retain_cached_media_when_session_disappears};
 
     fn state(has_session: bool, is_playing: bool, position_ms: u64) -> MediaState {
         MediaState {
@@ -308,10 +308,8 @@ fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String>
     // Tauri drops the overlay back to the standard floating level, which is below
     // fullscreen windows. Restore the level the overlay needs.
     #[cfg(target_os = "macos")]
-    if enabled {
-        if let Some(overlay) = window.get_webview_window("main") {
-            overlay_z_order::apply(&overlay)?;
-        }
+    if enabled && let Some(overlay) = window.get_webview_window("main") {
+        overlay_z_order::apply(&overlay)?;
     }
 
     Ok(())
@@ -621,10 +619,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 button_state: MouseButtonState::Up,
                 ..
             } = event
+                && let Some(window) = tray.app_handle().get_webview_window("main")
             {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    unlock_overlay(&window);
-                }
+                unlock_overlay(&window);
             }
         });
 
@@ -655,11 +652,11 @@ mod persistent_backdrop {
     use std::{ffi::c_void, mem};
     use tauri::WebviewWindow;
     use windows::{
-        core::{BOOL, PCSTR},
         Win32::{
             Foundation::HWND,
             System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         },
+        core::{BOOL, PCSTR},
     };
 
     const WCA_ACCENT_POLICY: u32 = 0x13;
@@ -775,9 +772,9 @@ mod overlay_z_order {
     use windows::Win32::{
         Foundation::HWND,
         UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
-            SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+            GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
+            HWND_TOPMOST, IsWindowVisible, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, WS_EX_TOPMOST,
         },
     };
 
@@ -972,7 +969,7 @@ mod media {
         PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
         VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK,
     };
 
@@ -1691,7 +1688,7 @@ mod romanization {
 }
 
 mod lyrics {
-    use super::{LrclibLyrics, LyricsResult, LATEST_LYRICS_REQUEST};
+    use super::{LATEST_LYRICS_REQUEST, LrclibLyrics, LyricsResult};
     use std::collections::HashSet;
     use std::sync::OnceLock;
 

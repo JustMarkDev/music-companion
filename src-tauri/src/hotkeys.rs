@@ -71,12 +71,11 @@ impl HotkeyRegistry {
             return Ok(status);
         }
 
-        if let Some(current) = &current {
-            if current.registered {
-                if let Err(error) = backend.unregister(&current.accelerator) {
-                    return Ok(failed_status(action, accelerator, error));
-                }
-            }
+        if let Some(current) = &current
+            && current.registered
+            && let Err(error) = backend.unregister(&current.accelerator)
+        {
+            return Ok(failed_status(action, accelerator, error));
         }
 
         match backend.register(&accelerator) {
