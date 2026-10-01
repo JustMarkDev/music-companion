@@ -1,0 +1,37 @@
+{
+  "branches": [
+    "main"
+  ],
+  "tagFormat": "v${version}",
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "verifyReleaseCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\"",
+        "prepareCmd": "perl -0pi -e 's/\"version\": *\"[^\"]*\"/\"version\": \"${nextRelease.version}\"/' src-tauri/tauri.conf.json && perl -0pi -e 's/^version = \".*\"/version = \"${nextRelease.version}\"/m' src-tauri/Cargo.toml && perl -0pi -e 's/(^name = \"music-companion\"\\nversion = )\".*\"/$1\"${nextRelease.version}\"/m' src-tauri/Cargo.lock"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "src-tauri/tauri.conf.json",
+          "src-tauri/Cargo.toml",
+          "src-tauri/Cargo.lock"
+        ],
+        "message": "chore(release): ${nextRelease.version} [skip ci]"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "draftRelease": true,
+        "successComment": false,
+        "failComment": false,
+        "releasedLabels": false
+      }
+    ]
+  ]
+}

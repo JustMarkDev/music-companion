@@ -1,16 +1,49 @@
 name: Release
 
+# Releases are cut by semantic-release from conventional commits on main.
+# plan (dry run) -> verify -> release (tag + draft release) -> build -> publish.
+
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  plan:
+    name: Plan release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # Dry run: writes `version=` to the step output only when a release is due.
+      - name: Compute next version
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx -y -p semantic-release@25 -p @semantic-release/exec@7 -p @semantic-release/git@11 semantic-release --dry-run
+
   verify:
-    name: Verify tagged commit (${{ matrix.name }})
+    name: Verify commit (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.version != ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -85,16 +118,44 @@ jobs:
         working-directory: src-tauri
         run: cargo audit
 
+  release:
+    name: Tag and draft release
+    runs-on: ubuntu-latest
+    needs: [plan, verify]
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # Bumps tauri.conf.json, Cargo.toml and Cargo.lock, commits, tags, and creates a draft release.
+      - name: Run semantic-release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx -y -p semantic-release@25 -p @semantic-release/exec@7 -p @semantic-release/git@11 semantic-release
+
   release-windows:
     name: Build and publish Windows installers
     runs-on: windows-latest
-    needs: verify
+    needs: release
     permissions:
       contents: write
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.release.outputs.version }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -109,22 +170,15 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build and publish release
+      # Uploads to the draft release created above; the publish job releases it.
+      - name: Build and upload installers
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
-          tagName: v__VERSION__
-          releaseName: Music Companion v__VERSION__
-          releaseBody: |
-            Music Companion per Windows e macOS.
-
-            - Windows: scarica l'installer NSIS (`.exe`).
-            - macOS: scarica il `.dmg` universale (Apple Silicon e Intel).
-          releaseDraft: false
-          prerelease: false
-          generateReleaseNotes: true
+          tagName: v${{ needs.release.outputs.version }}
+          releaseDraft: true
           args: --target x86_64-pc-windows-msvc
 
   release-macos:
@@ -132,7 +186,7 @@ jobs:
     runs-on: macos-latest
     # The Windows job owns the release body and the updater manifest, so it has to
     # create the release first.
-    needs: release-windows
+    needs: [release, release-windows]
     permissions:
       contents: write
 
@@ -140,6 +194,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: v${{ needs.release.outputs.version }}
           submodules: recursive
 
       - name: Set up Bun
@@ -190,15 +245,26 @@ jobs:
             fi
           done
 
-      - name: Build and publish release
+      - name: Build and upload disk image
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseDraft: false
-          prerelease: false
+          tagName: v${{ needs.release.outputs.version }}
+          releaseDraft: true
           # macOS auto-update stays off until release signing is configured, so
           # this job must not overwrite the Windows updater manifest.
           includeUpdaterJson: false
           args: --target universal-apple-darwin
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [release, release-macos]
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ needs.release.outputs.version }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest
