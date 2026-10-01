@@ -655,9 +655,9 @@ mod persistent_backdrop {
     use std::{ffi::c_void, mem};
     use tauri::WebviewWindow;
     use windows::{
-        core::PCSTR,
+        core::{BOOL, PCSTR},
         Win32::{
-            Foundation::{BOOL, HWND},
+            Foundation::HWND,
             System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         },
     };
@@ -849,7 +849,7 @@ mod overlay_z_order {
                 foreground_visible,
                 foreground_is_topmost,
             ) {
-                SetWindowPos(overlay_hwnd, HWND_TOPMOST, 0, 0, 0, 0, REASSERT_FLAGS)?;
+                SetWindowPos(overlay_hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, REASSERT_FLAGS)?;
             }
 
             // Keep the settings window above the lyrics overlay while it is open, without
@@ -858,7 +858,15 @@ mod overlay_z_order {
                 if IsWindowVisible(settings_hwnd).as_bool()
                     && (foreground_is_settings || !foreground_is_same_app)
                 {
-                    SetWindowPos(settings_hwnd, HWND_TOPMOST, 0, 0, 0, 0, REASSERT_FLAGS)?;
+                    SetWindowPos(
+                        settings_hwnd,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        REASSERT_FLAGS,
+                    )?;
                 }
             }
         }
@@ -956,7 +964,7 @@ mod media {
         time::{SystemTime, UNIX_EPOCH},
     };
     use tauri::Emitter;
-    use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
+    use windows::Foundation::TypedEventHandler;
     use windows::Media::Control::{
         CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
@@ -974,8 +982,9 @@ mod media {
 
     struct SessionSubscription {
         session: GlobalSystemMediaTransportControlsSession,
-        _media_properties_token: EventRegistrationToken,
-        _playback_info_token: EventRegistrationToken,
+        // windows 0.62 represents event registration tokens as plain i64.
+        _media_properties_token: i64,
+        _playback_info_token: i64,
     }
 
     pub fn start_event_monitor(app: tauri::AppHandle) {
@@ -991,7 +1000,7 @@ mod media {
     pub fn shutdown() {}
 
     fn run_event_monitor(app: tauri::AppHandle) -> windows::core::Result<()> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
         let subscriptions = Arc::new(Mutex::new(Vec::<SessionSubscription>::new()));
         subscribe_to_sessions(&manager, &app, &subscriptions)?;
 
@@ -1011,7 +1020,7 @@ mod media {
             GlobalSystemMediaTransportControlsSessionManager,
             SessionsChangedEventArgs,
         >::new(move |manager, _| {
-            if let Some(manager) = manager {
+            if let Some(manager) = &*manager {
                 if let Err(error) = subscribe_to_sessions(manager, &sessions_app, &sessions_state) {
                     eprintln!("Unable to refresh Windows media event subscriptions: {error}");
                 }
@@ -1080,7 +1089,7 @@ mod media {
         action: &str,
         allow_media_key_fallback: bool,
     ) -> windows::core::Result<bool> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
         let session = selected_session().or_else(|| manager.GetCurrentSession().ok());
         let Some(session) = session else {
             println!(
@@ -1090,9 +1099,9 @@ mod media {
         };
         println!("[media-control] sending {action} to Windows media session");
         let accepted = match action {
-            "next" => session.TrySkipNextAsync()?.get(),
-            "previous" => session.TrySkipPreviousAsync()?.get(),
-            "play/pause" => session.TryTogglePlayPauseAsync()?.get(),
+            "next" => session.TrySkipNextAsync()?.join(),
+            "previous" => session.TrySkipPreviousAsync()?.join(),
+            "play/pause" => session.TryTogglePlayPauseAsync()?.join(),
             _ => Ok(false),
         }?;
 
@@ -1142,12 +1151,16 @@ mod media {
         if sent == inputs.len() as u32 {
             Ok(())
         } else {
-            Err(windows::core::Error::from_win32())
+            Err(windows::core::Error::from_hresult(
+                windows::core::HRESULT::from_win32(unsafe {
+                    windows::Win32::Foundation::GetLastError().0
+                }),
+            ))
         }
     }
 
     pub fn current_media_state() -> windows::core::Result<MediaState> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
         let sessions = manager.GetSessions()?;
         let mut playing_count = 0;
         let mut available = Vec::new();
@@ -1187,7 +1200,7 @@ mod media {
 
         let playback = session.GetPlaybackInfo()?;
         let status = playback.PlaybackStatus()?;
-        let properties = session.TryGetMediaPropertiesAsync()?.get()?;
+        let properties = session.TryGetMediaPropertiesAsync()?.join()?;
         let timeline = session.GetTimelineProperties()?;
         let timeline_position_ms = timespan_to_ms(timeline.Position()?);
         let end_ms = timespan_to_ms(timeline.EndTime()?);
