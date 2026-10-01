@@ -180,7 +180,8 @@ jobs:
   release:
     name: Release
     needs: gate
-    if: github.event_name == 'push'
+    # always(): a skipped ancestor (frontend/native) would otherwise skip this job.
+    if: always() && github.event_name == 'push' && needs.gate.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
