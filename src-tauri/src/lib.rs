@@ -809,10 +809,10 @@ mod overlay_z_order {
                     .and_then(|window| window.hwnd().ok())
                     .map(|hwnd| HWND(hwnd.0));
 
-                if let Err(error) = reassert_if_needed(overlay_hwnd, settings_hwnd) {
-                    if !reassert_error_reported.swap(true, Ordering::Relaxed) {
-                        eprintln!("Unable to restore the overlay Z-order: {error}");
-                    }
+                if let Err(error) = reassert_if_needed(overlay_hwnd, settings_hwnd)
+                    && !reassert_error_reported.swap(true, Ordering::Relaxed)
+                {
+                    eprintln!("Unable to restore the overlay Z-order: {error}");
                 }
             }
         });
@@ -851,20 +851,19 @@ mod overlay_z_order {
 
             // Keep the settings window above the lyrics overlay while it is open, without
             // stealing focus when another app is active.
-            if let Some(settings_hwnd) = settings_hwnd {
-                if IsWindowVisible(settings_hwnd).as_bool()
-                    && (foreground_is_settings || !foreground_is_same_app)
-                {
-                    SetWindowPos(
-                        settings_hwnd,
-                        Some(HWND_TOPMOST),
-                        0,
-                        0,
-                        0,
-                        0,
-                        REASSERT_FLAGS,
-                    )?;
-                }
+            if let Some(settings_hwnd) = settings_hwnd
+                && IsWindowVisible(settings_hwnd).as_bool()
+                && (foreground_is_settings || !foreground_is_same_app)
+            {
+                SetWindowPos(
+                    settings_hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    REASSERT_FLAGS,
+                )?;
             }
         }
 
@@ -1017,10 +1016,10 @@ mod media {
             GlobalSystemMediaTransportControlsSessionManager,
             SessionsChangedEventArgs,
         >::new(move |manager, _| {
-            if let Some(manager) = &*manager {
-                if let Err(error) = subscribe_to_sessions(manager, &sessions_app, &sessions_state) {
-                    eprintln!("Unable to refresh Windows media event subscriptions: {error}");
-                }
+            if let Some(manager) = &*manager
+                && let Err(error) = subscribe_to_sessions(manager, &sessions_app, &sessions_state)
+            {
+                eprintln!("Unable to refresh Windows media event subscriptions: {error}");
             }
             emit_media_change(&sessions_app, "sessions");
             Ok(())
