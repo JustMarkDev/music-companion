@@ -27,10 +27,11 @@ jobs:
     timeout-minutes: 12
     permissions:
       id-token: write
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
       checks: write
+      actions: read
     steps:
       - uses: actions/checkout@main
         with:
@@ -42,11 +43,12 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The action ignores its agent input; default_agent picks the read-only review agent for PR
-          # reviews (not /oc chat, which may edit). CI has nobody to answer permission prompts, so
-          # allow outside-workspace paths instead of hanging.
-          OPENCODE_CONFIG_CONTENT: ${{ github.event_name == 'pull_request' && '{"default_agent":"review","permission":{"external_directory":"allow"}}' || '{"permission":{"external_directory":"allow"}}' }}
+          # reviews and the built-in read-only plan agent for /oc chat, so neither edits code. CI has
+          # nobody to answer permission prompts, so allow outside-workspace paths instead of hanging.
+          OPENCODE_CONFIG_CONTENT: ${{ github.event_name == 'pull_request' && '{"default_agent":"review","permission":{"external_directory":"allow"}}' || '{"default_agent":"plan","permission":{"external_directory":"allow"}}' }}
         with:
           model: opencode-go/muse-spark-1.3-contributor
+          variant: xhigh
           share: false
           prompt: >-
             ${{ github.event_name == 'pull_request' && 'Review this pull request. Follow .github/opencode-review.md exactly: verify and resolve earlier findings, find new problems, post them as one inline GitHub review, then reply with the summary.' || '' }}
