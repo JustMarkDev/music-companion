@@ -275,9 +275,45 @@ fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
 
 pub fn current_media_state() -> Result<MediaState, String> {
     match backend() {
-        Backend::Adapter(paths) => adapter_media_state(paths),
+        Backend::Adapter(paths) => {
+            let reported = adapter_media_state(paths)?;
+            Ok(scripted_override(&reported).unwrap_or(reported))
+        }
         Backend::AppleScript => applescript_media_state(),
     }
+}
+
+/// `MediaRemote` only reports the system's single now playing app. A browser tab
+/// that was playing earlier keeps that slot until something else plays, so a
+/// running Music or Spotify would stay hidden behind it. Prefer the scriptable
+/// player unless the browser is actually playing and the player is not.
+fn scripted_override(reported: &MediaState) -> Option<MediaState> {
+    if reported.has_session && !is_browser(&reported.source_app) {
+        return None;
+    }
+    applescript_media_state()
+        .ok()
+        .filter(|scripted| scripted.has_session && (scripted.is_playing || !reported.is_playing))
+}
+
+/// Bundle identifier fragments of the common browsers, including their web apps.
+fn is_browser(bundle_id: &str) -> bool {
+    let bundle_id = bundle_id.to_ascii_lowercase();
+    [
+        "chrome",
+        "chromium",
+        "safari",
+        "edgemac",
+        "firefox",
+        "brave",
+        "opera",
+        "vivaldi",
+        "thebrowser",
+        "zen-browser",
+        "librewolf",
+    ]
+    .iter()
+    .any(|browser| bundle_id.contains(browser))
 }
 
 fn adapter_media_state(paths: &AdapterPaths) -> Result<MediaState, String> {
@@ -401,13 +437,24 @@ pub fn send_transport_control(
             let Some(command) = adapter_transport_command(action) else {
                 return Ok(false);
             };
+            // The adapter controls the system's now playing app, which is not
+            // the player the overlay shows when `scripted_override` replaced it.
+            if let Ok(reported) = adapter_media_state(paths)
+                && let Some(scripted) = scripted_override(&reported)
+            {
+                // The scripted player may have quit since the overlay picked it, in
+                // which case the press falls through to the system player.
+                if applescript_transport_control(action, Some(&scripted.source_app))? {
+                    return Ok(true);
+                }
+            }
             println!("[media-control] sending {action} to the now playing application");
             let status = adapter_command(paths, ["send", command])
                 .status()
                 .map_err(|error| format!("unable to send {action}: {error}"))?;
             Ok(status.success())
         }
-        Backend::AppleScript => applescript_transport_control(action),
+        Backend::AppleScript => applescript_transport_control(action, None),
     }
 }
 
@@ -511,7 +558,10 @@ end tell"#
     )
 }
 
-fn applescript_transport_control(action: &str) -> Result<bool, String> {
+fn applescript_transport_control(
+    action: &str,
+    only_bundle_id: Option<&str>,
+) -> Result<bool, String> {
     let command = match action {
         "next" => "next track",
         "previous" => "previous track",
@@ -521,7 +571,9 @@ fn applescript_transport_control(action: &str) -> Result<bool, String> {
 
     for player in &SCRIPTED_PLAYERS {
         // Only command the player the overlay is actually following.
-        if scripted_player_state(player).is_none() {
+        if only_bundle_id.is_some_and(|id| id != player.bundle_id)
+            || scripted_player_state(player).is_none()
+        {
             continue;
         }
         println!("[media-control] sending {action} to {}", player.name);
@@ -564,8 +616,23 @@ fn run_applescript(script: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        UNIT_SEPARATOR, current_timeline_position, media_state_from_adapter, now_playing_script,
+        UNIT_SEPARATOR, current_timeline_position, is_browser, media_state_from_adapter,
+        now_playing_script,
     };
+
+    #[test]
+    fn tells_browsers_from_music_players() {
+        for browser in [
+            "com.google.Chrome",
+            "com.apple.Safari",
+            "org.mozilla.firefox",
+        ] {
+            assert!(is_browser(browser), "{browser}");
+        }
+        for player in ["com.spotify.client", "com.apple.Music", "com.tidal.desktop"] {
+            assert!(!is_browser(player), "{player}");
+        }
+    }
 
     #[test]
     fn advances_the_position_while_playing() {
