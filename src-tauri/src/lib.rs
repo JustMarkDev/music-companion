@@ -648,6 +648,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
 fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.set_ignore_cursor_events(false);
+    let _ = window.unminimize();
     let _ = window.show();
     let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
