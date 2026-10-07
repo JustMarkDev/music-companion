@@ -1190,11 +1190,11 @@ mod media {
             .or_else(|| {
                 available
                     .iter()
-                    .find(|s| is_music(*s) && session_is_playing(s))
+                    .find(|s| is_music(s) && session_is_playing(s))
                     .cloned()
             })
             .or_else(|| current.clone().filter(is_music))
-            .or_else(|| available.iter().find(|s| is_music(*s)).cloned())
+            .or_else(|| available.iter().find(|s| is_music(s)).cloned())
             .or(retained)
             .or(playing)
             .or(current);
@@ -1275,6 +1275,7 @@ mod media {
         let app_id = app_id.to_ascii_lowercase();
         [
             "chrome",
+            "chromium",
             "msedge",
             "microsoftedge",
             "firefox",

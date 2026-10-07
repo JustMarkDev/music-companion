@@ -310,6 +310,7 @@ fn is_browser(bundle_id: &str) -> bool {
         "vivaldi",
         "thebrowser",
         "zen-browser",
+        "librewolf",
     ]
     .iter()
     .any(|browser| bundle_id.contains(browser))
@@ -441,7 +442,11 @@ pub fn send_transport_control(
             if let Ok(reported) = adapter_media_state(paths)
                 && let Some(scripted) = scripted_override(&reported)
             {
-                return applescript_transport_control(action, Some(&scripted.source_app));
+                // The scripted player may have quit since the overlay picked it, in
+                // which case the press falls through to the system player.
+                if applescript_transport_control(action, Some(&scripted.source_app))? {
+                    return Ok(true);
+                }
             }
             println!("[media-control] sending {action} to the now playing application");
             let status = adapter_command(paths, ["send", command])
