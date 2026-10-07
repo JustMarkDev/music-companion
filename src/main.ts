@@ -119,8 +119,8 @@ const demoState: MediaState = {
 };
 
 const demoLyrics = `[00:00.00] Waiting for a song
-[00:12.20] The window catches the rhythm
-[00:23.40] Every line finds its light
+[00:12.20] <00:12.20>The <00:12.90>window <00:13.70>catches <00:14.60>the <00:15.00>rhythm<00:16.80>
+[00:23.40] <00:23.40>Every <00:24.10>line <00:24.80>finds <00:25.50>its <00:25.90>light<00:27.60>
 [00:36.90] Floating over work and play
 [00:49.10] Music Companion keeps time
 [01:03.00] The chorus arrives in color
@@ -153,6 +153,9 @@ const demoStartedAtMs = performance.now();
 let renderedLyricsKey = "";
 let lyricsRenderGeneration = 0;
 let lastScrolledLineIndex = -1;
+// Word elements of the active line and the progress last written to each.
+let activeWordElements: HTMLElement[] = [];
+let activeWordProgress: number[] = [];
 let pollInFlight = false;
 let pollQueued = false;
 let pollStartedAtMs = 0;
@@ -1332,13 +1335,19 @@ function renderLyrics() {
       const showNeighborFocus = lyricsMode !== "synced";
       const className = [
         "lyric-line",
+        line.segments ? "word-synced" : "",
         index === activeLineIndex ? "active" : "",
         showNeighborFocus && distance === 1 ? "near" : "",
         distance > 4 ? "far" : "",
       ]
         .filter(Boolean)
         .join(" ");
-      return `<p class="${className}" data-line-index="${index}">${escapeHtml(line.text)}</p>`;
+      const content = line.segments
+        ? line.segments
+            .map((segment) => `<span class="lyric-word">${escapeHtml(segment.text)}</span>`)
+            .join("")
+        : escapeHtml(line.text);
+      return `<p class="${className}" data-line-index="${index}">${content}</p>`;
     })
     .join("");
 
@@ -1389,6 +1398,23 @@ function updateSyncFrame() {
   if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
     updateLyricDom();
   }
+  updateWordProgress(positionMs);
+}
+
+/** Fills each word of the active line left to right as its timing plays out. */
+function updateWordProgress(positionMs: number) {
+  const segments = lyricsLines[activeLineIndex]?.segments;
+  if (!segments || segments.length !== activeWordElements.length) return;
+  segments.forEach((segment, index) => {
+    const span = segment.endMs - segment.startMs;
+    const raw =
+      span > 0 ? (positionMs - segment.startMs) / span : positionMs >= segment.startMs ? 1 : 0;
+    // Steps of 0.5% are invisible and spare a style write on most frames.
+    const progress = Math.round(Math.min(1, Math.max(0, raw)) * 200) / 200;
+    if (progress === activeWordProgress[index]) return;
+    activeWordProgress[index] = progress;
+    activeWordElements[index].style.setProperty("--word-progress", String(progress));
+  });
 }
 
 function formatSyncTimestamp(timestampMs: number | null) {
@@ -1423,15 +1449,20 @@ function updateLyricDom() {
     lineElement.classList.toggle("far", distance > 4);
   });
 
+  const activeElement =
+    activeLineIndex < 0
+      ? null
+      : list.querySelector<HTMLElement>(`.lyric-line[data-line-index="${activeLineIndex}"]`);
+  activeWordElements = [...(activeElement?.querySelectorAll<HTMLElement>(".lyric-word") ?? [])];
+  activeWordProgress = activeWordElements.map(() => -1);
+
   if (activeLineIndex !== lastScrolledLineIndex) {
     lastScrolledLineIndex = activeLineIndex;
     if (activeLineIndex < 0) {
       list.scrollTo({ top: 0, behavior: "auto" });
       return;
     }
-    list
-      .querySelector<HTMLElement>(`.lyric-line[data-line-index="${activeLineIndex}"]`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    activeElement?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
 

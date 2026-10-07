@@ -74,12 +74,17 @@ describe("LyricsCache", () => {
     expect(cache.has(variant(180_000))).toBe(false);
   });
 
-  it("starts fresh instead of reading the version-three schema", () => {
-    const storage = new MemoryStorage();
-    storage.setItem("music-companion-lyrics-cache-v3", JSON.stringify([["artist::song", {}]]));
-    expect(new LyricsCache(storage).has(variant(180_000))).toBe(false);
-    expect(storage.getItem("music-companion-lyrics-cache-v3")).toBeNull();
-    expect(storage.getItem(LYRICS_CACHE_STORAGE_KEY)).toBeNull();
+  it("starts fresh instead of reading earlier schemas", () => {
+    for (const legacyKey of [
+      "music-companion-lyrics-cache-v3",
+      "music-companion-lyrics-cache-v4",
+    ]) {
+      const storage = new MemoryStorage();
+      storage.setItem(legacyKey, JSON.stringify([["artist::song", {}]]));
+      expect(new LyricsCache(storage).has(variant(180_000))).toBe(false);
+      expect(storage.getItem(legacyKey)).toBeNull();
+      expect(storage.getItem(LYRICS_CACHE_STORAGE_KEY)).toBeNull();
+    }
   });
 
   it("discards malformed persisted data", () => {

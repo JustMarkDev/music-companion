@@ -59,7 +59,7 @@
     "publisher": "Music Companion",
     "category": "Music",
     "shortDescription": "Live lyrics overlay for Windows and macOS",
-    "longDescription": "A transparent always-on-top lyrics overlay that follows the active system media session and fetches lyrics from LRCLIB."
+    "longDescription": "A transparent always-on-top lyrics overlay that follows the active system media session and fetches lyrics from lrc.red, LRCLIB, and Netease Cloud Music."
   },
   "plugins": {
     "updater": {

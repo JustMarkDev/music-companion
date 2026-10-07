@@ -99,6 +99,53 @@ describe("LRC parsing", () => {
   });
 });
 
+describe("word-timed lyrics", () => {
+  // parseLyrics prepends an introduction line when the first lyric starts after 3 s.
+  const firstLine = (raw: string) => parseLyrics(raw).find((line) => line.text !== "♪")!;
+
+  it("splits enhanced LRC into timed segments that keep their spacing", () => {
+    const line = firstLine("[00:27.40]<00:27.40>I <00:27.55>been <00:27.74>tryna <00:28.96>");
+    expect(line.text).toBe("I been tryna");
+    expect(line.segments).toEqual([
+      { startMs: 27_400, endMs: 27_550, text: "I " },
+      { startMs: 27_550, endMs: 27_740, text: "been " },
+      { startMs: 27_740, endMs: 28_960, text: "tryna" },
+    ]);
+  });
+
+  it("ends the last word at the line end when there is no closing tag", () => {
+    const line = firstLine("[00:10.00]<00:10.00>Hello <00:10.50>world\n[00:13.00]Next");
+    expect(line.segments?.[line.segments.length - 1]).toEqual({
+      startMs: 10_500,
+      endMs: 13_000,
+      text: "world",
+    });
+  });
+
+  it("uses an empty tag as the end of the previous word, leaving a gap", () => {
+    const line = firstLine("[00:05.00]<00:05.00>a<00:05.40> <00:06.00>b<00:06.30>");
+    expect(line.segments).toEqual([
+      { startMs: 5_000, endMs: 5_400, text: "a " },
+      { startMs: 6_000, endMs: 6_300, text: "b" },
+    ]);
+  });
+
+  it("keeps syllables of one word contiguous", () => {
+    const [line] = parseLyrics("[00:01.00]<00:01.00>e<00:01.20>very <00:01.60>day<00:02.00>");
+    expect(line.text).toBe("every day");
+    expect(line.segments?.map((segment) => segment.text).join("")).toBe("every day");
+  });
+
+  it("leaves plain line-synced lyrics without segments", () => {
+    expect(parseLyrics("[00:01.00]Hello world")[0].segments).toBeUndefined();
+  });
+
+  it("does not time a line with a single word or only empty tags", () => {
+    expect(parseLyrics("[00:01.00]<00:01.00>Hello<00:02.00>")[0].segments).toBeUndefined();
+    expect(parseLyrics("[00:01.00]<00:01.00><00:02.00>")[0].segments).toBeUndefined();
+  });
+});
+
 describe("lyrics display selection", () => {
   it("prefers romanized synchronized lyrics when enabled", () => {
     expect(selectLyricsDisplay(result(), "Song", true).lines[0].text).toBe("Romanized");

@@ -1,7 +1,12 @@
 import { isSameCachedVariant, type LyricsResult, type PlaybackVariant } from "./lyrics";
 
-export const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v4";
-const LEGACY_LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v3";
+export const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v5";
+// Misses are cached, so each time a provider is added the key moves on and
+// songs the earlier providers missed get looked up again.
+const LEGACY_LYRICS_CACHE_STORAGE_KEYS = [
+  "music-companion-lyrics-cache-v3",
+  "music-companion-lyrics-cache-v4",
+];
 export const MAX_PERSISTED_LYRICS = 1_000;
 
 type StorageAdapter = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -24,7 +29,7 @@ export class LyricsCache {
     private readonly storage: StorageAdapter,
     private readonly now: () => number = Date.now,
   ) {
-    this.storage.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+    for (const key of LEGACY_LYRICS_CACHE_STORAGE_KEYS) this.storage.removeItem(key);
   }
 
   get(variant: PlaybackVariant): LyricsResult | null | undefined {

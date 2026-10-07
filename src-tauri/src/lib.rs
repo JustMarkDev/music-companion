@@ -1405,6 +1405,41 @@ mod media {
     }
 }
 
+/// Byte range of the first enhanced-LRC word tag (`<mm:ss.xx>`) in `text`.
+fn next_word_tag(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find('<') {
+        let start = from + offset;
+        if let Some(length) = text[start + 1..].find('>') {
+            let inner = &text[start + 1..start + 1 + length];
+            if !inner.is_empty()
+                && inner.chars().all(|character| {
+                    character.is_ascii_digit() || character == ':' || character == '.'
+                })
+            {
+                return Some((start, start + length + 2));
+            }
+        }
+        from = start + 1;
+    }
+    None
+}
+
+/// True when some line of the enhanced LRC times two or more separate words. A
+/// line that only has a start and an end tag is timed as a whole, which the
+/// overlay shows line by line, so it does not count.
+fn has_word_timing(lrc: &str) -> bool {
+    lrc.lines().any(|line| {
+        let mut rest = line.rfind(']').map_or(line, |index| &line[index + 1..]);
+        let mut words = 0;
+        while let Some((start, end)) = next_word_tag(rest) {
+            words += usize::from(!rest[..start].trim().is_empty());
+            rest = &rest[end..];
+        }
+        words + usize::from(!rest.trim().is_empty()) >= 2
+    })
+}
+
 mod romanization {
     use ib_romaji::HepburnRomanizer;
     use lindera::dictionary::load_dictionary;
@@ -1429,8 +1464,11 @@ mod romanization {
             .map(|line| {
                 let text_start = line.rfind(']').map_or(0, |index| index + 1);
                 let (prefix, text) = line.split_at(text_start);
-                let romanized =
-                    capitalize_first_letter(&romanize_text(text.trim_start(), language));
+                let romanized = capitalize_first_letter(&if super::next_word_tag(text).is_some() {
+                    romanize_tagged(text.trim_start(), language)
+                } else {
+                    romanize_text(text.trim_start(), language)
+                });
                 changed |= romanized != text.trim_start();
                 let separator = if text.starts_with(' ') { " " } else { "" };
                 format!("{prefix}{separator}{romanized}")
@@ -1439,6 +1477,53 @@ mod romanization {
             .join("\n");
 
         changed.then_some(lines)
+    }
+
+    /// Romanizes the text between word tags one word at a time, so each romanized
+    /// word keeps the timing of the original. Japanese and Chinese romanization is
+    /// space-separated, so a space is added between words that had none; Korean
+    /// keeps its own spacing because its words are often split mid-word.
+    fn romanize_tagged(text: &str, language: LyricsLanguage) -> String {
+        let mut output = String::new();
+        // Last character of the previous word, unless whitespace followed it.
+        let mut open_end: Option<char> = None;
+        let mut rest = text;
+        loop {
+            let (chunk, tag) = match super::next_word_tag(rest) {
+                Some((start, end)) => (&rest[..start], Some(&rest[start..end])),
+                None => (rest, None),
+            };
+            let core = chunk.trim();
+            if core.is_empty() {
+                if !chunk.is_empty() {
+                    open_end = None;
+                }
+                output.push_str(chunk);
+            } else {
+                let leading = &chunk[..chunk.len() - chunk.trim_start().len()];
+                let romanized = romanize_text(core, language);
+                let needs_space = language != LyricsLanguage::Korean
+                    && leading.is_empty()
+                    && open_end.is_some_and(char::is_alphanumeric)
+                    && romanized.chars().next().is_some_and(char::is_alphanumeric);
+                let trailing = &chunk[chunk.trim_end().len()..];
+                output.push_str(leading);
+                if needs_space {
+                    output.push(' ');
+                }
+                output.push_str(&romanized);
+                output.push_str(trailing);
+                open_end = if trailing.is_empty() {
+                    romanized.chars().last()
+                } else {
+                    None
+                };
+            }
+            let Some(tag) = tag else { break };
+            output.push_str(tag);
+            rest = &rest[chunk.len() + tag.len()..];
+        }
+        output
     }
 
     fn capitalize_first_letter(text: &str) -> String {
@@ -1645,6 +1730,41 @@ mod romanization {
         use std::time::{Duration, Instant};
 
         #[test]
+        fn romanizes_each_timed_word_and_keeps_its_tags() {
+            assert_eq!(
+                romanize_lrc("[00:01.00]<00:01.00>夢<00:01.50>なら<00:02.00>").as_deref(),
+                Some("[00:01.00]<00:01.00>Yume<00:01.50> nara<00:02.00>")
+            );
+        }
+
+        #[test]
+        fn timed_words_keep_their_own_spacing_and_do_not_gain_extra_spaces() {
+            assert_eq!(
+                romanize_lrc(
+                    "[00:01.00]<00:01.00>今日は <00:02.00>、<00:02.50>ありがとう<00:03.00>"
+                )
+                .as_deref(),
+                Some("[00:01.00]<00:01.00>Kyou wa <00:02.00>、<00:02.50>arigatou<00:03.00>")
+            );
+        }
+
+        #[test]
+        fn romanizes_timed_chinese_words_as_separate_pinyin_words() {
+            assert_eq!(
+                romanize_lrc("[00:01.00]<00:01.00>中国<00:02.00>人<00:03.00>").as_deref(),
+                Some("[00:01.00]<00:01.00>Zhong guo<00:02.00> ren<00:03.00>")
+            );
+        }
+
+        #[test]
+        fn timed_korean_syllables_stay_joined() {
+            assert_eq!(
+                romanize_lrc("[00:01.00]<00:01.00>한<00:02.00>글<00:03.00>").as_deref(),
+                Some("[00:01.00]<00:01.00>Han<00:02.00>geul<00:03.00>")
+            );
+        }
+
+        #[test]
         fn romanizes_japanese_lyrics_without_changing_timestamps() {
             assert_eq!(
                 romanize_lrc("[00:01.00] 今日は\n[00:02.00]ありがとう").as_deref(),
@@ -1754,17 +1874,146 @@ mod romanization {
 
 mod lyrics {
     use super::{LATEST_LYRICS_REQUEST, LrclibLyrics, LyricsResult};
+    use serde::Deserialize;
     use std::collections::HashSet;
     use std::sync::OnceLock;
+    use std::time::Duration;
 
     static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+    /// Total time one provider gets for its whole lookup (every request it
+    /// makes, not each one), so a stalled service cannot hold up an answer a
+    /// lower-priority provider already has.
+    const PROVIDER_TIMEOUT: Duration = Duration::from_secs(6);
+
+    type Lookup = Result<Option<LyricsResult>, String>;
+
+    /// Gives `lookup` at most `deadline`; running out of time is an error, so the
+    /// lookup is retried later instead of being cached as a miss.
+    async fn within_deadline(
+        provider: &str,
+        deadline: Duration,
+        lookup: impl Future<Output = Lookup>,
+    ) -> Lookup {
+        tokio::time::timeout(deadline, lookup)
+            .await
+            .unwrap_or_else(|_| Err(provider_error(provider, "timed out")))
+    }
+
+    /// Tries ranked candidates in order and returns the first one that yields
+    /// lyrics. A candidate whose request fails does not stop the search; its
+    /// error is returned only when no candidate yields lyrics, so a transient
+    /// failure is retried instead of cached as a miss.
+    async fn first_found<K: Clone, T, Fetch: Future<Output = Result<Option<T>, String>>>(
+        candidates: Vec<(LrclibLyrics, K)>,
+        mut fetch: impl FnMut(K) -> Fetch,
+    ) -> Result<Option<(LrclibLyrics, K, T)>, String> {
+        let mut failure = None;
+        for (candidate, key) in candidates {
+            match fetch(key.clone()).await {
+                Ok(Some(found)) => return Ok(Some((candidate, key, found))),
+                Ok(None) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+        failure.map_or(Ok(None), Err)
+    }
+
+    /// Queries lrc.red, LRCLIB and Netease concurrently and returns the answer
+    /// of the highest-priority provider that has synced lyrics. Providers are
+    /// dropped (cancelled) as soon as the answer is decided.
     pub async fn fetch_lyrics(
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
         request_id: u64,
-    ) -> Result<Option<LyricsResult>, String> {
-        search(http_client()?, title, artist, duration_ms, request_id).await
+    ) -> Lookup {
+        let client = http_client()?;
+        let mut lrc_red = std::pin::pin!(within_deadline(
+            "lrc.red",
+            PROVIDER_TIMEOUT,
+            fetch_lrc_red(client, title, artist, duration_ms)
+        ));
+        let mut lrclib = std::pin::pin!(within_deadline(
+            "LRCLIB",
+            PROVIDER_TIMEOUT,
+            fetch_lrclib(client, title, artist, duration_ms)
+        ));
+        let mut netease = std::pin::pin!(within_deadline(
+            "Netease",
+            PROVIDER_TIMEOUT,
+            fetch_netease(client, title, artist, duration_ms)
+        ));
+        let mut slots: [Option<Lookup>; 3] = [None, None, None];
+
+        loop {
+            if let Some(answer) = resolve(&slots) {
+                return answer;
+            }
+            tokio::select! {
+                result = &mut lrc_red, if slots[0].is_none() => slots[0] = Some(result),
+                result = &mut lrclib, if slots[1].is_none() => slots[1] = Some(result),
+                result = &mut netease, if slots[2].is_none() => slots[2] = Some(result),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    if LATEST_LYRICS_REQUEST.load(std::sync::atomic::Ordering::Acquire) != request_id {
+                        return Err("lyrics request superseded".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Providers that can return word-timed lyrics, in the order of `slots`
+    /// (lrc.red, LRCLIB, Netease).
+    const CAN_TIME_WORDS: [bool; 3] = [true, false, true];
+
+    fn is_word_timed(result: &LyricsResult) -> bool {
+        result
+            .synced_lyrics
+            .as_deref()
+            .is_some_and(super::has_word_timing)
+    }
+
+    /// Decides the lookup from the providers' answers, listed in priority
+    /// order. `None` means an answer that could still change the outcome is
+    /// pending.
+    ///
+    /// Word-timed lyrics beat line-synced ones from any provider, so a
+    /// word-timed answer is used once every higher-priority provider that could
+    /// also time words has answered. Otherwise synced lyrics (or an instrumental
+    /// flag) win in priority order, then plain lyrics. An error surfaces only
+    /// when no provider produced anything, so the miss is retried instead of
+    /// cached.
+    fn resolve(slots: &[Option<Lookup>]) -> Option<Lookup> {
+        for (slot, can_time_words) in slots.iter().zip(CAN_TIME_WORDS) {
+            match slot {
+                Some(Ok(Some(result))) if is_word_timed(result) => {
+                    return Some(Ok(Some(result.clone())));
+                }
+                None if can_time_words => return None,
+                _ => {}
+            }
+        }
+
+        let mut plain = None;
+        let mut failure = None;
+        for slot in slots {
+            match slot.as_ref()? {
+                Ok(Some(result))
+                    if result.instrumental || has_lyrics(result.synced_lyrics.as_deref()) =>
+                {
+                    return Some(Ok(Some(result.clone())));
+                }
+                Ok(Some(result)) => plain = plain.or(Some(result)),
+                Ok(None) => {}
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        Some(match (plain, failure) {
+            (Some(result), _) => Ok(Some(result.clone())),
+            (None, Some(error)) => Err(error.clone()),
+            (None, None) => Ok(None),
+        })
     }
 
     fn http_client() -> Result<&'static reqwest::Client, String> {
@@ -1787,13 +2036,12 @@ mod lyrics {
             .map_err(Clone::clone)
     }
 
-    async fn search(
+    async fn fetch_lrclib(
         client: &reqwest::Client,
         title: &str,
         artist: &str,
         duration_ms: Option<u64>,
-        request_id: u64,
-    ) -> Result<Option<LyricsResult>, String> {
+    ) -> Lookup {
         let query = format!("{title} {artist}");
         let broad_url = format!(
             "https://lrclib.net/api/search?q={}",
@@ -1805,23 +2053,10 @@ mod lyrics {
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
-        let searches = async {
-            tokio::join!(
-                fetch_candidates(client, structured_url, "structured"),
-                fetch_candidates(client, broad_url, "broad")
-            )
-        };
-        tokio::pin!(searches);
-        let (structured_result, broad_result) = loop {
-            tokio::select! {
-                results = &mut searches => break results,
-                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                    if LATEST_LYRICS_REQUEST.load(std::sync::atomic::Ordering::Acquire) != request_id {
-                        return Err("lyrics request superseded".to_string());
-                    }
-                }
-            }
-        };
+        let (structured_result, broad_result) = tokio::join!(
+            fetch_candidates(client, structured_url, "structured"),
+            fetch_candidates(client, broad_url, "broad")
+        );
         let (mut results, search_type) = match (structured_result, broad_result) {
             (Ok(structured), Ok(broad)) => {
                 (merge_candidates(broad, structured), "structured + broad")
@@ -1999,23 +2234,29 @@ mod lyrics {
         lyrics.is_some_and(|value| !value.trim().is_empty())
     }
 
-    fn ranking_key(
+    /// How well a candidate's track name alone matches the playing title, 0-4.
+    /// Unlike the title score in `metadata_scores`, an album with that name does
+    /// not count.
+    fn track_title_score(
         candidate: &LrclibLyrics,
         normalized_title: &str,
         normalized_artist: &str,
-        duration_ms: Option<u64>,
-    ) -> (
-        std::cmp::Reverse<bool>,
-        std::cmp::Reverse<bool>,
-        std::cmp::Reverse<u8>,
-        u64,
-    ) {
-        let candidate_title = candidate
+    ) -> u8 {
+        let track_title = candidate
             .track_name
             .as_deref()
             .map(|title| canonical_title(title, normalized_artist));
+        score(track_title.as_deref(), normalized_title)
+    }
+
+    /// How well a candidate's title and artist match what is playing, each 0-4.
+    fn metadata_scores(
+        candidate: &LrclibLyrics,
+        normalized_title: &str,
+        normalized_artist: &str,
+    ) -> (u8, u8) {
         let title_score = [
-            score(candidate_title.as_deref(), normalized_title),
+            track_title_score(candidate, normalized_title, normalized_artist),
             score(candidate.album_name.as_deref(), normalized_title),
         ]
         .into_iter()
@@ -2029,6 +2270,22 @@ mod lyrics {
         .into_iter()
         .max()
         .unwrap_or_default();
+        (title_score, artist_score)
+    }
+
+    fn ranking_key(
+        candidate: &LrclibLyrics,
+        normalized_title: &str,
+        normalized_artist: &str,
+        duration_ms: Option<u64>,
+    ) -> (
+        std::cmp::Reverse<bool>,
+        std::cmp::Reverse<bool>,
+        std::cmp::Reverse<u8>,
+        u64,
+    ) {
+        let (title_score, artist_score) =
+            metadata_scores(candidate, normalized_title, normalized_artist);
         let metadata_score = title_score * 4 + artist_score * 3;
         let metadata_matches = title_score > 0 && artist_score > 0;
 
@@ -2038,6 +2295,495 @@ mod lyrics {
             std::cmp::Reverse(metadata_score),
             duration_difference_ms(candidate.duration, duration_ms),
         )
+    }
+
+    /// Metadata-only candidate, so providers other than LRCLIB can reuse
+    /// `ranking_key` and its title, artist and duration rules.
+    fn metadata_candidate(
+        track_name: Option<String>,
+        artist_name: Option<String>,
+        album_name: Option<String>,
+        duration: Option<f64>,
+    ) -> LrclibLyrics {
+        LrclibLyrics {
+            track_name,
+            artist_name,
+            album_name,
+            duration,
+            instrumental: false,
+            synced_lyrics: None,
+            plain_lyrics: None,
+        }
+    }
+
+    /// Keeps the hits that plausibly are the playing song, best first. Search
+    /// providers return fuzzy results (remixes, covers, other artists), so a hit
+    /// needs a matching length and a matching title or artist. Either one is
+    /// enough because the same artist can be written in different scripts.
+    fn rank_matches<T>(
+        mut hits: Vec<(LrclibLyrics, T)>,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Vec<(LrclibLyrics, T)> {
+        let normalized_artist = normalize(artist);
+        let normalized_title = canonical_title(title, &normalized_artist);
+        hits.retain(|(candidate, _)| {
+            let (title_score, artist_score) =
+                metadata_scores(candidate, &normalized_title, &normalized_artist);
+            duration_matches(candidate.duration, duration_ms)
+                && (title_score > 0 || artist_score > 0)
+        });
+        hits.sort_by_key(|(candidate, _)| {
+            ranking_key(
+                candidate,
+                &normalized_title,
+                &normalized_artist,
+                duration_ms,
+            )
+        });
+        hits
+    }
+
+    fn synced_result(source: &str, candidate: LrclibLyrics, synced_lyrics: String) -> LyricsResult {
+        build_result(source, candidate, false, Some(synced_lyrics))
+    }
+
+    fn instrumental_result(source: &str, candidate: LrclibLyrics) -> LyricsResult {
+        build_result(source, candidate, true, None)
+    }
+
+    fn build_result(
+        source: &str,
+        candidate: LrclibLyrics,
+        instrumental: bool,
+        synced_lyrics: Option<String>,
+    ) -> LyricsResult {
+        let romanized_synced_lyrics = synced_lyrics
+            .as_deref()
+            .and_then(super::romanization::romanize_lrc);
+        LyricsResult {
+            source: source.to_string(),
+            track_name: candidate.track_name.unwrap_or_default(),
+            artist_name: candidate.artist_name.unwrap_or_default(),
+            album_name: candidate.album_name.unwrap_or_default(),
+            duration: candidate.duration.map(|value| value.round() as u64),
+            instrumental,
+            synced_lyrics,
+            romanized_synced_lyrics,
+            plain_lyrics: None,
+        }
+    }
+
+    /// Removes enhanced-LRC word timestamps such as `<00:27.55>`.
+    fn strip_word_tags(lrc: &str) -> String {
+        let mut stripped = String::with_capacity(lrc.len());
+        let mut rest = lrc;
+        while let Some((start, end)) = super::next_word_tag(rest) {
+            stripped.push_str(&rest[..start]);
+            rest = &rest[end..];
+        }
+        stripped.push_str(rest);
+        stripped
+    }
+
+    /// True when at least one `[mm:ss]` line carries text, so a metadata-only
+    /// or empty file is not mistaken for lyrics.
+    fn has_timed_lyrics(lrc: &str) -> bool {
+        lrc.lines().any(|line| {
+            line.strip_prefix('[')
+                .and_then(|rest| rest.split_once(']'))
+                .is_some_and(|(tag, text)| {
+                    tag.starts_with(|char: char| char.is_ascii_digit())
+                        && !strip_word_tags(text).trim().is_empty()
+                })
+        })
+    }
+
+    fn provider_error(provider: &str, error: impl std::fmt::Display) -> String {
+        format!("{provider}: {error}")
+    }
+
+    #[derive(Deserialize)]
+    struct LrcRedMatches {
+        #[serde(default)]
+        hits: Vec<LrcRedHit>,
+    }
+
+    #[derive(Deserialize)]
+    struct LrcRedHit {
+        isrc: String,
+        title: Option<String>,
+        artist: Option<String>,
+        album: Option<String>,
+        duration: Option<f64>,
+    }
+
+    /// lrc.red (formerly BiniLyrics): Apple Music lyrics, many with word timing.
+    /// `/match.json` finds the recording, `/s/{isrc}.lrc` is its enhanced LRC.
+    async fn fetch_lrc_red(
+        client: &reqwest::Client,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Lookup {
+        let started_at = std::time::Instant::now();
+        let mut url = format!(
+            "https://lrc.red/match.json?title={}&artist={}",
+            urlencoding::encode(title),
+            urlencoding::encode(artist)
+        );
+        if let Some(duration_ms) = duration_ms {
+            url.push_str(&format!(
+                "&duration={}",
+                (duration_ms as f64 / 1_000.0).round()
+            ));
+        }
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|error| provider_error("lrc.red match", error))?;
+        if !response.status().is_success() {
+            return Err(provider_error("lrc.red match", response.status()));
+        }
+        let matches = response
+            .json::<LrcRedMatches>()
+            .await
+            .map_err(|error| provider_error("lrc.red match", error))?;
+        let candidates = matches
+            .hits
+            .into_iter()
+            .map(|hit| {
+                let candidate = metadata_candidate(hit.title, hit.artist, hit.album, hit.duration);
+                (candidate, hit.isrc)
+            })
+            .collect();
+
+        // A hit can lack a lyrics file, so fall through to the next best one.
+        let ranked = rank_matches(candidates, title, artist, duration_ms)
+            .into_iter()
+            .take(3)
+            .collect();
+        let found = first_found(ranked, |isrc: String| async move {
+            fetch_lrc_red_lrc(client, &isrc).await
+        })
+        .await?;
+        let Some((candidate, isrc, lrc)) = found else {
+            println!(
+                "[latency] lrc.red total={}ms no match",
+                started_at.elapsed().as_millis()
+            );
+            return Ok(None);
+        };
+        println!(
+            "[latency] lrc.red total={}ms isrc={isrc}",
+            started_at.elapsed().as_millis()
+        );
+        Ok(Some(synced_result("lrc.red", candidate, lrc)))
+    }
+
+    /// The enhanced LRC for one recording, or `None` when it has no usable file.
+    async fn fetch_lrc_red_lrc(
+        client: &reqwest::Client,
+        isrc: &str,
+    ) -> Result<Option<String>, String> {
+        let response = client
+            .get(format!(
+                "https://lrc.red/s/{}.lrc",
+                urlencoding::encode(isrc)
+            ))
+            .send()
+            .await
+            .map_err(|error| provider_error("lrc.red lyrics", error))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(provider_error("lrc.red lyrics", response.status()));
+        }
+        let lrc = response
+            .text()
+            .await
+            .map_err(|error| provider_error("lrc.red lyrics", error))?;
+        Ok(has_timed_lyrics(&lrc).then_some(lrc))
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseSearch {
+        result: Option<NeteaseSongs>,
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseSongs {
+        #[serde(default)]
+        songs: Vec<NeteaseSong>,
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseSong {
+        id: u64,
+        name: Option<String>,
+        /// Milliseconds.
+        duration: Option<f64>,
+        #[serde(default)]
+        artists: Vec<NeteaseName>,
+        album: Option<NeteaseName>,
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseName {
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseLyrics {
+        lrc: Option<NeteaseLrc>,
+        /// Word-timed lyrics, present for some songs.
+        yrc: Option<NeteaseLrc>,
+    }
+
+    #[derive(Deserialize)]
+    struct NeteaseLrc {
+        lyric: Option<String>,
+    }
+
+    const NETEASE_REFERER: &str = "https://music.163.com/";
+
+    /// What Netease has for one song.
+    enum NeteaseFound {
+        Lyrics(String),
+        Instrumental,
+    }
+
+    /// Netease Cloud Music's unofficial web API: line-synced LRC, strong on
+    /// Asian catalogues. Unauthenticated, so it can change without notice.
+    async fn fetch_netease(
+        client: &reqwest::Client,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Lookup {
+        let started_at = std::time::Instant::now();
+        // Searched with POST: the GET `/search/get/web` form now answers with
+        // an encrypted blob instead of JSON.
+        let response = client
+            .post("https://music.163.com/api/search/get")
+            .header(reqwest::header::REFERER, NETEASE_REFERER)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(format!(
+                "s={}&type=1&limit=5&offset=0",
+                urlencoding::encode(&format!("{title} {artist}"))
+            ))
+            .send()
+            .await
+            .map_err(|error| provider_error("Netease search", error))?;
+        if !response.status().is_success() {
+            return Err(provider_error("Netease search", response.status()));
+        }
+        let search = response
+            .json::<NeteaseSearch>()
+            .await
+            .map_err(|error| provider_error("Netease search", error))?;
+        let candidates = search
+            .result
+            .map(|result| result.songs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|song| {
+                let artists = song
+                    .artists
+                    .into_iter()
+                    .filter_map(|artist| artist.name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let candidate = metadata_candidate(
+                    song.name,
+                    Some(artists),
+                    song.album.and_then(|album| album.name),
+                    song.duration.map(|milliseconds| milliseconds / 1_000.0),
+                );
+                (candidate, song.id)
+            })
+            .collect();
+
+        let normalized_artist = normalize(artist);
+        let normalized_title = canonical_title(title, &normalized_artist);
+        let ranked = rank_matches(candidates, title, artist, duration_ms)
+            .into_iter()
+            .take(2)
+            .map(|(candidate, id)| {
+                // Only a song titled exactly like the playing one may be called
+                // instrumental; a search can also return an "(Instrumental)" cut
+                // of a song that has vocals, or another track from an album named
+                // like the playing song, so the album does not count here.
+                let exact_title =
+                    track_title_score(&candidate, &normalized_title, &normalized_artist) == 4;
+                (candidate, (id, exact_title))
+            })
+            .collect();
+        let found = first_found(ranked, |(id, exact_title)| async move {
+            fetch_netease_lyrics(client, id, exact_title).await
+        })
+        .await?;
+        let Some((candidate, (id, _), found)) = found else {
+            println!(
+                "[latency] Netease total={}ms no match",
+                started_at.elapsed().as_millis()
+            );
+            return Ok(None);
+        };
+        println!(
+            "[latency] Netease total={}ms id={id}",
+            started_at.elapsed().as_millis()
+        );
+        Ok(Some(match found {
+            NeteaseFound::Lyrics(lrc) => synced_result("Netease", candidate, lrc),
+            NeteaseFound::Instrumental => instrumental_result("Netease", candidate),
+        }))
+    }
+
+    /// The timed lyrics of one song (word-timed when Netease has them), or
+    /// `Instrumental` when the song is marked as such and `instrumental_allowed`.
+    async fn fetch_netease_lyrics(
+        client: &reqwest::Client,
+        id: u64,
+        instrumental_allowed: bool,
+    ) -> Result<Option<NeteaseFound>, String> {
+        let response = client
+            .get(format!(
+                "https://music.163.com/api/song/lyric?id={id}&lv=1&yv=1&tv=-1"
+            ))
+            .header(reqwest::header::REFERER, NETEASE_REFERER)
+            .send()
+            .await
+            .map_err(|error| provider_error("Netease lyrics", error))?;
+        if !response.status().is_success() {
+            return Err(provider_error("Netease lyrics", response.status()));
+        }
+        let lyrics = response
+            .json::<NeteaseLyrics>()
+            .await
+            .map_err(|error| provider_error("Netease lyrics", error))?;
+        let line_synced = lyrics.lrc.and_then(|lrc| lrc.lyric);
+        let word_timed = lyrics
+            .yrc
+            .and_then(|yrc| yrc.lyric)
+            .map(|yrc| clean_netease_lrc(&yrc_to_enhanced_lrc(&yrc)));
+        let line_timed = line_synced.as_deref().map(clean_netease_lrc);
+        let lrc = [word_timed, line_timed]
+            .into_iter()
+            .flatten()
+            .find(|lrc| has_timed_lyrics(lrc));
+        Ok(match lrc {
+            Some(lrc) => Some(NeteaseFound::Lyrics(lrc)),
+            None if instrumental_allowed
+                && line_synced.as_deref().is_some_and(is_netease_instrumental) =>
+            {
+                Some(NeteaseFound::Instrumental)
+            }
+            None => None,
+        })
+    }
+
+    /// The text of an LRC line without its timestamps and word tags.
+    fn lrc_line_text(line: &str) -> String {
+        strip_word_tags(line.rfind(']').map_or(line, |index| &line[index + 1..]))
+    }
+
+    /// Netease marks an instrumental with a lyric line, `纯音乐，请欣赏`.
+    fn is_netease_instrumental(lrc: &str) -> bool {
+        lrc.lines()
+            .any(|line| lrc_line_text(line).trim_start().starts_with("纯音乐"))
+    }
+
+    /// Netease puts credits (`作词 : …`) at 00:00 and marks instrumentals with a
+    /// lyric line (`纯音乐，请欣赏`); neither belongs on screen. The marker is read
+    /// by `is_netease_instrumental` before it is dropped here.
+    fn clean_netease_lrc(lrc: &str) -> String {
+        const CREDITS: [&str; 6] = ["作词", "作詞", "作曲", "编曲", "編曲", "制作人"];
+        lrc.lines()
+            .filter(|line| {
+                let text = lrc_line_text(line);
+                let text = text.trim_start();
+                let is_credit = CREDITS.iter().any(|credit| {
+                    text.strip_prefix(credit)
+                        .is_some_and(|rest| rest.trim_start().starts_with([':', '：']))
+                });
+                !is_credit && !text.starts_with("纯音乐")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `(start, duration)` of a Netease word header such as `(1000,300,0)` at the
+    /// start of `text`, plus the header's length in bytes.
+    fn yrc_header(text: &str) -> Option<(u64, u64, usize)> {
+        let length = text.strip_prefix('(')?.find(')')?;
+        let mut numbers = text[1..=length]
+            .split(',')
+            .map(|number| number.parse::<u64>());
+        let (start, duration, _) = (
+            numbers.next()?.ok()?,
+            numbers.next()?.ok()?,
+            numbers.next()?.ok()?,
+        );
+        numbers
+            .next()
+            .is_none()
+            .then_some((start, duration, length + 2))
+    }
+
+    fn lrc_timestamp(milliseconds: u64) -> String {
+        format!(
+            "{:02}:{:02}.{:03}",
+            milliseconds / 60_000,
+            milliseconds / 1_000 % 60,
+            milliseconds % 1_000
+        )
+    }
+
+    /// Converts Netease's word-timed `yrc` (`[start,duration](start,duration,0)word…`)
+    /// into enhanced LRC. Credit lines are JSON objects in `yrc` and are skipped.
+    fn yrc_to_enhanced_lrc(yrc: &str) -> String {
+        yrc.lines()
+            .filter_map(|line| {
+                let (header, body) = line.strip_prefix('[')?.split_once(']')?;
+                let line_start = header.split_once(',')?.0.parse::<u64>().ok()?;
+                let headers = body
+                    .match_indices('(')
+                    .filter_map(|(position, _)| {
+                        yrc_header(&body[position..]).map(|header| (position, header))
+                    })
+                    .collect::<Vec<_>>();
+                let words = headers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (position, (start, duration, length)))| {
+                        let text_end = headers.get(index + 1).map_or(body.len(), |next| next.0);
+                        (*start, *duration, &body[position + length..text_end])
+                    })
+                    .collect::<Vec<_>>();
+                if words.iter().all(|(_, _, text)| text.trim().is_empty()) {
+                    return None;
+                }
+
+                let mut lrc = format!("[{}]", lrc_timestamp(line_start));
+                for (index, (start, duration, text)) in words.iter().enumerate() {
+                    lrc.push_str(&format!("<{}>{text}", lrc_timestamp(*start)));
+                    // Close a word that is followed by a gap, and the last one.
+                    let end = start + duration;
+                    if words.get(index + 1).is_none_or(|next| next.0 > end) {
+                        lrc.push_str(&format!("<{}>", lrc_timestamp(end)));
+                    }
+                }
+                Some(lrc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     impl LrclibLyrics {
@@ -2219,6 +2965,417 @@ mod lyrics {
             });
 
             assert_eq!(results[0].track_name.as_deref(), Some("Self Aware"));
+        }
+
+        fn lookup(source: &str, synced: Option<&str>, plain: Option<&str>) -> Lookup {
+            Ok(Some(LyricsResult {
+                source: source.to_string(),
+                track_name: String::new(),
+                artist_name: String::new(),
+                album_name: String::new(),
+                duration: None,
+                instrumental: false,
+                synced_lyrics: synced.map(str::to_string),
+                romanized_synced_lyrics: None,
+                plain_lyrics: plain.map(str::to_string),
+            }))
+        }
+
+        fn source_of(answer: Option<Lookup>) -> Option<String> {
+            answer?.ok()?.map(|result| result.source)
+        }
+
+        fn hit(title: &str, artist: &str, duration: f64) -> LrclibLyrics {
+            metadata_candidate(
+                Some(title.to_string()),
+                Some(artist.to_string()),
+                None,
+                Some(duration),
+            )
+        }
+
+        #[test]
+        fn waits_for_the_highest_priority_provider_before_using_a_lower_one() {
+            let slots = [
+                None,
+                Some(lookup("LRCLIB", Some("[00:01.00]a"), None)),
+                Some(lookup("Netease", Some("[00:01.00]a"), None)),
+            ];
+            assert!(resolve(&slots).is_none());
+        }
+
+        #[test]
+        fn highest_priority_synced_result_wins() {
+            let slots = [
+                Some(lookup("lrc.red", Some("[00:01.00]a"), None)),
+                Some(lookup("LRCLIB", Some("[00:01.00]a"), None)),
+                Some(Ok(None)),
+            ];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("lrc.red"));
+        }
+
+        #[test]
+        fn falls_through_empty_and_failed_providers_to_synced_lyrics() {
+            let slots = [
+                Some(Err("lrc.red match: timed out".to_string())),
+                Some(Ok(None)),
+                Some(lookup("Netease", Some("[00:01.00]a"), None)),
+            ];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("Netease"));
+        }
+
+        #[test]
+        fn plain_lyrics_are_used_only_when_no_provider_has_synced_lyrics() {
+            let plain_only = [
+                Some(Ok(None)),
+                Some(lookup("LRCLIB", None, Some("words"))),
+                Some(Ok(None)),
+            ];
+            assert_eq!(source_of(resolve(&plain_only)).as_deref(), Some("LRCLIB"));
+
+            let later_synced = [
+                Some(Ok(None)),
+                Some(lookup("LRCLIB", None, Some("words"))),
+                Some(lookup("Netease", Some("[00:01.00]a"), None)),
+            ];
+            assert_eq!(
+                source_of(resolve(&later_synced)).as_deref(),
+                Some("Netease")
+            );
+        }
+
+        #[test]
+        fn an_error_surfaces_only_when_nothing_was_found() {
+            let failed = [
+                Some(Err("lrc.red match: timed out".to_string())),
+                Some(Ok(None)),
+                Some(Ok(None)),
+            ];
+            assert!(matches!(resolve(&failed), Some(Err(_))));
+
+            let missing = [Some(Ok(None)), Some(Ok(None)), Some(Ok(None))];
+            assert!(matches!(resolve(&missing), Some(Ok(None))));
+        }
+
+        #[test]
+        fn rank_matches_rejects_other_lengths_and_unrelated_songs() {
+            let hits = vec![
+                (hit("Blinding Lights", "The Weeknd", 200.0), "original"),
+                (
+                    hit("Blinding Lights (Remix)", "The Weeknd", 216.0),
+                    "long remix",
+                ),
+                (hit("Other Song", "Other Artist", 200.0), "unrelated"),
+            ];
+
+            let ranked = rank_matches(hits, "Blinding Lights", "The Weeknd", Some(200_000));
+
+            assert_eq!(ranked.len(), 1);
+            assert_eq!(ranked[0].1, "original");
+        }
+
+        #[test]
+        fn rank_matches_prefers_the_exact_title_over_a_same_length_variant() {
+            let hits = vec![
+                (hit("Blinding Lights (Remix)", "The Weeknd", 201.0), "remix"),
+                (hit("Blinding Lights", "The Weeknd", 202.0), "original"),
+            ];
+
+            let ranked = rank_matches(hits, "Blinding Lights", "The Weeknd", Some(200_000));
+
+            assert_eq!(ranked[0].1, "original");
+        }
+
+        #[test]
+        fn rank_matches_accepts_a_hit_when_only_the_artist_script_differs() {
+            let hits = vec![(hit("夜曲", "周杰伦", 226.0), "hit")];
+
+            assert_eq!(
+                rank_matches(hits, "夜曲", "Jay Chou", Some(226_000)).len(),
+                1
+            );
+        }
+
+        #[test]
+        fn word_tags_are_removed_and_other_angle_brackets_are_kept() {
+            assert_eq!(
+                strip_word_tags("[00:27.40]<00:27.40>I <00:27.55>been <00:28.96>"),
+                "[00:27.40]I been "
+            );
+            assert_eq!(
+                strip_word_tags("[00:01.00]a < b > c <3"),
+                "[00:01.00]a < b > c <3"
+            );
+        }
+
+        #[test]
+        fn timed_lyrics_need_a_timestamp_and_text() {
+            assert!(has_timed_lyrics(
+                "[ti:Song]\n[00:01.00]<00:01.00>Hello <00:02.00>"
+            ));
+            assert!(!has_timed_lyrics("[ti:Song]\n[ar:Artist]"));
+            assert!(!has_timed_lyrics("[00:01.00]<00:01.00>"));
+            assert!(!has_timed_lyrics(""));
+        }
+
+        #[test]
+        fn netease_credits_and_instrumental_markers_are_dropped() {
+            let cleaned = clean_netease_lrc(
+                "[00:00.00] 作词 : 黄家驹\n[00:01.00] 作曲 : 黄家驹\n[00:18.85]今天我 寒夜里看雪飘过\n[00:20.00]作曲家的梦",
+            );
+            assert_eq!(
+                cleaned,
+                "[00:18.85]今天我 寒夜里看雪飘过\n[00:20.00]作曲家的梦"
+            );
+            assert!(!has_timed_lyrics(&clean_netease_lrc(
+                "[00:00.00]纯音乐，请欣赏"
+            )));
+        }
+
+        fn run<T>(future: impl Future<Output = T>) -> T {
+            tauri::async_runtime::block_on(future)
+        }
+
+        #[test]
+        fn a_provider_that_stalls_ends_in_a_timeout_error_not_a_miss() {
+            let stalled = within_deadline("lrc.red", Duration::from_millis(30), async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(None)
+            });
+            assert_eq!(run(stalled).err().as_deref(), Some("lrc.red: timed out"));
+
+            let quick = within_deadline("lrc.red", Duration::from_secs(5), async { Ok(None) });
+            assert!(matches!(run(quick), Ok(None)));
+        }
+
+        #[test]
+        fn the_deadline_covers_every_request_a_provider_makes() {
+            // Three sequential 20 ms "requests" cannot fit in 30 ms in total.
+            let slow_candidates = within_deadline("Netease", Duration::from_millis(30), async {
+                for _ in 0..3 {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                lookup("Netease", Some(WORD), None)
+            });
+            assert!(run(slow_candidates).is_err());
+        }
+
+        fn ranked(keys: &[u32]) -> Vec<(LrclibLyrics, u32)> {
+            keys.iter()
+                .map(|key| (hit("Song", "Artist", 200.0), *key))
+                .collect()
+        }
+
+        #[test]
+        fn a_failing_candidate_does_not_stop_the_next_one() {
+            let found = run(first_found(ranked(&[1, 2, 3]), |key| async move {
+                match key {
+                    1 => Err("lrc.red lyrics: 500 Internal Server Error".to_string()),
+                    2 => Ok(Some("lyrics")),
+                    _ => panic!("candidate {key} must not be tried after a hit"),
+                }
+            }));
+            assert_eq!(
+                found.unwrap().map(|(_, key, lyrics)| (key, lyrics)),
+                Some((2, "lyrics"))
+            );
+        }
+
+        #[test]
+        fn a_candidate_error_surfaces_only_when_no_candidate_has_lyrics() {
+            let failed = run(first_found(ranked(&[1, 2]), |key| async move {
+                if key == 1 {
+                    Err::<Option<&str>, _>("500".to_string())
+                } else {
+                    Ok(None)
+                }
+            }));
+            assert_eq!(failed.map(|found| found.is_some()), Err("500".to_string()));
+
+            let missing = run(first_found(ranked(&[1, 2]), |_| async {
+                Ok::<Option<&str>, String>(None)
+            }));
+            assert_eq!(missing.map(|found| found.is_some()), Ok(false));
+        }
+
+        #[test]
+        fn the_netease_instrumental_marker_is_recognised_before_it_is_cleaned_away() {
+            let raw = "[00:00.00]纯音乐，请欣赏";
+            assert!(is_netease_instrumental(raw));
+            assert!(!has_timed_lyrics(&clean_netease_lrc(raw)));
+            assert!(is_netease_instrumental(
+                "[00:00.000]<00:00.000>纯音乐，请欣赏<00:05.000>"
+            ));
+            assert!(!is_netease_instrumental("[00:01.00]今天我 寒夜里看雪飘过"));
+        }
+
+        #[test]
+        fn only_the_track_name_makes_a_title_exact_for_instrumentals() {
+            let artist = normalize("Artist");
+            let title = canonical_title("Song A", &artist);
+            let on_title_album = |track: &str| {
+                metadata_candidate(
+                    Some(track.to_string()),
+                    Some("Artist".to_string()),
+                    Some("Song A".to_string()),
+                    Some(200.0),
+                )
+            };
+
+            // The title track itself is exact.
+            assert_eq!(
+                track_title_score(&on_title_album("Song A"), &title, &artist),
+                4
+            );
+            // Another track on an album called "Song A" is not, although
+            // `metadata_scores` rates its title 4 through the album.
+            let other_track = on_title_album("Song B");
+            assert_eq!(track_title_score(&other_track, &title, &artist), 0);
+            assert_eq!(metadata_scores(&other_track, &title, &artist).0, 4);
+            // A variant is not exact either.
+            let variant = on_title_album("Song A (Instrumental)");
+            assert!(track_title_score(&variant, &title, &artist) < 4);
+        }
+
+        #[test]
+        fn an_instrumental_result_carries_the_flag_and_no_lyrics() {
+            let result = instrumental_result("Netease", hit("Song", "Artist", 200.0));
+            assert!(result.instrumental);
+            assert_eq!(result.source, "Netease");
+            assert!(result.synced_lyrics.is_none() && result.plain_lyrics.is_none());
+            // The resolver treats it as a final answer, like an LRCLIB instrumental.
+            let slots = [Some(Ok(None)), Some(Ok(None)), Some(Ok(Some(result)))];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("Netease"));
+        }
+
+        const WORD: &str = "[00:01.00]<00:01.00>a <00:02.00>b<00:03.00>";
+
+        #[test]
+        fn word_timed_lyrics_win_over_line_synced_ones_from_any_provider() {
+            let slots = [
+                Some(lookup("lrc.red", Some("[00:01.00]a"), None)),
+                Some(lookup("LRCLIB", Some("[00:01.00]a"), None)),
+                Some(lookup("Netease", Some(WORD), None)),
+            ];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("Netease"));
+        }
+
+        #[test]
+        fn whole_line_timing_from_lrc_red_does_not_beat_word_timed_netease() {
+            let whole_line = "[00:01.00]<00:01.00>a whole line <00:03.00>";
+            let slots = [
+                Some(lookup("lrc.red", Some(whole_line), None)),
+                Some(Ok(None)),
+                Some(lookup("Netease", Some(WORD), None)),
+            ];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("Netease"));
+        }
+
+        #[test]
+        fn a_line_only_answer_waits_for_a_provider_that_may_time_words() {
+            let pending_netease = [
+                Some(lookup("lrc.red", Some("[00:01.00]a"), None)),
+                Some(lookup("LRCLIB", Some("[00:01.00]a"), None)),
+                None,
+            ];
+            assert!(resolve(&pending_netease).is_none());
+        }
+
+        #[test]
+        fn lrclib_never_delays_a_word_timed_answer() {
+            let slots = [
+                Some(Ok(None)),
+                None,
+                Some(lookup("Netease", Some(WORD), None)),
+            ];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("Netease"));
+        }
+
+        #[test]
+        fn word_timed_lrc_red_answers_without_waiting_for_the_others() {
+            let slots = [Some(lookup("lrc.red", Some(WORD), None)), None, None];
+            assert_eq!(source_of(resolve(&slots)).as_deref(), Some("lrc.red"));
+        }
+
+        #[test]
+        fn a_pending_lrc_red_holds_back_a_word_timed_netease() {
+            let slots = [
+                None,
+                Some(Ok(None)),
+                Some(lookup("Netease", Some(WORD), None)),
+            ];
+            assert!(resolve(&slots).is_none());
+        }
+
+        #[test]
+        fn whole_line_timing_is_not_word_timing() {
+            let super_has = super::super::has_word_timing;
+            assert!(super_has(WORD));
+            assert!(super_has("[00:01.00]<00:01.00>a<00:01.50>b<00:02.00>"));
+            assert!(!super_has(
+                "[00:01.85]<00:01.85>素晴らしき世界に今日も乾杯 <00:04.64>"
+            ));
+            assert!(!super_has("[00:01.00]<00:01.00>Hello <00:02.00>"));
+            assert!(!super_has("[00:01.00]plain line"));
+        }
+
+        #[test]
+        fn yrc_becomes_enhanced_lrc_with_closing_tags_only_where_needed() {
+            let yrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: x\"}]}\n\
+                [1000,1500](1000,300,0)I (1300,200,0)been (1700,400,0)(Oh)\n\
+                [4000,500](4000,500,0)  ";
+            assert_eq!(
+                yrc_to_enhanced_lrc(yrc),
+                "[00:01.000]<00:01.000>I <00:01.300>been <00:01.500><00:01.700>(Oh)<00:02.100>"
+            );
+            assert_eq!(
+                yrc_to_enhanced_lrc("[0,600](0,300,0)a (300,300,0)b"),
+                "[00:00.000]<00:00.000>a <00:00.300>b<00:00.600>"
+            );
+        }
+
+        #[test]
+        fn converted_yrc_parses_as_timed_lyrics() {
+            let lrc = yrc_to_enhanced_lrc("[1000,900](1000,300,0)a (1500,400,0)b");
+            assert!(has_timed_lyrics(&lrc));
+            assert!(super::super::next_word_tag(&lrc).is_some());
+            assert_eq!(strip_word_tags(&lrc), "[00:01.000]a b");
+        }
+
+        #[test]
+        fn tagged_credit_lines_are_dropped_too() {
+            let cleaned = clean_netease_lrc(
+                "[00:00.000]<00:00.000>作词 : <00:01.000>x<00:02.000>\n[00:03.000]<00:03.000>hi <00:04.000>there<00:05.000>",
+            );
+            assert_eq!(
+                cleaned,
+                "[00:03.000]<00:03.000>hi <00:04.000>there<00:05.000>"
+            );
+        }
+
+        #[test]
+        fn romanized_lyrics_keep_the_word_timing() {
+            let lrc =
+                "[00:01.00]<00:01.00>今日は<00:02.00>\n[00:03.00]<00:03.00>ありがとう<00:04.00>";
+
+            let result = synced_result(
+                "lrc.red",
+                metadata_candidate(None, None, None, None),
+                lrc.to_string(),
+            );
+
+            assert_eq!(result.synced_lyrics.as_deref(), Some(lrc));
+            let romanized = result
+                .romanized_synced_lyrics
+                .expect("japanese is romanized");
+            assert_eq!(strip_word_tags(&romanized).lines().count(), 2);
+            assert_eq!(
+                romanized.matches('<').count(),
+                lrc.matches('<').count(),
+                "every word tag survives: {romanized}"
+            );
+            assert!(!strip_word_tags(&romanized).contains(['今', 'あ']));
+            assert_eq!(result.source, "lrc.red");
         }
 
         fn report_ops_per_sec(name: &str, mut work: impl FnMut()) {
