@@ -1175,18 +1175,29 @@ mod media {
         // Keep a valid selected music session even when another application
         // starts playing. Browser videos frequently become Windows' current
         // session, but must not replace the paused song or its lyrics.
+        // Browsers rank below every other app, so a browser that was the only
+        // session at launch gives way once a music app registers one.
         let retained = selected_session().filter(session_is_available);
         let current = manager.GetCurrentSession().ok();
-        let current_is_playing = current.as_ref().is_some_and(session_is_playing);
-        let playing = if current_is_playing {
-            current.clone()
-        } else {
-            available
-                .iter()
-                .find(|session| session_is_playing(session))
-                .cloned()
-        };
-        let selected = retained.or(playing).or(current);
+        let playing = current
+            .clone()
+            .filter(session_is_playing)
+            .or_else(|| available.iter().find(|s| session_is_playing(s)).cloned());
+        let is_music = |session: &GlobalSystemMediaTransportControlsSession| !is_browser(session);
+        let selected = retained
+            .clone()
+            .filter(is_music)
+            .or_else(|| {
+                available
+                    .iter()
+                    .find(|s| is_music(*s) && session_is_playing(s))
+                    .cloned()
+            })
+            .or_else(|| current.clone().filter(is_music))
+            .or_else(|| available.iter().find(|s| is_music(*s)).cloned())
+            .or(retained)
+            .or(playing)
+            .or(current);
 
         let Some(session) = selected else {
             store_selected_session(None);
@@ -1251,6 +1262,33 @@ mod media {
             })
     }
 
+    fn is_browser(session: &GlobalSystemMediaTransportControlsSession) -> bool {
+        session
+            .SourceAppUserModelId()
+            .is_ok_and(|id| is_browser_app(&id.to_string_lossy()))
+    }
+
+    /// Matches the app ID WMTC reports for the common browsers.
+    // ponytail: substring list; Firefox installs report a path hash, so only its
+    // default install is known. Extend the list for other browsers as they surface.
+    fn is_browser_app(app_id: &str) -> bool {
+        let app_id = app_id.to_ascii_lowercase();
+        [
+            "chrome",
+            "msedge",
+            "microsoftedge",
+            "firefox",
+            "308046b0af4a39cb",
+            "brave",
+            "opera",
+            "vivaldi",
+            "zen",
+            "librewolf",
+        ]
+        .iter()
+        .any(|browser| app_id.contains(browser))
+    }
+
     fn session_is_available(session: &GlobalSystemMediaTransportControlsSession) -> bool {
         session.GetPlaybackInfo().is_ok()
     }
@@ -1299,7 +1337,27 @@ mod media {
 
     #[cfg(test)]
     mod tests {
-        use super::current_timeline_position;
+        use super::{current_timeline_position, is_browser_app};
+
+        #[test]
+        fn recognises_browsers_but_not_music_apps() {
+            for browser in [
+                "Chrome",
+                "MSEdge",
+                "firefox.exe",
+                "308046B0AF4A39CB",
+                "Brave",
+            ] {
+                assert!(is_browser_app(browser), "{browser}");
+            }
+            for music in [
+                "Spotify.exe",
+                "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",
+                "Cider",
+            ] {
+                assert!(!is_browser_app(music), "{music}");
+            }
+        }
 
         #[test]
         fn advances_the_position_while_playing() {
