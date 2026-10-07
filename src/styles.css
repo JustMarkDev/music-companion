@@ -339,6 +339,25 @@ button {
   animation: line-arrive 220ms ease-out;
 }
 
+/* Word-timed lines fill each word left to right. The glow moves from text-shadow,
+   which would show through the clipped gradient, to a filter on the whole line. */
+.lyric-line.word-synced.active {
+  text-shadow: none;
+  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 55%, transparent));
+}
+
+.lyric-line.active .lyric-word {
+  --word-progress: 0;
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    #ffffff calc(var(--word-progress) * 112% - 12%),
+    rgba(255, 255, 255, 0.4) calc(var(--word-progress) * 112%)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
 .lyric-line.far {
   opacity: 0.38;
   filter: blur(1.35px);

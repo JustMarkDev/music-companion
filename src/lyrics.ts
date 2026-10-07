@@ -1,6 +1,8 @@
 export const PLAYBACK_VARIANT_TOLERANCE_MS = 3_000;
 const INTRODUCTION_THRESHOLD_MS = 3_000;
 const INSTRUMENTAL_BREAK_ICON = "♪";
+const WORD_TAG_PATTERN = /<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>/g;
+const UNSET_END_MS = -1;
 
 export type LyricsResult = {
   source: string;
@@ -14,11 +16,21 @@ export type LyricsResult = {
   plainLyrics: string | null;
 };
 
+/** One timed piece of a line: a word, or a syllable when the source splits words. */
+export type LyricSegment = {
+  startMs: number;
+  endMs: number;
+  /** Includes the spacing that follows it, so segments concatenate to the line. */
+  text: string;
+};
+
 export type LyricLine = {
   timeMs: number | null;
   endTimeMs: number | null;
   text: string;
   words: string[];
+  /** Present only when the source timed individual words (enhanced LRC). */
+  segments?: LyricSegment[];
 };
 
 export type LyricsMode =
@@ -200,16 +212,57 @@ export function parseLyrics(raw: string): LyricLine[] {
 }
 
 function createLyricLine(timeMs: number | null, textWithWordTags: string): LyricLine {
-  const text = textWithWordTags
-    .replace(/<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return {
+  const text = textWithWordTags.replace(WORD_TAG_PATTERN, "").replace(/\s+/g, " ").trim();
+  const line: LyricLine = {
     timeMs,
     endTimeMs: null,
     text: text || INSTRUMENTAL_BREAK_ICON,
     words: text.match(/\S+/g) ?? [],
   };
+  const segments = timeMs === null ? undefined : parseSegments(textWithWordTags, timeMs);
+  if (segments) line.segments = segments;
+  return line;
+}
+
+/**
+ * Splits `<mm:ss.xx>word <mm:ss.xx>word <mm:ss.xx>` into timed segments. A tag
+ * with no text after it ends the segment before it; otherwise a segment ends
+ * where the next one starts (the last one at the line's end, see
+ * `finalizeLyricTimings`). Returns undefined unless two or more segments are timed.
+ */
+function parseSegments(textWithWordTags: string, lineStartMs: number): LyricSegment[] | undefined {
+  const tags = [...textWithWordTags.matchAll(WORD_TAG_PATTERN)];
+  if (tags.length === 0) return undefined;
+
+  const segments: LyricSegment[] = [];
+  let startMs = lineStartMs;
+  let cursor = 0;
+  // `startMs` is the time of the tag in front of `text`.
+  const add = (text: string) => {
+    const previous = segments[segments.length - 1];
+    if (text.trim() === "") {
+      if (previous && previous.endMs === UNSET_END_MS) {
+        previous.endMs = startMs;
+        previous.text += text;
+      }
+      return;
+    }
+    if (previous && previous.endMs === UNSET_END_MS) previous.endMs = startMs;
+    segments.push({ startMs, endMs: UNSET_END_MS, text });
+  };
+
+  for (const tag of tags) {
+    add(textWithWordTags.slice(cursor, tag.index));
+    startMs = parseTimeParts(tag[1], tag[2], tag[3]);
+    cursor = tag.index + tag[0].length;
+  }
+  add(textWithWordTags.slice(cursor));
+
+  if (segments.length < 2) return undefined;
+  for (const segment of segments) segment.text = segment.text.replace(/\s+/g, " ");
+  segments[0].text = segments[0].text.trimStart();
+  segments[segments.length - 1].text = segments[segments.length - 1].text.trimEnd();
+  return segments;
 }
 
 function finalizeLyricTimings(lines: LyricLine[]) {
@@ -223,8 +276,19 @@ function finalizeLyricTimings(lines: LyricLine[]) {
       nextTimedIndex === null ? line.timeMs + estimated : lines[nextTimedIndex].timeMs!,
     );
     nextTimedIndex = index;
+    closeSegments(line);
   }
   return lines;
+}
+
+/** Gives the last segment, which has no end tag, the line's end, and keeps ends from preceding starts. */
+function closeSegments(line: LyricLine) {
+  line.segments?.forEach((segment, index, segments) => {
+    if (segment.endMs === UNSET_END_MS) {
+      segment.endMs = segments[index + 1]?.startMs ?? line.endTimeMs ?? segment.startMs;
+    }
+    segment.endMs = Math.max(segment.endMs, segment.startMs);
+  });
 }
 
 function parseTimeParts(minutes: string, seconds: string, fraction = "0") {
