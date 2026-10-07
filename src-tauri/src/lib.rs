@@ -419,7 +419,13 @@ pub fn run() {
         })
         .build();
 
+    // Must be registered first so a second launch exits before other plugins start.
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                unlock_overlay(&window);
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -642,6 +648,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
 fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.set_ignore_cursor_events(false);
+    let _ = window.unminimize();
     let _ = window.show();
     let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
