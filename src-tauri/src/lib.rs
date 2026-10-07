@@ -2168,18 +2168,29 @@ mod lyrics {
         lyrics.is_some_and(|value| !value.trim().is_empty())
     }
 
+    /// How well a candidate's track name alone matches the playing title, 0-4.
+    /// Unlike the title score in `metadata_scores`, an album with that name does
+    /// not count.
+    fn track_title_score(
+        candidate: &LrclibLyrics,
+        normalized_title: &str,
+        normalized_artist: &str,
+    ) -> u8 {
+        let track_title = candidate
+            .track_name
+            .as_deref()
+            .map(|title| canonical_title(title, normalized_artist));
+        score(track_title.as_deref(), normalized_title)
+    }
+
     /// How well a candidate's title and artist match what is playing, each 0-4.
     fn metadata_scores(
         candidate: &LrclibLyrics,
         normalized_title: &str,
         normalized_artist: &str,
     ) -> (u8, u8) {
-        let candidate_title = candidate
-            .track_name
-            .as_deref()
-            .map(|title| canonical_title(title, normalized_artist));
         let title_score = [
-            score(candidate_title.as_deref(), normalized_title),
+            track_title_score(candidate, normalized_title, normalized_artist),
             score(candidate.album_name.as_deref(), normalized_title),
         ]
         .into_iter()
@@ -2541,9 +2552,10 @@ mod lyrics {
             .map(|(candidate, id)| {
                 // Only a song titled exactly like the playing one may be called
                 // instrumental; a search can also return an "(Instrumental)" cut
-                // of a song that has vocals.
+                // of a song that has vocals, or another track from an album named
+                // like the playing song, so the album does not count here.
                 let exact_title =
-                    metadata_scores(&candidate, &normalized_title, &normalized_artist).0 == 4;
+                    track_title_score(&candidate, &normalized_title, &normalized_artist) == 4;
                 (candidate, (id, exact_title))
             })
             .collect();
@@ -3129,6 +3141,34 @@ mod lyrics {
                 "[00:00.000]<00:00.000>纯音乐，请欣赏<00:05.000>"
             ));
             assert!(!is_netease_instrumental("[00:01.00]今天我 寒夜里看雪飘过"));
+        }
+
+        #[test]
+        fn only_the_track_name_makes_a_title_exact_for_instrumentals() {
+            let artist = normalize("Artist");
+            let title = canonical_title("Song A", &artist);
+            let on_title_album = |track: &str| {
+                metadata_candidate(
+                    Some(track.to_string()),
+                    Some("Artist".to_string()),
+                    Some("Song A".to_string()),
+                    Some(200.0),
+                )
+            };
+
+            // The title track itself is exact.
+            assert_eq!(
+                track_title_score(&on_title_album("Song A"), &title, &artist),
+                4
+            );
+            // Another track on an album called "Song A" is not, although
+            // `metadata_scores` rates its title 4 through the album.
+            let other_track = on_title_album("Song B");
+            assert_eq!(track_title_score(&other_track, &title, &artist), 0);
+            assert_eq!(metadata_scores(&other_track, &title, &artist).0, 4);
+            // A variant is not exact either.
+            let variant = on_title_album("Song A (Instrumental)");
+            assert!(track_title_score(&variant, &title, &artist) < 4);
         }
 
         #[test]
