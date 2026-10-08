@@ -189,30 +189,43 @@ export function hasTranslation(result: LyricsResult | null | undefined) {
 
 /**
  * Gives freshly word-synced lyrics the romanization and translation the song
- * had before, which the sync does not return. Only done when both versions have
- * the same lines, so a track is never put on the wrong ones.
+ * had before, which neither the sync nor the TTML lrc.red serves afterwards
+ * carry. Two lines are paired when each is the other's nearest in time, within
+ * a few seconds, so a track is never put on a line it does not belong to.
  */
 export function carryOverTracks(synced: LyricsResult, previous: LyricsResult | null | undefined) {
   if (!previous || hasRomanization(synced) || hasTranslation(synced)) return synced;
-  if (!hasRomanization(previous) && !hasTranslation(previous)) return synced;
-  if (previous.lines.length !== synced.lines.length) return synced;
-  const aligned = synced.lines.every(
-    (line, index) =>
-      Math.abs(line.startMs - previous.lines[index].startMs) <= CARRY_OVER_TOLERANCE_MS,
-  );
-  if (!aligned) return synced;
 
-  return {
-    ...synced,
-    lines: synced.lines.map((line, index) => {
-      const { romanized, translation } = previous.lines[index];
-      return {
-        ...line,
-        ...(romanized ? { romanized } : {}),
-        ...(translation ? { translation } : {}),
-      };
-    }),
-  };
+  const forward = synced.lines.map((line) => nearestLine(line.startMs, previous.lines));
+  const backward = previous.lines.map((line) => nearestLine(line.startMs, synced.lines));
+  let carried = false;
+  const lines = synced.lines.map((line, index) => {
+    const match = forward[index];
+    if (match < 0 || backward[match] !== index) return line;
+    const { romanized, translation } = previous.lines[match];
+    if (!romanized && !translation) return line;
+    carried = true;
+    return {
+      ...line,
+      ...(romanized ? { romanized } : {}),
+      ...(translation ? { translation } : {}),
+    };
+  });
+  return carried ? { ...synced, lines } : synced;
+}
+
+/** Index of the line that starts closest to `startMs`, or -1 when none is within tolerance. */
+function nearestLine(startMs: number, lines: LyricsResultLine[]) {
+  let nearest = -1;
+  let nearestDistance = CARRY_OVER_TOLERANCE_MS + 1;
+  lines.forEach((line, index) => {
+    const distance = Math.abs(line.startMs - startMs);
+    if (distance < nearestDistance) {
+      nearest = index;
+      nearestDistance = distance;
+    }
+  });
+  return nearest;
 }
 
 function buildLines(result: LyricsResult, romanizedLyrics: boolean): LyricLine[] {

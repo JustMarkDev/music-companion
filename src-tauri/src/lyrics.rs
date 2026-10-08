@@ -514,9 +514,6 @@ async fn fetch_lrc_red_ttml(
 /// The first sync of a recording runs lrc.red's alignment model, which takes
 /// seconds; later requests for it are answered from what it stored.
 const WORD_SYNC_TIMEOUT: Duration = Duration::from_secs(45);
-/// Longest the TTML of a synced recording may take. It is a bonus: the sync
-/// itself is already enough to show the words.
-const SYNCED_TTML_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 struct LrcRedSong {
@@ -636,6 +633,10 @@ async fn sync_lrc_red_words(
 /// Word-timed lyrics for a song, from lrc.red's alignment model. The song is
 /// found the same way as for a lookup, so a different recording of it is
 /// never timed by mistake.
+///
+/// The answer has no transliteration or translation, and neither has the TTML
+/// lrc.red serves for the recording afterwards (a cached copy of the old one
+/// for five minutes), so the caller keeps those from the lyrics it had.
 pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> Lookup {
     let started_at = std::time::Instant::now();
     let client = http_client()?;
@@ -662,14 +663,7 @@ pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> 
         "[latency] lrc.red sync total={}ms isrc={isrc}",
         started_at.elapsed().as_millis()
     );
-    // What the sync stored may now be served as TTML, together with the
-    // transliteration and translation the sync answer does not carry.
-    let lyrics =
-        match tokio::time::timeout(SYNCED_TTML_TIMEOUT, fetch_lrc_red_ttml(client, &isrc)).await {
-            Ok(Ok(Some(stored))) if stored.is_word_timed() => stored,
-            _ => synced,
-        };
-    Ok(Some(build_result(candidate, lyrics)))
+    Ok(Some(build_result(candidate, synced)))
 }
 
 #[cfg(test)]

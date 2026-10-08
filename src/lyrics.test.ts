@@ -234,12 +234,24 @@ describe("romanization and translation", () => {
       expect(carried.lines[1].segments).toEqual(synced([1_200, 4_100]).lines[1].segments);
     });
 
-    it("leaves the sync alone when the lines do not line up", () => {
-      const differentCount = synced([1_000]);
-      expect(carryOverTracks(differentCount, previous())).toBe(differentCount);
+    it("matches lines by time when the sync has a different number of them", () => {
+      const carried = carryOverTracks(synced([1_300, 2_900, 4_100]), previous());
 
+      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_000, 2_000, "A")] });
+      expect(carried.lines[1].romanized).toBeUndefined();
+      expect(carried.lines[1].translation).toBeUndefined();
+      expect(carried.lines[2].translation).toBe("Bee");
+    });
+
+    it("never uses a track on a line that starts far from it", () => {
       const drifted = synced([1_000, 9_000]);
-      expect(carryOverTracks(drifted, previous())).toBe(drifted);
+      const carried = carryOverTracks(drifted, previous());
+
+      expect(carried.lines[0].romanized).toBeDefined();
+      expect(carried.lines[1].translation).toBeUndefined();
+
+      const nothingNear = synced([20_000]);
+      expect(carryOverTracks(nothingNear, previous())).toBe(nothingNear);
     });
 
     it("leaves the sync alone when it has tracks of its own or the song had none", () => {
