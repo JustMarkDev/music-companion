@@ -512,14 +512,62 @@ fn merge_lrc_red_hits(by_title: Vec<LrcRedHit>, by_duration: Vec<LrcRedHit>) -> 
         .collect()
 }
 
+/// One `/search.json` query: the hits for a title and artist written as free
+/// text. It finds songs `/match.json` cannot when lrc.red credits the artist
+/// differently (IRIS OUT is by "米津玄师", not "Kenshi Yonezu").
+async fn lrc_red_text_hits(
+    client: &reqwest::Client,
+    title: &str,
+    artist: &str,
+) -> Result<Vec<LrcRedHit>, String> {
+    let response = client
+        .get(format!(
+            "https://lrc.red/search.json?q={}",
+            urlencoding::encode(&format!("{title} {artist}"))
+        ))
+        .send()
+        .await
+        .map_err(|error| provider_error("lrc.red search", error))?;
+    if !response.status().is_success() {
+        return Err(provider_error("lrc.red search", response.status()));
+    }
+    let matches = response
+        .json::<LrcRedMatches>()
+        .await
+        .map_err(|error| provider_error("lrc.red search", error))?;
+    Ok(matches.hits)
+}
+
 /// The recordings lrc.red lists for a song that plausibly are it, best
-/// first, each with its ISRC.
+/// first, each with its ISRC. `/match.json` is asked first, and the text
+/// search only when it has nothing, so a song costs one more request only when
+/// it would otherwise be missed.
+async fn lrc_red_matches(
+    client: &reqwest::Client,
+    title: &str,
+    artist: &str,
+    duration_ms: Option<u64>,
+) -> Result<Vec<(Candidate, String)>, String> {
+    let matched = lrc_red_match_candidates(client, title, artist, duration_ms).await?;
+    if !matched.is_empty() {
+        return Ok(matched);
+    }
+    let hits = lrc_red_text_hits(client, title, artist).await?;
+    Ok(rank_matches(
+        hit_candidates(hits),
+        title,
+        artist,
+        duration_ms,
+    ))
+}
+
+/// The recordings `/match.json` lists for a song that plausibly are it.
 ///
 /// `/match.json` weighs the duration above the title, so with one it lists
 /// other songs of about that length and can leave out the song itself. The
 /// query without a duration finds the song by its name, the one with a
 /// duration finds its variants of the right length; both are ranked here.
-async fn lrc_red_matches(
+async fn lrc_red_match_candidates(
     client: &reqwest::Client,
     title: &str,
     artist: &str,
@@ -1007,6 +1055,28 @@ mod tests {
         assert_eq!(stripped("The Cruel Angel's Thesis"), None);
         assert_eq!(stripped("Song (Live)"), None);
         assert_eq!(stripped("(TV Size)"), None);
+    }
+
+    #[test]
+    fn a_song_credited_to_the_artist_in_another_script_is_ranked_above_its_covers() {
+        // What `/search.json?q=IRIS OUT Kenshi Yonezu` lists, with the song first.
+        let hits = vec![
+            (candidate("IRIS OUT", "米津玄师", 151.573), "official"),
+            (candidate("IRIS OUT", "Trickle", 146.694), "other length"),
+            (
+                candidate("IRIS OUT (Reze ver.cover)", "CODE:D 6TH", 153.205),
+                "cover",
+            ),
+            (
+                candidate("Out of Control", "LEE GI KWANG", 203.307),
+                "unrelated",
+            ),
+        ];
+
+        let ranked = rank_matches(hits, "IRIS OUT", "Kenshi Yonezu", Some(153_181));
+
+        let order = ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>();
+        assert_eq!(order, ["official", "cover"]);
     }
 
     #[test]
