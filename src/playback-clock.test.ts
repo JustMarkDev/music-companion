@@ -95,6 +95,16 @@ describe("PlaybackClock", () => {
       expect(second.selectedPositionMs).toBe(40_000);
     });
 
+    it("does not believe a stale sample that still stands still when the confirmation poll comes", () => {
+      const clock = new PlaybackClock(0, 38_000);
+      clock.apply(sample({ positionMs: 38_000 }), restarted(1_200), true, 2_000, false);
+
+      // The poll scheduled 1.1 s later reads the same stale position.
+      const second = clock.apply(restarted(1_200), restarted(1_200), true, 3_100, false);
+      expect(second.usedLivePosition).toBe(true);
+      expect(second.selectedPositionMs).toBe(41_100);
+    });
+
     it("needs the second sample to come a moment after the first", () => {
       const clock = new PlaybackClock(0, 36_000);
       clock.apply(sample({ positionMs: 36_000 }), restarted(1_200), true, 2_000, false);

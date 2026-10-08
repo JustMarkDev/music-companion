@@ -2,9 +2,11 @@ export const PAUSE_POSITION_TOLERANCE_MS = 750;
 const PLAYING_FALLBACK_TOLERANCE_MS = 10_000;
 export const RESUME_CONFIRMATION_PROGRESS_MS = 100;
 // A position that jumps away from the clock is believed once a second sample, at least this
-// long after the first, has moved on as time would have since, to within the tolerance.
+// long after the first, has moved on as time would have since, to within the tolerance. The
+// tolerance stays below the gap: a sample that stands still is off by the whole gap, and must
+// not be believed.
 const DISCONTINUITY_CONFIRMATION_GAP_MS = 1_000;
-const DISCONTINUITY_CONFIRMATION_TOLERANCE_MS = 1_500;
+const DISCONTINUITY_CONFIRMATION_TOLERANCE_MS = 600;
 
 type PlaybackSample = {
   hasSession: boolean;
