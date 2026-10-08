@@ -107,6 +107,8 @@ const MAIN_WINDOW_GEOMETRY_STORAGE_KEY = "music-companion-main-window-geometry-v
 const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
 const RESUME_CONFIRMATION_DELAY_MS = 250;
+// Just over the second the clock waits for before it believes a jump in position.
+const DISCONTINUITY_CONFIRMATION_DELAY_MS = 1_100;
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -206,6 +208,7 @@ let pollQueued = false;
 let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
+let discontinuityConfirmationTimer = 0;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -1347,6 +1350,13 @@ function syncMediaClock(
         livePositionMs: formatSyncTimestamp(Math.round(update.selectedPositionMs)),
         differenceMs: Math.round(media.positionMs - update.selectedPositionMs),
       });
+      // A restart or a seek that the player did not announce is believed once a second
+      // sample agrees, so ask for it now rather than at the next poll. It must stay a
+      // fallback poll: an authoritative one would also believe a stale position.
+      window.clearTimeout(discontinuityConfirmationTimer);
+      discontinuityConfirmationTimer = window.setTimeout(() => {
+        void pollMedia("fallback-poll");
+      }, DISCONTINUITY_CONFIRMATION_DELAY_MS);
     } else if (!sameSong || playbackChanged) {
       logSync("media state applied", {
         reason,
