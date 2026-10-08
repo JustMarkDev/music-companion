@@ -403,10 +403,12 @@ fn strip_edit_marker(title: &str) -> Option<String> {
         })
         .filter(|open| is_marker(&title[open + 1..title.len() - 1]))
         .map(|open| title[..open].trim_end());
+    // The rightmost dash, so a dash inside the title is kept whatever kind it is.
     let dashed = [" - ", " \u{2013} ", " \u{2014} "]
         .iter()
         .filter_map(|dash| title.rsplit_once(dash))
-        .find(|(_, label)| is_marker(label))
+        .filter(|(_, label)| is_marker(label))
+        .max_by_key(|(rest, _)| rest.len())
         .map(|(rest, _)| rest.trim_end());
     grouped
         .or(dashed)
@@ -1110,6 +1112,11 @@ mod tests {
         assert_eq!(stripped("The Cruel Angel's Thesis - TV Size"), expected);
         assert_eq!(stripped("The Cruel Angel's Thesis – TV Size"), expected);
         assert_eq!(stripped("The Cruel Angel's Thesis — TV Size"), expected);
+        // A dash of another kind inside the title stays in it.
+        assert_eq!(
+            stripped("My Song - Remix – TV Size"),
+            Some("My Song - Remix".to_string())
+        );
         assert_eq!(stripped("The Cruel Angel's Thesis"), None);
         assert_eq!(stripped("Song (Live)"), None);
         assert_eq!(stripped("(TV Size)"), None);
