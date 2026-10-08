@@ -2476,8 +2476,51 @@ mod lyrics {
     }
 
     /// lrc.red (formerly BiniLyrics): Apple Music lyrics, many with word timing.
-    /// `/match.json` finds the recording, `/s/{isrc}.lrc` is its enhanced LRC.
+    /// Players often join collaborators into one artist ("Gorillaz & Del the
+    /// Funky Homosapien") that lrc.red cannot match, so a miss is retried with
+    /// the primary artist alone.
     async fn fetch_lrc_red(
+        client: &reqwest::Client,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Lookup {
+        let found = search_lrc_red(client, title, artist, duration_ms).await;
+        if !matches!(found, Ok(None)) {
+            return found;
+        }
+        match primary_artist(artist) {
+            Some(primary) => search_lrc_red(client, title, primary, duration_ms).await,
+            None => found,
+        }
+    }
+
+    /// The first credited artist of a joined artist string, or `None` when it
+    /// names a single artist. Separators need surrounding spaces, so names such
+    /// as "Simon&Garfunkel" are left whole.
+    fn primary_artist(artist: &str) -> Option<&str> {
+        const SEPARATORS: [&str; 9] = [
+            " & ",
+            ", ",
+            "; ",
+            " feat. ",
+            " feat ",
+            " ft. ",
+            " featuring ",
+            " x ",
+            " / ",
+        ];
+        let lower = artist.to_ascii_lowercase();
+        let index = SEPARATORS
+            .iter()
+            .filter_map(|separator| lower.find(separator))
+            .min()?;
+        let primary = artist[..index].trim();
+        (!primary.is_empty()).then_some(primary)
+    }
+
+    /// `/match.json` finds the recording, `/s/{isrc}.lrc` is its enhanced LRC.
+    async fn search_lrc_red(
         client: &reqwest::Client,
         title: &str,
         artist: &str,
@@ -3533,6 +3576,18 @@ mod lyrics {
             });
 
             assert_eq!(results[0].track_name.as_deref(), Some("Love Me Not"));
+        }
+
+        #[test]
+        fn primary_artist_is_the_first_credited_artist() {
+            assert_eq!(
+                primary_artist("Gorillaz & Del the Funky Homosapien"),
+                Some("Gorillaz")
+            );
+            assert_eq!(primary_artist("Drake, Future"), Some("Drake"));
+            assert_eq!(primary_artist("Ravyn Lenae feat. Rex"), Some("Ravyn Lenae"));
+            assert_eq!(primary_artist("Gorillaz"), None);
+            assert_eq!(primary_artist("Simon&Garfunkel"), None);
         }
     }
 }
