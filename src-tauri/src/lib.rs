@@ -962,7 +962,7 @@ mod media {
         CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
-        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
+        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
@@ -978,6 +978,7 @@ mod media {
         // windows 0.62 represents event registration tokens as plain i64.
         _media_properties_token: i64,
         _playback_info_token: i64,
+        _timeline_properties_token: i64,
     }
 
     pub fn start_event_monitor(app: tauri::AppHandle) {
@@ -1063,11 +1064,24 @@ mod media {
                     Ok(())
                 }))?;
 
+            // Players announce a jump in position (seeking, a restart) here, which
+            // no other event reports.
+            let timeline_app = app.clone();
+            let timeline_properties_token =
+                session.TimelinePropertiesChanged(&TypedEventHandler::<
+                    GlobalSystemMediaTransportControlsSession,
+                    TimelinePropertiesChangedEventArgs,
+                >::new(move |_, _| {
+                    emit_media_change(&timeline_app, "timeline-properties");
+                    Ok(())
+                }))?;
+
             if let Ok(mut items) = subscriptions.lock() {
                 items.push(SessionSubscription {
                     session,
                     _media_properties_token: media_properties_token,
                     _playback_info_token: playback_info_token,
+                    _timeline_properties_token: timeline_properties_token,
                 });
             }
         }
