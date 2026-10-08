@@ -351,10 +351,6 @@ button {
     transform 180ms ease;
 }
 
-.lyric-line.near {
-  color: rgba(255, 255, 255, 0.63);
-}
-
 .lyric-line.active {
   color: #ffffff;
   text-shadow:
@@ -386,6 +382,46 @@ button {
 .lyric-line.far {
   opacity: 0.38;
   filter: blur(1.35px);
+}
+
+.lyric-main {
+  display: block;
+}
+
+/* Background vocals sit under the line, smaller, and fill word by word like the lead. */
+.lyric-background {
+  display: block;
+  margin-top: 0.12em;
+  font-size: 0.62em;
+  font-weight: 600;
+  opacity: 0.78;
+}
+
+.lyric-translation {
+  display: block;
+  margin-top: 0.3em;
+  font-size: 0.55em;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.82;
+}
+
+/* In a duet the lead singer's lines sit on the left and the other singer's on the right. */
+.lyric-line.voice-lead,
+.lyric-line.voice-second {
+  max-width: 88%;
+}
+
+.lyric-line.voice-lead {
+  margin-right: auto;
+  text-align: left;
+  transform-origin: left center;
+}
+
+.lyric-line.voice-second {
+  margin-left: auto;
+  text-align: right;
+  transform-origin: right center;
 }
 
 @keyframes line-arrive {
@@ -592,6 +628,7 @@ button {
 
 .range-control + .range-control,
 .switch-row + .switch-row,
+.lyrics-mode-setting + .switch-row,
 .system-group > * + * {
   border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
@@ -641,6 +678,15 @@ button {
 
 .segmented-control button:hover {
   color: rgba(255, 255, 255, 0.88);
+}
+
+.segmented-control button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.segmented-control button:disabled:hover {
+  color: inherit;
 }
 
 .segmented-control button.active {

@@ -49,6 +49,12 @@ describe("decodeSettings", () => {
     expect(decodeSettings("not-json")).toEqual(DEFAULT_SETTINGS);
   });
 
+  it("shows translations only when asked to", () => {
+    expect(decodeSettings(null).showTranslation).toBe(false);
+    expect(decodeSettings(JSON.stringify({ showTranslation: true })).showTranslation).toBe(true);
+    expect(decodeSettings(JSON.stringify({ showTranslation: "yes" })).showTranslation).toBe(false);
+  });
+
   it("clamps modern numeric settings", () => {
     expect(
       decodeSettings(

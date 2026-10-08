@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  LEGACY_LYRICS_CACHE_STORAGE_KEY,
-  LyricsCache,
-  MAX_PERSISTED_LYRICS,
-  MemoryLyricsStore,
-} from "./lyrics-cache";
+import { LyricsCache, MAX_PERSISTED_LYRICS, MemoryLyricsStore } from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
 
 class MemoryStorage {
@@ -20,6 +15,9 @@ class MemoryStorage {
   }
 }
 
+const text = (result: LyricsResult | null | undefined) =>
+  result?.lines[0].segments.map((segment) => segment.text).join("");
+
 const variant = (durationMs: number | null): PlaybackVariant => ({
   metadataKey: "artist::song",
   durationMs,
@@ -29,14 +27,19 @@ const song = (index: number): PlaybackVariant => ({
   durationMs: 180_000,
 });
 const lyrics = (trackName: string): LyricsResult => ({
-  source: "LRCLIB",
   trackName,
   artistName: "Artist",
   albumName: "",
   duration: null,
-  instrumental: false,
-  syncedLyrics: `[00:00.00]${trackName}`,
-  plainLyrics: trackName,
+  wordTimed: false,
+  lines: [
+    {
+      startMs: 0,
+      endMs: 2_000,
+      voice: 0,
+      segments: [{ startMs: 0, endMs: 2_000, text: trackName }],
+    },
+  ],
 });
 
 async function put(cache: LyricsCache, key: PlaybackVariant, result: LyricsResult | null) {
@@ -86,7 +89,7 @@ describe("LyricsCache", () => {
     await cache.flush();
 
     const reopened = new LyricsCache(store);
-    expect((await reopened.get(variant(180_000)))?.syncedLyrics).toContain("Saved");
+    expect(text(await reopened.get(variant(180_000)))).toBe("Saved");
   });
 
   it("rejects an in-flight result after the cache is cleared", async () => {
@@ -193,21 +196,37 @@ describe("LyricsCache", () => {
     expect((await cache.get(variant(180_000)))?.trackName).toBe("New");
   });
 
-  it("omits plain lyrics from storage when synced lyrics are present", async () => {
+  it("stores the result as it is, with its romanization and translation", async () => {
     const store = new MemoryLyricsStore();
     const cache = new LyricsCache(store);
-    await put(cache, variant(180_000), {
-      ...lyrics("Synced"),
-      plainLyrics: "Plain fallback that should not be stored",
-      romanizedSyncedLyrics: null,
-    });
+    const base = lyrics("Synced");
+    const result: LyricsResult = {
+      ...base,
+      lines: [
+        {
+          ...base.lines[0],
+          romanized: { segments: [{ startMs: 0, endMs: 2_000, text: "Shinku" }] },
+          translation: "Synced",
+        },
+      ],
+    };
+    await put(cache, variant(180_000), result);
     await cache.flush();
 
     const [record] = await store.readIndex();
-    const stored = await store.readResult(record.id);
-    expect(stored?.plainLyrics).toBeNull();
-    expect(stored).not.toHaveProperty("romanizedSyncedLyrics");
-    expect((await cache.get(variant(180_000)))?.syncedLyrics).toContain("Synced");
+    expect(await store.readResult(record.id)).toEqual(result);
+    expect(await new LyricsCache(store).get(variant(180_000))).toEqual(result);
+  });
+
+  it("forgets a stored result that is not in the current format", async () => {
+    const store = new MemoryLyricsStore();
+    const cache = new LyricsCache(store);
+    await put(cache, variant(180_000), lyrics("Old"));
+    await cache.flush();
+    const [record] = await store.readIndex();
+    await store.write(record, { source: "LRCLIB", syncedLyrics: "[00:00.00]Old" } as never);
+
+    expect(await new LyricsCache(store).get(variant(180_000))).toBeUndefined();
   });
 
   it("keeps working in memory when the store cannot be read or written", async () => {
@@ -276,88 +295,18 @@ describe("LyricsCache", () => {
   });
 
   describe("earlier versions", () => {
-    const legacyEntry = (name: string, cachedAt: number) => ({
-      variant: { metadataKey: `artist::${name}`, durationMs: 180_000 },
-      cachedAt,
-      result: lyrics(name),
-    });
-
-    it("moves the localStorage cache into the store and removes it", async () => {
-      const storage = new MemoryStorage();
-      storage.setItem(
-        LEGACY_LYRICS_CACHE_STORAGE_KEY,
-        JSON.stringify([legacyEntry("old", 1), legacyEntry("new", 2)]),
-      );
-      const store = new MemoryLyricsStore();
-      const cache = new LyricsCache(store, storage);
-
-      expect(
-        (await cache.get({ metadataKey: "artist::old", durationMs: 180_000 }))?.trackName,
-      ).toBe("old");
-      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).toBeNull();
-      expect(await store.readIndex()).toHaveLength(2);
-      expect(
-        (await new LyricsCache(store).get({ metadataKey: "artist::new", durationMs: 180_000 }))
-          ?.trackName,
-      ).toBe("new");
-    });
-
-    it("keeps the localStorage cache when it could not be written to the store", async () => {
-      const storage = new MemoryStorage();
-      storage.setItem(LEGACY_LYRICS_CACHE_STORAGE_KEY, JSON.stringify([legacyEntry("old", 1)]));
-      const blocked = new MemoryLyricsStore();
-      blocked.write = () => Promise.reject(new Error("blocked"));
-      const first = new LyricsCache(blocked, storage);
-
-      // Nothing is lost for the session, and nothing is removed from disk.
-      expect(
-        (await first.get({ metadataKey: "artist::old", durationMs: 180_000 }))?.trackName,
-      ).toBe("old");
-      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).not.toBeNull();
-
-      // The next launch has a working store and finishes the move.
-      const store = new MemoryLyricsStore();
-      const second = new LyricsCache(store, storage);
-      expect(
-        (await second.get({ metadataKey: "artist::old", durationMs: 180_000 }))?.trackName,
-      ).toBe("old");
-      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).toBeNull();
-      expect(await store.readIndex()).toHaveLength(1);
-    });
-
-    it("discards a malformed localStorage cache", async () => {
-      const storage = new MemoryStorage();
-      storage.setItem(LEGACY_LYRICS_CACHE_STORAGE_KEY, "not-json");
-      const cache = new LyricsCache(new MemoryLyricsStore(), storage);
-
-      expect(await cache.has(variant(180_000))).toBe(false);
-      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).toBeNull();
-    });
-
-    it("skips invalid legacy entries and keeps the valid ones", async () => {
-      const storage = new MemoryStorage();
-      storage.setItem(
-        LEGACY_LYRICS_CACHE_STORAGE_KEY,
-        JSON.stringify([{ variant: { metadataKey: 1 } }, legacyEntry("kept", 1), null]),
-      );
-      const cache = new LyricsCache(new MemoryLyricsStore(), storage);
-
-      expect(
-        (await cache.get({ metadataKey: "artist::kept", durationMs: 180_000 }))?.trackName,
-      ).toBe("kept");
-    });
-
-    it("removes the schemas that were dropped earlier", async () => {
-      for (const legacyKey of [
+    it("removes the localStorage caches of the schemas that were dropped", async () => {
+      for (const obsoleteKey of [
         "music-companion-lyrics-cache-v3",
         "music-companion-lyrics-cache-v4",
+        "music-companion-lyrics-cache-v5",
       ]) {
         const storage = new MemoryStorage();
-        storage.setItem(legacyKey, JSON.stringify([["artist::song", {}]]));
+        storage.setItem(obsoleteKey, JSON.stringify([["artist::song", {}]]));
         const cache = new LyricsCache(new MemoryLyricsStore(), storage);
 
         expect(await cache.has(variant(180_000))).toBe(false);
-        expect(storage.getItem(legacyKey)).toBeNull();
+        expect(storage.getItem(obsoleteKey)).toBeNull();
       }
     });
   });

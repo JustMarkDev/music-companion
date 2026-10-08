@@ -1,18 +1,17 @@
 import { isSameCachedVariant, type LyricsResult, type PlaybackVariant } from "./lyrics";
 
-// Where the cache lived before it moved to IndexedDB. Read once, then removed.
-export const LEGACY_LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v5";
-// Misses are cached, so each time a provider is added the key moves on and
-// songs the earlier providers missed get looked up again.
-const OLDER_LYRICS_CACHE_STORAGE_KEYS = [
+// Where the cache lived before it moved to IndexedDB. Those copies hold LRC text
+// from providers that are gone, so they are removed rather than carried over.
+const OBSOLETE_LYRICS_CACHE_STORAGE_KEYS = [
   "music-companion-lyrics-cache-v3",
   "music-companion-lyrics-cache-v4",
+  "music-companion-lyrics-cache-v5",
 ];
 export const MAX_PERSISTED_LYRICS = 10_000;
 /** Lyrics kept in memory besides the index; the rest are read from the store on demand. */
 const MAX_LOADED_RESULTS = 64;
 
-type StorageAdapter = Pick<Storage, "getItem" | "removeItem">;
+type StorageAdapter = Pick<Storage, "removeItem">;
 
 /** What is known about a cached song without its lyrics, which are the bulk of the data. */
 export type IndexRecord = {
@@ -51,10 +50,10 @@ export class LyricsCache {
 
   constructor(
     private readonly store: LyricsStore,
-    private readonly legacyStorage: StorageAdapter | null = null,
+    obsoleteStorage: StorageAdapter | null = null,
     private readonly now: () => number = Date.now,
   ) {
-    for (const key of OLDER_LYRICS_CACHE_STORAGE_KEYS) this.legacyStorage?.removeItem(key);
+    for (const key of OBSOLETE_LYRICS_CACHE_STORAGE_KEYS) obsoleteStorage?.removeItem(key);
   }
 
   async get(variant: PlaybackVariant): Promise<LyricsResult | null | undefined> {
@@ -122,7 +121,6 @@ export class LyricsCache {
     this.entriesByMetadataKey.clear();
     this.loadedResults.clear();
     this.loading = Promise.resolve();
-    this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
     await this.enqueue(() => this.store.clear());
   }
 
@@ -150,34 +148,6 @@ export class LyricsCache {
     } catch (error) {
       console.warn("Unable to read the lyrics cache", error);
     }
-    await this.importLegacyCache();
-  }
-
-  /**
-   * Moves the pre-IndexedDB cache over, oldest first, so it keeps its eviction
-   * order. The old copy is only removed once every write has reached the store;
-   * if one fails, it stays and the next launch tries again.
-   */
-  private async importLegacyCache() {
-    const raw = this.legacyStorage?.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
-    if (!raw) return;
-
-    const failedBefore = this.failedWrites;
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error("Invalid lyrics cache");
-      for (const item of parsed.filter(isLegacyEntry)) {
-        this.put(item.variant, normalizeResult(item.result), {}, item.cachedAt);
-      }
-    } catch {
-      // A malformed legacy cache has nothing to keep and is discarded.
-      this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
-      return;
-    }
-    await this.writes;
-    if (this.failedWrites === failedBefore) {
-      this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
-    }
   }
 
   private put(
@@ -198,10 +168,8 @@ export class LyricsCache {
     this.addToIndex(entry);
 
     if (result !== null) {
-      const compact = compactLyricsResult(result);
-      entry.result = compact;
       this.touch(entry);
-      void this.enqueue(() => this.store.write(toIndexRecord(entry), compact));
+      void this.enqueue(() => this.store.write(toIndexRecord(entry), result));
     }
     this.trimToLimit();
   }
@@ -244,7 +212,7 @@ export class LyricsCache {
       // Reads wait for pending writes, so a result just put is never missed.
       await this.writes;
       const result = await this.store.readResult(entry.id);
-      return result ? normalizeResult(result) : undefined;
+      return isLyricsResult(result) ? result : undefined;
     } catch (error) {
       console.warn("Unable to read a cached lyrics result", error);
       return undefined;
@@ -345,6 +313,7 @@ export class MemoryLyricsStore implements LyricsStore {
 }
 
 const DATABASE_NAME = "music-companion";
+const DATABASE_VERSION = 2;
 const INDEX_STORE = "lyrics-index";
 const RESULT_STORE = "lyrics-results";
 
@@ -403,10 +372,16 @@ export class IndexedDbLyricsStore implements LyricsStore {
 
   private open() {
     this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(DATABASE_NAME, 1);
-      request.onupgradeneeded = () => {
-        request.result.createObjectStore(INDEX_STORE, { keyPath: "id" });
-        request.result.createObjectStore(RESULT_STORE);
+      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      request.onupgradeneeded = (event) => {
+        if (event.oldVersion < 1) {
+          request.result.createObjectStore(INDEX_STORE, { keyPath: "id" });
+          request.result.createObjectStore(RESULT_STORE);
+        } else if (event.oldVersion < 2) {
+          // Version 1 held LRC text from providers that are gone.
+          request.transaction!.objectStore(INDEX_STORE).clear();
+          request.transaction!.objectStore(RESULT_STORE).clear();
+        }
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -436,10 +411,10 @@ export class IndexedDbLyricsStore implements LyricsStore {
 }
 
 /** The cache the app uses: IndexedDB where it exists, memory otherwise. */
-export function createLyricsCache(legacyStorage: StorageAdapter | null) {
+export function createLyricsCache(obsoleteStorage: StorageAdapter | null) {
   const store =
     typeof indexedDB === "undefined" ? new MemoryLyricsStore() : new IndexedDbLyricsStore();
-  return new LyricsCache(store, legacyStorage);
+  return new LyricsCache(store, obsoleteStorage);
 }
 
 function toIndexRecord(entry: CacheEntry): IndexRecord {
@@ -456,35 +431,10 @@ function durationDifference(left: PlaybackVariant, right: PlaybackVariant) {
   return Math.abs(left.durationMs - right.durationMs);
 }
 
-function compactLyricsResult(result: LyricsResult): LyricsResult {
-  return {
-    source: result.source,
-    trackName: result.trackName,
-    artistName: result.artistName,
-    albumName: result.albumName,
-    duration: result.duration,
-    instrumental: result.instrumental,
-    syncedLyrics: result.syncedLyrics,
-    // Synced lyrics already cover display; plain text only matters as a fallback.
-    plainLyrics: result.syncedLyrics ? null : result.plainLyrics,
-    ...(result.romanizedSyncedLyrics
-      ? { romanizedSyncedLyrics: result.romanizedSyncedLyrics }
-      : {}),
-  };
-}
-
-function normalizeResult(result: LyricsResult): LyricsResult {
-  return {
-    source: result.source,
-    trackName: result.trackName,
-    artistName: result.artistName,
-    albumName: result.albumName,
-    duration: result.duration,
-    instrumental: result.instrumental,
-    syncedLyrics: result.syncedLyrics ?? null,
-    plainLyrics: result.plainLyrics ?? null,
-    romanizedSyncedLyrics: result.romanizedSyncedLyrics ?? null,
-  };
+function isLyricsResult(value: unknown): value is LyricsResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Partial<LyricsResult>;
+  return typeof result.wordTimed === "boolean" && Array.isArray(result.lines);
 }
 
 function isValidVariant(value: unknown): value is PlaybackVariant {
@@ -507,19 +457,5 @@ function isIndexRecord(value: unknown): value is IndexRecord {
     typeof record.cachedAt === "number" &&
     Number.isFinite(record.cachedAt) &&
     isValidVariant(record.variant)
-  );
-}
-
-type LegacyEntry = { variant: PlaybackVariant; cachedAt: number; result: LyricsResult };
-
-function isLegacyEntry(value: unknown): value is LegacyEntry {
-  if (!value || typeof value !== "object") return false;
-  const entry = value as Partial<LegacyEntry>;
-  return (
-    typeof entry.cachedAt === "number" &&
-    Number.isFinite(entry.cachedAt) &&
-    isValidVariant(entry.variant) &&
-    typeof entry.result === "object" &&
-    entry.result !== null
   );
 }

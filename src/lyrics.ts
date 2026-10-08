@@ -1,20 +1,9 @@
 export const PLAYBACK_VARIANT_TOLERANCE_MS = 3_000;
 const INTRODUCTION_THRESHOLD_MS = 3_000;
+const MIN_LINE_DURATION_MS = 320;
 const INSTRUMENTAL_BREAK_ICON = "♪";
-const WORD_TAG_PATTERN = /<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>/g;
-const UNSET_END_MS = -1;
-
-export type LyricsResult = {
-  source: string;
-  trackName: string;
-  artistName: string;
-  albumName: string;
-  duration: number | null;
-  instrumental: boolean;
-  syncedLyrics: string | null;
-  romanizedSyncedLyrics?: string | null;
-  plainLyrics: string | null;
-};
+/** How far a carried-over track may start from the line it is put on. */
+const CARRY_OVER_TOLERANCE_MS = 3_000;
 
 /** One timed piece of a line: a word, or a syllable when the source splits words. */
 export type LyricSegment = {
@@ -24,23 +13,45 @@ export type LyricSegment = {
   text: string;
 };
 
-export type LyricLine = {
-  timeMs: number | null;
-  endTimeMs: number | null;
-  text: string;
-  words: string[];
-  /** Present only when the source timed individual words (enhanced LRC). */
-  segments?: LyricSegment[];
+/** A line written in one script: its lead vocal and any background vocals. */
+export type LyricsLineText = {
+  segments: LyricSegment[];
+  background?: LyricSegment[];
 };
 
-export type LyricsMode =
-  | "synced"
-  | "unsynced"
-  | "instrumental"
-  | "excluded"
-  | "searching"
-  | "missing"
-  | "error";
+/** A line as the backend sends it. */
+export type LyricsResultLine = LyricsLineText & {
+  startMs: number;
+  endMs: number;
+  /** 0 for the lead singer, 1 for the other singer of a duet. */
+  voice: number;
+  romanized?: LyricsLineText;
+  translation?: string;
+};
+
+export type LyricsResult = {
+  trackName: string;
+  artistName: string;
+  albumName: string;
+  duration: number | null;
+  /** True when some line times its individual words. */
+  wordTimed: boolean;
+  lines: LyricsResultLine[];
+};
+
+export type LyricLine = {
+  timeMs: number;
+  endTimeMs: number;
+  text: string;
+  words: string[];
+  voice: number;
+  /** Present only when the source timed individual words. */
+  segments?: LyricSegment[];
+  background?: LyricSegment[];
+  translation?: string;
+};
+
+export type LyricsMode = "synced" | "instrumental" | "excluded" | "searching" | "missing" | "error";
 
 export type PlaybackVariant = {
   metadataKey: string;
@@ -152,7 +163,7 @@ export function selectLyricsDisplay(
   const currentNotice = fallbackNotice ?? getLocalLyricsNotice(title);
   const variantFallback = currentNotice === "Instrumental" ? null : currentNotice;
 
-  if (!result) {
+  if (!result || result.lines.length === 0) {
     if (currentNotice === "Instrumental") {
       return { lines: [], mode: "instrumental", notice: "Instrumental" };
     }
@@ -162,144 +173,88 @@ export function selectLyricsDisplay(
       notice: variantFallback ?? "",
     };
   }
-  if (result.instrumental) {
-    return { lines: [createLyricLine(null, "Instrumental")], mode: "instrumental", notice: "" };
-  }
 
-  const displayed =
-    romanizedLyrics && result.romanizedSyncedLyrics
-      ? result.romanizedSyncedLyrics
-      : result.syncedLyrics;
-  if (displayed) return { lines: parseLyrics(displayed), mode: "synced", notice: "" };
-  if (result.plainLyrics) {
-    return {
-      lines: [],
-      mode: variantFallback ? "excluded" : "unsynced",
-      notice: variantFallback ?? "No Synced Lyrics",
-    };
-  }
-  return {
-    lines: [],
-    mode: variantFallback ? "excluded" : "missing",
-    notice: variantFallback ?? "",
-  };
+  return { lines: buildLines(result, romanizedLyrics), mode: "synced", notice: "" };
 }
 
-/** True when at least one line times two or more of its words or syllables. */
-export function hasWordTiming(raw: string | null | undefined) {
-  return Boolean(raw) && parseLyrics(raw!).some((line) => line.segments !== undefined);
+/** True when at least one line has a romanization. */
+export function hasRomanization(result: LyricsResult | null | undefined) {
+  return Boolean(result?.lines.some((line) => line.romanized));
 }
 
-export function parseLyrics(raw: string): LyricLine[] {
-  const lines: LyricLine[] = [];
-  const pattern = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
-  const metadataPattern = /^\[[a-z]+:/i;
-
-  for (const rawLine of raw.split(/\r?\n/)) {
-    if (metadataPattern.test(rawLine.trim())) continue;
-    const matches = [...rawLine.matchAll(pattern)];
-    const textWithWordTags = rawLine.replace(pattern, "").trim();
-    if (matches.length === 0 && textWithWordTags) {
-      lines.push(createLyricLine(null, textWithWordTags));
-      continue;
-    }
-    for (const match of matches) {
-      lines.push(createLyricLine(parseTimeParts(match[1], match[2], match[3]), textWithWordTags));
-    }
-  }
-
-  const sorted = lines.sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0));
-  const firstTimed = sorted.find((line) => line.timeMs !== null);
-  if (firstTimed && firstTimed.timeMs! > INTRODUCTION_THRESHOLD_MS) {
-    sorted.unshift(createLyricLine(0, ""));
-  }
-  return finalizeLyricTimings(sorted);
-}
-
-function createLyricLine(timeMs: number | null, textWithWordTags: string): LyricLine {
-  const text = textWithWordTags.replace(WORD_TAG_PATTERN, "").replace(/\s+/g, " ").trim();
-  const line: LyricLine = {
-    timeMs,
-    endTimeMs: null,
-    text: text || INSTRUMENTAL_BREAK_ICON,
-    words: text.match(/\S+/g) ?? [],
-  };
-  const segments = timeMs === null ? undefined : parseSegments(textWithWordTags, timeMs);
-  if (segments) line.segments = segments;
-  return line;
+/** True when at least one line has a translation. */
+export function hasTranslation(result: LyricsResult | null | undefined) {
+  return Boolean(result?.lines.some((line) => line.translation));
 }
 
 /**
- * Splits `<mm:ss.xx>word <mm:ss.xx>word <mm:ss.xx>` into timed segments. A tag
- * with no text after it ends the segment before it; otherwise a segment ends
- * where the next one starts (the last one at the line's end, see
- * `finalizeLyricTimings`). Returns undefined unless two or more segments are timed.
+ * Gives freshly word-synced lyrics the romanization and translation the song
+ * had before, which the sync does not return. Only done when both versions have
+ * the same lines, so a track is never put on the wrong ones.
  */
-function parseSegments(textWithWordTags: string, lineStartMs: number): LyricSegment[] | undefined {
-  const tags = [...textWithWordTags.matchAll(WORD_TAG_PATTERN)];
-  if (tags.length === 0) return undefined;
+export function carryOverTracks(synced: LyricsResult, previous: LyricsResult | null | undefined) {
+  if (!previous || hasRomanization(synced) || hasTranslation(synced)) return synced;
+  if (!hasRomanization(previous) && !hasTranslation(previous)) return synced;
+  if (previous.lines.length !== synced.lines.length) return synced;
+  const aligned = synced.lines.every(
+    (line, index) =>
+      Math.abs(line.startMs - previous.lines[index].startMs) <= CARRY_OVER_TOLERANCE_MS,
+  );
+  if (!aligned) return synced;
 
-  const segments: LyricSegment[] = [];
-  let startMs = lineStartMs;
-  let cursor = 0;
-  // `startMs` is the time of the tag in front of `text`.
-  const add = (text: string) => {
-    const previous = segments[segments.length - 1];
-    if (text.trim() === "") {
-      if (previous && previous.endMs === UNSET_END_MS) {
-        previous.endMs = startMs;
-        previous.text += text;
-      }
-      return;
-    }
-    if (previous && previous.endMs === UNSET_END_MS) previous.endMs = startMs;
-    segments.push({ startMs, endMs: UNSET_END_MS, text });
+  return {
+    ...synced,
+    lines: synced.lines.map((line, index) => {
+      const { romanized, translation } = previous.lines[index];
+      return {
+        ...line,
+        ...(romanized ? { romanized } : {}),
+        ...(translation ? { translation } : {}),
+      };
+    }),
   };
-
-  for (const tag of tags) {
-    add(textWithWordTags.slice(cursor, tag.index));
-    startMs = parseTimeParts(tag[1], tag[2], tag[3]);
-    cursor = tag.index + tag[0].length;
-  }
-  add(textWithWordTags.slice(cursor));
-
-  if (segments.length < 2) return undefined;
-  for (const segment of segments) segment.text = segment.text.replace(/\s+/g, " ");
-  segments[0].text = segments[0].text.trimStart();
-  segments[segments.length - 1].text = segments[segments.length - 1].text.trimEnd();
-  return segments;
 }
 
-function finalizeLyricTimings(lines: LyricLine[]) {
-  let nextTimedIndex: number | null = null;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (line.timeMs === null) continue;
-    const estimated = clamp(line.words.length * 460, 1400, 7200);
-    line.endTimeMs = Math.max(
-      line.timeMs + 320,
-      nextTimedIndex === null ? line.timeMs + estimated : lines[nextTimedIndex].timeMs!,
-    );
-    nextTimedIndex = index;
-    closeSegments(line);
+function buildLines(result: LyricsResult, romanizedLyrics: boolean): LyricLine[] {
+  const lines = result.lines.map((line) =>
+    createLyricLine(line, result.wordTimed, romanizedLyrics),
+  );
+  const first = lines[0];
+  if (first.timeMs > INTRODUCTION_THRESHOLD_MS) {
+    lines.unshift({
+      timeMs: 0,
+      endTimeMs: first.timeMs,
+      text: INSTRUMENTAL_BREAK_ICON,
+      words: [],
+      voice: 0,
+    });
   }
   return lines;
 }
 
-/** Gives the last segment, which has no end tag, the line's end, and keeps ends from preceding starts. */
-function closeSegments(line: LyricLine) {
-  line.segments?.forEach((segment, index, segments) => {
-    if (segment.endMs === UNSET_END_MS) {
-      segment.endMs = segments[index + 1]?.startMs ?? line.endTimeMs ?? segment.startMs;
-    }
-    segment.endMs = Math.max(segment.endMs, segment.startMs);
-  });
-}
-
-function parseTimeParts(minutes: string, seconds: string, fraction = "0") {
-  return (
-    Number(minutes) * 60_000 + Number(seconds) * 1_000 + Number(fraction.padEnd(3, "0").slice(0, 3))
-  );
+function createLyricLine(
+  line: LyricsResultLine,
+  wordTimed: boolean,
+  romanizedLyrics: boolean,
+): LyricLine {
+  // A line the romanization skips keeps its original text.
+  const shown = romanizedLyrics && line.romanized ? line.romanized : line;
+  const text = shown.segments
+    .map((segment) => segment.text)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lyricLine: LyricLine = {
+    timeMs: line.startMs,
+    endTimeMs: Math.max(line.endMs, line.startMs + MIN_LINE_DURATION_MS),
+    text: text || INSTRUMENTAL_BREAK_ICON,
+    words: text.match(/\S+/g) ?? [],
+    voice: line.voice,
+  };
+  if (wordTimed && shown.segments.length > 0) lyricLine.segments = shown.segments;
+  if (shown.background?.length) lyricLine.background = shown.background;
+  if (line.translation) lyricLine.translation = line.translation;
+  return lyricLine;
 }
 
 function normalizeLyricsTitle(title: string) {
@@ -342,8 +297,4 @@ function normalizeTrackField(value: string) {
 
 function validDuration(value: number | null) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }

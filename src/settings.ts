@@ -10,6 +10,8 @@ export type SettingsState = {
   fontSize: number;
   lineSpacing: number;
   romanizedLyrics: boolean;
+  /** Shows lrc.red's translation under each line that has one. */
+  showTranslation: boolean;
   /** Asks lrc.red to time every word of songs whose lyrics are not word-timed. */
   wordSync: boolean;
   startAtLogin: boolean;
@@ -60,6 +62,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   fontSize: 1,
   lineSpacing: 0.5,
   romanizedLyrics: true,
+  showTranslation: false,
   wordSync: false,
   startAtLogin: false,
   accentMode: "dynamic",
@@ -86,6 +89,10 @@ export function decodeSettings(stored: string | null): SettingsState {
         typeof value.romanizedLyrics === "boolean"
           ? value.romanizedLyrics
           : DEFAULT_SETTINGS.romanizedLyrics,
+      showTranslation:
+        typeof value.showTranslation === "boolean"
+          ? value.showTranslation
+          : DEFAULT_SETTINGS.showTranslation,
       wordSync: typeof value.wordSync === "boolean" ? value.wordSync : DEFAULT_SETTINGS.wordSync,
       startAtLogin:
         typeof value.startAtLogin === "boolean"

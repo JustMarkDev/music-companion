@@ -1,27 +1,57 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  carryOverTracks,
   getLocalLyricsNotice,
-  hasWordTiming,
+  hasRomanization,
+  hasTranslation,
   isSameCachedVariant,
   isSameSong,
   normalizeLyricsMetadata,
-  parseLyrics,
   playbackVariant,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   type LyricsResult,
+  type LyricsResultLine,
+  type LyricSegment,
 } from "./lyrics";
 
+const segment = (startMs: number, endMs: number, text: string): LyricSegment => ({
+  startMs,
+  endMs,
+  text,
+});
+
+/** A line of timed words, each lasting 500 ms from `startMs`. */
+const line = (
+  startMs: number,
+  words: string[],
+  extras: Partial<LyricsResultLine> = {},
+): LyricsResultLine => ({
+  startMs,
+  endMs: startMs + words.length * 500,
+  voice: 0,
+  segments: words.map((word, index) =>
+    segment(
+      startMs + index * 500,
+      startMs + (index + 1) * 500,
+      index < words.length - 1 ? `${word} ` : word,
+    ),
+  ),
+  ...extras,
+});
+
 const result = (overrides: Partial<LyricsResult> = {}): LyricsResult => ({
-  source: "LRCLIB",
   trackName: "Song",
   artistName: "Artist",
   albumName: "Album",
   duration: 180,
-  instrumental: false,
-  syncedLyrics: "[00:01.00]Original",
-  romanizedSyncedLyrics: "[00:01.00]Romanized",
-  plainLyrics: "Original",
+  wordTimed: true,
+  lines: [
+    line(1_000, ["Original", "words"], {
+      romanized: { segments: [segment(1_000, 2_000, "Romanized")] },
+      translation: "Translated",
+    }),
+  ],
   ...overrides,
 });
 
@@ -73,112 +103,92 @@ describe("playback variants", () => {
   });
 });
 
-describe("LRC parsing", () => {
-  it("parses fractions, strips word tags, and ignores metadata", () => {
-    const lines = parseLyrics("[ar:Artist]\n[00:01.2]<00:01.20>Hello   world");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({
-      timeMs: 1_200,
-      text: "Hello world",
-      words: ["Hello", "world"],
+describe("lyrics display selection", () => {
+  it("prefers the romanization of a line when enabled", () => {
+    expect(selectLyricsDisplay(result(), "Song", true).lines[0].text).toBe("Romanized");
+    expect(selectLyricsDisplay(result(), "Song", false).lines[0].text).toBe("Original words");
+  });
+
+  it("keeps the original text of a line the romanization skips", () => {
+    const lyrics = result({ lines: [line(1_000, ["Skipped"]), result().lines[0]] });
+    const displayed = selectLyricsDisplay(lyrics, "Song", true).lines;
+    expect(displayed.map((displayedLine) => displayedLine.text)).toEqual(["Skipped", "Romanized"]);
+  });
+
+  it("times the words of a line with the romanized words", () => {
+    const lyrics = result({
+      lines: [
+        line(1_000, ["夢", "なら"], {
+          romanized: {
+            segments: [segment(1_000, 1_500, "Yume "), segment(1_500, 2_000, "nara")],
+          },
+        }),
+      ],
     });
+    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+      text: "Yume nara",
+      words: ["Yume", "nara"],
+      segments: [segment(1_000, 1_500, "Yume "), segment(1_500, 2_000, "nara")],
+    });
+  });
+
+  it("fills words only for songs whose words are timed", () => {
+    const wholeLine = result({
+      wordTimed: false,
+      lines: [{ ...line(1_000, ["Hello world"]), endMs: 3_000 }],
+    });
+    expect(selectLyricsDisplay(wholeLine, "Song", false).lines[0].segments).toBeUndefined();
+    expect(selectLyricsDisplay(result(), "Song", false).lines[0].segments).toHaveLength(2);
+  });
+
+  it("carries the singer, background vocals and translation of each line", () => {
+    const background = [segment(1_200, 1_800, "(ooh)")];
+    const lyrics = result({
+      lines: [line(1_000, ["Lead"], { voice: 1, background, translation: "Guida" })],
+    });
+    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0]).toMatchObject({
+      voice: 1,
+      background,
+      translation: "Guida",
+    });
+
+    const plain = result({ lines: [line(1_000, ["Plain"])] });
+    expect(selectLyricsDisplay(plain, "Song", false).lines[0]).not.toHaveProperty("translation");
+    expect(selectLyricsDisplay(plain, "Song", false).lines[0]).not.toHaveProperty("background");
   });
 
   it("inserts an introduction only after the three-second boundary", () => {
-    expect(parseLyrics("[00:03.00]Hello")[0].text).toBe("Hello");
-    expect(parseLyrics("[00:03.01]Hello")[0]).toMatchObject({ timeMs: 0, text: "♪" });
-  });
-
-  it("keeps empty timed lines as instrumental breaks", () => {
-    expect(parseLyrics("[00:00.00]")[0]).toMatchObject({ timeMs: 0, text: "♪", words: [] });
-  });
-
-  it("ends a line at the next timestamp and estimates the final line", () => {
-    const lines = parseLyrics("[00:00.00]First line\n[00:05.00]Last");
-    expect(lines[0].endTimeMs).toBe(5_000);
-    expect(lines[1].endTimeMs).toBe(6_400);
-  });
-});
-
-describe("word-timed lyrics", () => {
-  // parseLyrics prepends an introduction line when the first lyric starts after 3 s.
-  const firstLine = (raw: string) => parseLyrics(raw).find((line) => line.text !== "♪")!;
-
-  it("splits enhanced LRC into timed segments that keep their spacing", () => {
-    const line = firstLine("[00:27.40]<00:27.40>I <00:27.55>been <00:27.74>tryna <00:28.96>");
-    expect(line.text).toBe("I been tryna");
-    expect(line.segments).toEqual([
-      { startMs: 27_400, endMs: 27_550, text: "I " },
-      { startMs: 27_550, endMs: 27_740, text: "been " },
-      { startMs: 27_740, endMs: 28_960, text: "tryna" },
-    ]);
-  });
-
-  it("ends the last word at the line end when there is no closing tag", () => {
-    const line = firstLine("[00:10.00]<00:10.00>Hello <00:10.50>world\n[00:13.00]Next");
-    expect(line.segments?.[line.segments.length - 1]).toEqual({
-      startMs: 10_500,
-      endMs: 13_000,
-      text: "world",
+    const startingAt = (startMs: number) =>
+      selectLyricsDisplay(result({ lines: [line(startMs, ["Hello"])] }), "Song", false).lines;
+    expect(startingAt(3_000)[0].text).toBe("Hello");
+    expect(startingAt(3_001)[0]).toMatchObject({
+      timeMs: 0,
+      endTimeMs: 3_001,
+      text: "♪",
+      words: [],
     });
   });
 
-  it("uses an empty tag as the end of the previous word, leaving a gap", () => {
-    const line = firstLine("[00:05.00]<00:05.00>a<00:05.40> <00:06.00>b<00:06.30>");
-    expect(line.segments).toEqual([
-      { startMs: 5_000, endMs: 5_400, text: "a " },
-      { startMs: 6_000, endMs: 6_300, text: "b" },
-    ]);
+  it("ends a line where it ends, but not before a short line has been seen", () => {
+    const lyrics = result({
+      wordTimed: false,
+      lines: [
+        { ...line(0, ["First"]), endMs: 4_000 },
+        { ...line(5_000, ["Blink"]), endMs: 5_050 },
+      ],
+    });
+    const [first, second] = selectLyricsDisplay(lyrics, "Song", false).lines;
+    expect(first.endTimeMs).toBe(4_000);
+    expect(second.endTimeMs).toBe(5_320);
   });
 
-  it("keeps syllables of one word contiguous", () => {
-    const [line] = parseLyrics("[00:01.00]<00:01.00>e<00:01.20>very <00:01.60>day<00:02.00>");
-    expect(line.text).toBe("every day");
-    expect(line.segments?.map((segment) => segment.text).join("")).toBe("every day");
-  });
-
-  it("leaves plain line-synced lyrics without segments", () => {
-    expect(parseLyrics("[00:01.00]Hello world")[0].segments).toBeUndefined();
-  });
-
-  it("does not time a line with a single word or only empty tags", () => {
-    expect(parseLyrics("[00:01.00]<00:01.00>Hello<00:02.00>")[0].segments).toBeUndefined();
-    expect(parseLyrics("[00:01.00]<00:01.00><00:02.00>")[0].segments).toBeUndefined();
-  });
-});
-
-describe("hasWordTiming", () => {
-  it("is true when a line times two or more words", () => {
-    expect(hasWordTiming("[00:10.00]<00:10.00>Hello <00:10.50>world <00:11.00>")).toBe(true);
-  });
-
-  it("is false for line-synced, plain and empty lyrics", () => {
-    expect(hasWordTiming("[00:10.00]Hello world")).toBe(false);
-    expect(hasWordTiming("Hello world")).toBe(false);
-    expect(hasWordTiming("")).toBe(false);
-    expect(hasWordTiming(null)).toBe(false);
-    expect(hasWordTiming(undefined)).toBe(false);
-  });
-
-  it("is false when a whole line is timed as a single piece", () => {
-    expect(hasWordTiming("[00:10.00]<00:10.00>A whole line <00:13.00>")).toBe(false);
-  });
-});
-
-describe("lyrics display selection", () => {
-  it("prefers romanized synchronized lyrics when enabled", () => {
-    expect(selectLyricsDisplay(result(), "Song", true).lines[0].text).toBe("Romanized");
-    expect(selectLyricsDisplay(result(), "Song", false).lines[0].text).toBe("Original");
-  });
-
-  it("shows a variant notice instead of unsynchronized fallback lyrics", () => {
-    expect(
-      selectLyricsDisplay(
-        result({ syncedLyrics: null, romanizedSyncedLyrics: null }),
-        "Song (slowed)",
-        true,
-      ),
-    ).toMatchObject({ mode: "excluded", notice: "Slowed - No Lyrics", lines: [] });
+  it("shows a variant notice for a title with no lyrics", () => {
+    expect(selectLyricsDisplay(result({ lines: [] }), "Song (slowed)", true)).toMatchObject({
+      mode: "excluded",
+      notice: "Slowed - No Lyrics",
+      lines: [],
+    });
+    expect(selectLyricsDisplay(null, "Song", true)).toMatchObject({ mode: "missing", lines: [] });
   });
 
   it("recognizes instrumental and combined variant titles", () => {
@@ -191,11 +201,55 @@ describe("lyrics display selection", () => {
       "Slowed + Reverb - No Lyrics",
     );
   });
+});
 
-  it("represents LRCLIB instrumental results explicitly", () => {
-    expect(selectLyricsDisplay(result({ instrumental: true }), "Song", true)).toMatchObject({
-      mode: "instrumental",
-      lines: [{ text: "Instrumental" }],
+describe("romanization and translation", () => {
+  it("is found when any line has one", () => {
+    expect(hasRomanization(result())).toBe(true);
+    expect(hasTranslation(result())).toBe(true);
+    const plain = result({ lines: [line(1_000, ["Plain"])] });
+    expect(hasRomanization(plain)).toBe(false);
+    expect(hasTranslation(plain)).toBe(false);
+    expect(hasRomanization(null)).toBe(false);
+  });
+
+  describe("after a word sync", () => {
+    const synced = (starts: number[]) =>
+      result({ lines: starts.map((start) => line(start, ["Synced", "words"])) });
+    const previous = () =>
+      result({
+        wordTimed: false,
+        lines: [
+          { ...line(1_000, ["A"]), romanized: { segments: [segment(1_000, 2_000, "A")] } },
+          { ...line(4_000, ["B"]), translation: "Bee" },
+        ],
+      });
+
+    it("gives the synced lines the tracks the song had", () => {
+      const carried = carryOverTracks(synced([1_200, 4_100]), previous());
+
+      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_000, 2_000, "A")] });
+      expect(carried.lines[0].translation).toBeUndefined();
+      expect(carried.lines[1].translation).toBe("Bee");
+      expect(carried.lines[1].segments).toEqual(synced([1_200, 4_100]).lines[1].segments);
+    });
+
+    it("leaves the sync alone when the lines do not line up", () => {
+      const differentCount = synced([1_000]);
+      expect(carryOverTracks(differentCount, previous())).toBe(differentCount);
+
+      const drifted = synced([1_000, 9_000]);
+      expect(carryOverTracks(drifted, previous())).toBe(drifted);
+    });
+
+    it("leaves the sync alone when it has tracks of its own or the song had none", () => {
+      const own = result();
+      expect(carryOverTracks(own, previous())).toBe(own);
+
+      const plain = synced([1_000, 4_000]);
+      const untracked = result({ lines: [line(1_000, ["A"]), line(4_000, ["B"])] });
+      expect(carryOverTracks(plain, untracked)).toBe(plain);
+      expect(carryOverTracks(plain, null)).toBe(plain);
     });
   });
 });
