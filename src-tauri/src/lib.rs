@@ -276,6 +276,17 @@ async fn fetch_lyrics(
     result
 }
 
+/// Word-timed lyrics for a song, from lrc.red's alignment model. `None` when
+/// lrc.red cannot time it; an error is worth retrying later.
+#[tauri::command]
+async fn sync_lyrics_words(
+    title: String,
+    artist: String,
+    duration_ms: Option<u64>,
+) -> Result<Option<LyricsResult>, String> {
+    lyrics::sync_words(&title, &artist, duration_ms).await
+}
+
 /// The autostart plugin registers a `Run` key on Windows and a launch agent on
 /// macOS, which keeps one implementation for both platforms.
 #[tauri::command]
@@ -451,6 +462,7 @@ pub fn run() {
             retry_failed_hotkeys,
             log_sync_diagnostic,
             fetch_lyrics,
+            sync_lyrics_words,
             cancel_lyrics_requests,
             get_start_at_login,
             set_start_at_login,
@@ -2311,13 +2323,17 @@ mod lyrics {
         normalized_title: &str,
         normalized_artist: &str,
     ) -> (u8, u8) {
-        let title_score = [
-            track_title_score(candidate, normalized_title, normalized_artist),
-            score(candidate.album_name.as_deref(), normalized_title),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or_default();
+        // The album only vouches for the title when the hit has no track name:
+        // every track of an album named like the playing song (AC/DC's "Back In
+        // Black") would otherwise tie with the song itself.
+        let title_score = match candidate
+            .track_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        {
+            Some(_) => track_title_score(candidate, normalized_title, normalized_artist),
+            None => score(candidate.album_name.as_deref(), normalized_title),
+        };
         let artist_score = [
             score(candidate.artist_name.as_deref(), normalized_artist),
             score(candidate.track_name.as_deref(), normalized_artist),
@@ -2372,10 +2388,30 @@ mod lyrics {
         }
     }
 
+    fn is_latin_letter(char: char) -> bool {
+        char.is_ascii_alphabetic() || matches!(char, '\u{C0}'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}')
+    }
+
+    fn has_non_latin_letters(value: &str) -> bool {
+        value
+            .chars()
+            .any(|char| char.is_alphabetic() && !is_latin_letter(char))
+    }
+
+    /// True when only one of the two titles is written in a non-Latin script,
+    /// so a differing spelling says nothing about whether they are the same song.
+    fn titles_differ_in_script(candidate_title: Option<&str>, playing_title: &str) -> bool {
+        candidate_title.is_none_or(|title| {
+            has_non_latin_letters(title) != has_non_latin_letters(playing_title)
+        })
+    }
+
     /// Keeps the hits that plausibly are the playing song, best first. Search
     /// providers return fuzzy results (remixes, covers, other artists), so a hit
-    /// needs a matching length and a matching title or artist. Either one is
-    /// enough because the same artist can be written in different scripts.
+    /// needs a matching length and a matching title. The same song can be
+    /// credited to an artist written in another script, so the artist need not
+    /// match; the title may be missing only when it is written in another script
+    /// too, never to pass off another song by the same artist.
     fn rank_matches<T>(
         mut hits: Vec<(LrclibLyrics, T)>,
         title: &str,
@@ -2388,7 +2424,9 @@ mod lyrics {
             let (title_score, artist_score) =
                 metadata_scores(candidate, &normalized_title, &normalized_artist);
             duration_matches(candidate.duration, duration_ms)
-                && (title_score > 0 || artist_score > 0)
+                && (title_score > 0
+                    || (artist_score > 0
+                        && titles_differ_in_script(candidate.track_name.as_deref(), title)))
         });
         hits.sort_by_key(|(candidate, _)| {
             ranking_key(
@@ -2519,24 +2557,21 @@ mod lyrics {
         (!primary.is_empty()).then_some(primary)
     }
 
-    /// `/match.json` finds the recording, `/s/{isrc}.lrc` is its enhanced LRC.
-    async fn search_lrc_red(
+    /// One `/match.json` query: the hits for a title and artist, with the
+    /// duration weighed in when given.
+    async fn lrc_red_hits(
         client: &reqwest::Client,
         title: &str,
         artist: &str,
-        duration_ms: Option<u64>,
-    ) -> Lookup {
-        let started_at = std::time::Instant::now();
+        duration_seconds: Option<f64>,
+    ) -> Result<Vec<LrcRedHit>, String> {
         let mut url = format!(
             "https://lrc.red/match.json?title={}&artist={}",
             urlencoding::encode(title),
             urlencoding::encode(artist)
         );
-        if let Some(duration_ms) = duration_ms {
-            url.push_str(&format!(
-                "&duration={}",
-                (duration_ms as f64 / 1_000.0).round()
-            ));
+        if let Some(duration_seconds) = duration_seconds {
+            url.push_str(&format!("&duration={duration_seconds}"));
         }
         let response = client
             .get(&url)
@@ -2550,17 +2585,72 @@ mod lyrics {
             .json::<LrcRedMatches>()
             .await
             .map_err(|error| provider_error("lrc.red match", error))?;
-        let candidates = matches
-            .hits
+        Ok(matches.hits)
+    }
+
+    /// Hits of both queries without repeats, those of the title query first.
+    fn merge_lrc_red_hits(by_title: Vec<LrcRedHit>, by_duration: Vec<LrcRedHit>) -> Vec<LrcRedHit> {
+        let mut seen = HashSet::new();
+        by_title
+            .into_iter()
+            .chain(by_duration)
+            .filter(|hit| seen.insert(hit.isrc.clone()))
+            .collect()
+    }
+
+    /// The recordings lrc.red lists for a song that plausibly are it, best
+    /// first, each with its ISRC.
+    ///
+    /// `/match.json` weighs the duration above the title, so with one it lists
+    /// other songs of about that length and can leave out the song itself. The
+    /// query without a duration finds the song by its name, the one with a
+    /// duration finds its variants of the right length; both are ranked here.
+    async fn lrc_red_matches(
+        client: &reqwest::Client,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Result<Vec<(LrclibLyrics, String)>, String> {
+        let hits = match duration_ms {
+            None => lrc_red_hits(client, title, artist, None).await?,
+            Some(duration_ms) => {
+                let (by_title, by_duration) = tokio::join!(
+                    lrc_red_hits(client, title, artist, None),
+                    lrc_red_hits(
+                        client,
+                        title,
+                        artist,
+                        Some((duration_ms as f64 / 1_000.0).round())
+                    )
+                );
+                match (by_title, by_duration) {
+                    (Ok(by_title), Ok(by_duration)) => merge_lrc_red_hits(by_title, by_duration),
+                    (Ok(hits), Err(_)) | (Err(_), Ok(hits)) => hits,
+                    (Err(error), Err(_)) => return Err(error),
+                }
+            }
+        };
+        let candidates = hits
             .into_iter()
             .map(|hit| {
                 let candidate = metadata_candidate(hit.title, hit.artist, hit.album, hit.duration);
                 (candidate, hit.isrc)
             })
             .collect();
+        Ok(rank_matches(candidates, title, artist, duration_ms))
+    }
 
+    /// `/match.json` finds the recording, `/s/{isrc}.lrc` is its enhanced LRC.
+    async fn search_lrc_red(
+        client: &reqwest::Client,
+        title: &str,
+        artist: &str,
+        duration_ms: Option<u64>,
+    ) -> Lookup {
+        let started_at = std::time::Instant::now();
         // A hit can lack a lyrics file, so fall through to the next best one.
-        let ranked = rank_matches(candidates, title, artist, duration_ms)
+        let ranked = lrc_red_matches(client, title, artist, duration_ms)
+            .await?
             .into_iter()
             .take(3)
             .collect();
@@ -2606,6 +2696,135 @@ mod lyrics {
             .await
             .map_err(|error| provider_error("lrc.red lyrics", error))?;
         Ok(has_timed_lyrics(&lrc).then_some(lrc))
+    }
+
+    /// The first sync of a recording runs lrc.red's alignment model, which takes
+    /// seconds; later requests for it are answered from what it stored.
+    const WORD_SYNC_TIMEOUT: Duration = Duration::from_secs(45);
+
+    #[derive(Deserialize)]
+    struct LrcRedSong {
+        #[serde(default)]
+        lyrics: LrcRedLyrics,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct LrcRedLyrics {
+        #[serde(default)]
+        lines: Vec<LrcRedLine>,
+    }
+
+    #[derive(Deserialize)]
+    struct LrcRedLine {
+        /// Words made of one or more timed syllables; empty for an untimed line.
+        #[serde(default)]
+        words: Vec<Vec<LrcRedWord>>,
+    }
+
+    #[derive(Deserialize)]
+    struct LrcRedWord {
+        text: String,
+        /// Seconds.
+        begin: f64,
+        end: f64,
+    }
+
+    /// `centiseconds` as `mm:ss.xx`, the precision of lrc.red's own LRC files.
+    fn lrc_timestamp_centis(seconds: f64) -> String {
+        let centiseconds = ((seconds * 1_000.0).round() as u64 + 5) / 10;
+        format!(
+            "{:02}:{:02}.{:02}",
+            centiseconds / 6_000,
+            centiseconds / 100 % 60,
+            centiseconds % 100
+        )
+    }
+
+    /// Writes a synced song the way `/s/{isrc}.lrc` does: one tag per word, its
+    /// syllables joined, and a closing tag after the last word of the line.
+    fn lrc_red_song_to_enhanced_lrc(song: &LrcRedSong) -> String {
+        song.lyrics
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let words = line
+                    .words
+                    .iter()
+                    .filter(|word| !word.is_empty())
+                    .collect::<Vec<_>>();
+                let first = words.first()?.first()?;
+                let last = words.last()?.last()?;
+                let mut lrc = format!("[{}]", lrc_timestamp_centis(first.begin));
+                for word in words {
+                    let text = word
+                        .iter()
+                        .map(|syllable| syllable.text.as_str())
+                        .collect::<String>();
+                    lrc.push_str(&format!("<{}>{text} ", lrc_timestamp_centis(word[0].begin)));
+                }
+                lrc.push_str(&format!("<{}>", lrc_timestamp_centis(last.end)));
+                Some(lrc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Asks lrc.red to time every word of one recording and returns the result
+    /// as enhanced LRC. `None` means lrc.red cannot, which will not change on
+    /// retrying; an error is a failure worth retrying later.
+    async fn sync_lrc_red_words(
+        client: &reqwest::Client,
+        isrc: &str,
+    ) -> Result<Option<String>, String> {
+        let response = client
+            .post(format!(
+                "https://lrc.red/s/{}/sync",
+                urlencoding::encode(isrc)
+            ))
+            .timeout(WORD_SYNC_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| provider_error("lrc.red sync", error))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(provider_error("lrc.red sync", status));
+        }
+        if status.is_client_error() {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(provider_error("lrc.red sync", status));
+        }
+        let song = response
+            .json::<LrcRedSong>()
+            .await
+            .map_err(|error| provider_error("lrc.red sync", error))?;
+        let lrc = lrc_red_song_to_enhanced_lrc(&song);
+        Ok(super::has_word_timing(&lrc).then_some(lrc))
+    }
+
+    /// Word-timed lyrics for a song, from lrc.red's alignment model. The song is
+    /// found the same way as for a lookup, so a different recording of it is
+    /// never timed by mistake.
+    pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> Lookup {
+        let started_at = std::time::Instant::now();
+        let client = http_client()?;
+        let mut matches = lrc_red_matches(client, title, artist, duration_ms).await?;
+        if matches.is_empty()
+            && let Some(primary) = primary_artist(artist)
+        {
+            matches = lrc_red_matches(client, title, primary, duration_ms).await?;
+        }
+        let Some((candidate, isrc)) = matches.into_iter().next() else {
+            return Ok(None);
+        };
+        let lrc = sync_lrc_red_words(client, &isrc).await?;
+        println!(
+            "[latency] lrc.red sync total={}ms isrc={isrc} timed={}",
+            started_at.elapsed().as_millis(),
+            lrc.is_some()
+        );
+        Ok(lrc.map(|lrc| synced_result("lrc.red", candidate, lrc)))
     }
 
     #[derive(Deserialize)]
@@ -3185,6 +3404,123 @@ mod lyrics {
             assert_eq!(ranked[0].1, "original");
         }
 
+        /// The start of what `POST /s/AUDJ02102297/sync` answered, and the lines
+        /// `/s/AUDJ02102297.lrc` then served for it.
+        const SYNCED_SONG: &str = r#"{"id":"AUDJ02102297","lyrics":{"lines":[
+            {"words":[[{"text":"Some","begin":15.816,"end":16.345},{"text":"one","begin":16.345,"end":16.776}],
+                [{"text":"said","begin":16.776,"end":17.296}],
+                [{"text":"they","begin":17.296,"end":17.641}],
+                [{"text":"left","begin":17.641,"end":18.063}],
+                [{"text":"to","begin":18.063,"end":18.38},{"text":"geth","begin":18.38,"end":18.936},{"text":"er","begin":18.936,"end":19.662}]],
+             "text":"Someone said they left together","timed":true},
+            {"words":[[{"text":"I","begin":19.675,"end":20.129}],
+                [{"text":"ran","begin":20.129,"end":20.599}],
+                [{"text":"her","begin":22.695,"end":22.715}]],
+             "text":"I ran her","timed":true},
+            {"words":[],"text":"An untimed line","timed":false}]}}"#;
+
+        fn lrc_red_hit(isrc: &str, title: &str) -> LrcRedHit {
+            LrcRedHit {
+                isrc: isrc.to_string(),
+                title: Some(title.to_string()),
+                artist: None,
+                album: None,
+                duration: None,
+            }
+        }
+
+        #[test]
+        fn lrc_red_hits_of_both_queries_are_merged_without_repeats() {
+            let merged = merge_lrc_red_hits(
+                vec![lrc_red_hit("A", "Song"), lrc_red_hit("B", "Song (Live)")],
+                vec![lrc_red_hit("C", "Other"), lrc_red_hit("A", "Song")],
+            );
+
+            let isrcs = merged
+                .iter()
+                .map(|hit| hit.isrc.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(isrcs, ["A", "B", "C"]);
+        }
+
+        #[test]
+        fn a_synced_song_becomes_the_enhanced_lrc_lrc_red_serves() {
+            let song = serde_json::from_str::<LrcRedSong>(SYNCED_SONG).unwrap();
+
+            assert_eq!(
+                lrc_red_song_to_enhanced_lrc(&song),
+                "[00:15.82]<00:15.82>Someone <00:16.78>said <00:17.30>they <00:17.64>left <00:18.06>together <00:19.66>\n\
+                 [00:19.68]<00:19.68>I <00:20.13>ran <00:22.70>her <00:22.72>"
+            );
+        }
+
+        #[test]
+        fn a_synced_song_with_word_timing_is_recognised_and_one_without_is_not() {
+            let timed = serde_json::from_str::<LrcRedSong>(SYNCED_SONG).unwrap();
+            assert!(crate::has_word_timing(&lrc_red_song_to_enhanced_lrc(
+                &timed
+            )));
+
+            let untimed =
+                serde_json::from_str::<LrcRedSong>(r#"{"lyrics":{"lines":[{"words":[]}]}}"#)
+                    .unwrap();
+            assert!(!crate::has_word_timing(&lrc_red_song_to_enhanced_lrc(
+                &untimed
+            )));
+
+            let empty = serde_json::from_str::<LrcRedSong>("{}").unwrap();
+            assert_eq!(lrc_red_song_to_enhanced_lrc(&empty), "");
+        }
+
+        #[test]
+        fn lrc_timestamps_round_to_the_nearest_centisecond() {
+            assert_eq!(lrc_timestamp_centis(0.0), "00:00.00");
+            assert_eq!(lrc_timestamp_centis(15.816), "00:15.82");
+            assert_eq!(lrc_timestamp_centis(19.675), "00:19.68");
+            assert_eq!(lrc_timestamp_centis(60.476), "01:00.48");
+            assert_eq!(lrc_timestamp_centis(3_599.999), "60:00.00");
+            assert_eq!(lrc_timestamp_centis(-1.0), "00:00.00");
+        }
+
+        #[test]
+        fn rank_matches_does_not_confuse_a_song_with_others_on_the_album_named_after_it() {
+            let on_album = |title: &str, duration: f64| {
+                candidate_with_metadata(title, "AC/DC", Some("Back In Black"), duration, true)
+            };
+            let hits = vec![
+                (
+                    on_album("Rock and Roll Ain't Noise Pollution", 255.648),
+                    "other track",
+                ),
+                (on_album("Back In Black", 256.0), "the song"),
+            ];
+
+            let ranked = rank_matches(hits, "Back In Black", "AC/DC", Some(255_000));
+
+            assert_eq!(ranked.len(), 1);
+            assert_eq!(ranked[0].1, "the song");
+        }
+
+        #[test]
+        fn rank_matches_rejects_another_song_by_the_same_artist() {
+            let hits = vec![(
+                hit("Dirty Deeds Done Dirt Cheap", "AC/DC", 253.0),
+                "other song",
+            )];
+
+            assert!(rank_matches(hits, "Back In Black", "AC/DC", Some(253_000)).is_empty());
+        }
+
+        #[test]
+        fn rank_matches_accepts_the_artist_alone_when_the_titles_use_different_scripts() {
+            let hits = vec![(hit("夜曲", "周杰伦", 226.0), "hit")];
+
+            assert_eq!(
+                rank_matches(hits, "Ye Qu", "周杰伦", Some(226_000)).len(),
+                1
+            );
+        }
+
         #[test]
         fn rank_matches_accepts_a_hit_when_only_the_artist_script_differs() {
             let hits = vec![(hit("夜曲", "周杰伦", 226.0), "hit")];
@@ -3326,11 +3662,11 @@ mod lyrics {
                 track_title_score(&on_title_album("Song A"), &title, &artist),
                 4
             );
-            // Another track on an album called "Song A" is not, although
-            // `metadata_scores` rates its title 4 through the album.
+            // Another track on an album called "Song A" is not, and the album
+            // does not vouch for it in `metadata_scores` either.
             let other_track = on_title_album("Song B");
             assert_eq!(track_title_score(&other_track, &title, &artist), 0);
-            assert_eq!(metadata_scores(&other_track, &title, &artist).0, 4);
+            assert_eq!(metadata_scores(&other_track, &title, &artist).0, 0);
             // A variant is not exact either.
             let variant = on_title_album("Song A (Instrumental)");
             assert!(track_title_score(&variant, &title, &artist) < 4);

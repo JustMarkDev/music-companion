@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   getLocalLyricsNotice,
+  hasWordTiming,
   isSameCachedVariant,
   isSameSong,
   normalizeLyricsMetadata,
@@ -143,6 +144,24 @@ describe("word-timed lyrics", () => {
   it("does not time a line with a single word or only empty tags", () => {
     expect(parseLyrics("[00:01.00]<00:01.00>Hello<00:02.00>")[0].segments).toBeUndefined();
     expect(parseLyrics("[00:01.00]<00:01.00><00:02.00>")[0].segments).toBeUndefined();
+  });
+});
+
+describe("hasWordTiming", () => {
+  it("is true when a line times two or more words", () => {
+    expect(hasWordTiming("[00:10.00]<00:10.00>Hello <00:10.50>world <00:11.00>")).toBe(true);
+  });
+
+  it("is false for line-synced, plain and empty lyrics", () => {
+    expect(hasWordTiming("[00:10.00]Hello world")).toBe(false);
+    expect(hasWordTiming("Hello world")).toBe(false);
+    expect(hasWordTiming("")).toBe(false);
+    expect(hasWordTiming(null)).toBe(false);
+    expect(hasWordTiming(undefined)).toBe(false);
+  });
+
+  it("is false when a whole line is timed as a single piece", () => {
+    expect(hasWordTiming("[00:10.00]<00:10.00>A whole line <00:13.00>")).toBe(false);
   });
 });
 

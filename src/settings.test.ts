@@ -64,6 +64,13 @@ describe("decodeSettings", () => {
     );
   });
 
+  it("leaves word sync off unless it was turned on", () => {
+    expect(DEFAULT_SETTINGS.wordSync).toBe(false);
+    expect(decodeSettings(null).wordSync).toBe(false);
+    expect(decodeSettings(JSON.stringify({ wordSync: true })).wordSync).toBe(true);
+    expect(decodeSettings(JSON.stringify({ wordSync: "yes" })).wordSync).toBe(false);
+  });
+
   it("accepts only typed booleans and string hotkeys", () => {
     expect(
       decodeSettings(

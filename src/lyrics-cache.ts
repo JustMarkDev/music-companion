@@ -1,104 +1,250 @@
 import { isSameCachedVariant, type LyricsResult, type PlaybackVariant } from "./lyrics";
 
-export const LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v5";
+// Where the cache lived before it moved to IndexedDB. Read once, then removed.
+export const LEGACY_LYRICS_CACHE_STORAGE_KEY = "music-companion-lyrics-cache-v5";
 // Misses are cached, so each time a provider is added the key moves on and
 // songs the earlier providers missed get looked up again.
-const LEGACY_LYRICS_CACHE_STORAGE_KEYS = [
+const OLDER_LYRICS_CACHE_STORAGE_KEYS = [
   "music-companion-lyrics-cache-v3",
   "music-companion-lyrics-cache-v4",
 ];
-export const MAX_PERSISTED_LYRICS = 1_000;
+export const MAX_PERSISTED_LYRICS = 10_000;
+/** Lyrics kept in memory besides the index; the rest are read from the store on demand. */
+const MAX_LOADED_RESULTS = 64;
 
-type StorageAdapter = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+type StorageAdapter = Pick<Storage, "getItem" | "removeItem">;
 
-type CacheEntry = {
+/** What is known about a cached song without its lyrics, which are the bulk of the data. */
+export type IndexRecord = {
+  id: number;
   variant: PlaybackVariant;
   cachedAt: number;
-  result: LyricsResult | null;
+  /** True once word timing was requested for the song and nothing more can be had. */
+  wordSyncAttempted?: boolean;
 };
 
-type PersistedCacheEntry = CacheEntry & { result: LyricsResult };
+export type LyricsStore = {
+  readIndex(): Promise<IndexRecord[]>;
+  readResult(id: number): Promise<LyricsResult | undefined>;
+  write(record: IndexRecord, result: LyricsResult): Promise<void>;
+  writeIndex(record: IndexRecord): Promise<void>;
+  remove(ids: number[]): Promise<void>;
+  clear(): Promise<void>;
+};
+
+export type PutOptions = { wordSyncAttempted?: boolean };
+
+type CacheEntry = IndexRecord & {
+  /** `null` is a cached miss, `undefined` is a result that is in the store but not loaded. */
+  result: LyricsResult | null | undefined;
+};
 
 export class LyricsCache {
   private entries: CacheEntry[] = [];
   private entriesByMetadataKey = new Map<string, CacheEntry[]>();
+  private loadedResults = new Set<CacheEntry>();
   private generation = 0;
-  private loaded = false;
+  private nextId = 1;
+  private loading: Promise<void> | null = null;
+  private writes: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly storage: StorageAdapter,
+    private readonly store: LyricsStore,
+    private readonly legacyStorage: StorageAdapter | null = null,
     private readonly now: () => number = Date.now,
   ) {
-    for (const key of LEGACY_LYRICS_CACHE_STORAGE_KEYS) this.storage.removeItem(key);
+    for (const key of OLDER_LYRICS_CACHE_STORAGE_KEYS) this.legacyStorage?.removeItem(key);
   }
 
-  get(variant: PlaybackVariant): LyricsResult | null | undefined {
-    return this.find(variant)?.result;
+  async get(variant: PlaybackVariant): Promise<LyricsResult | null | undefined> {
+    await this.ensureLoaded();
+    const entry = this.find(variant);
+    if (!entry) return undefined;
+    if (entry.result !== undefined) {
+      this.touch(entry);
+      return entry.result;
+    }
+
+    const generation = this.generation;
+    const result = await this.readFromStore(entry);
+    if (generation !== this.generation) return undefined;
+    if (!result) {
+      this.drop(entry);
+      return undefined;
+    }
+    entry.result = result;
+    this.touch(entry);
+    return result;
   }
 
-  has(variant: PlaybackVariant) {
+  async has(variant: PlaybackVariant) {
+    await this.ensureLoaded();
     return this.find(variant) !== undefined;
+  }
+
+  async wordSyncAttempted(variant: PlaybackVariant) {
+    await this.ensureLoaded();
+    return this.find(variant)?.wordSyncAttempted === true;
   }
 
   requestGeneration() {
     return this.generation;
   }
 
-  putIfCurrent(generation: number, variant: PlaybackVariant, result: LyricsResult | null) {
+  async putIfCurrent(
+    generation: number,
+    variant: PlaybackVariant,
+    result: LyricsResult | null,
+    options: PutOptions = {},
+  ) {
+    await this.ensureLoaded();
     if (generation !== this.generation) return false;
-    this.put(variant, result);
+    this.put(variant, result, options);
     return true;
   }
 
-  clear() {
+  /** Records that word timing cannot be had for this song, so it is not asked for again. */
+  async markWordSyncAttempted(variant: PlaybackVariant) {
+    await this.ensureLoaded();
+    const entry = this.find(variant);
+    if (!entry || entry.wordSyncAttempted) return;
+    entry.wordSyncAttempted = true;
+    if (entry.result !== null) void this.enqueue(() => this.store.writeIndex(toIndexRecord(entry)));
+  }
+
+  async clear() {
     this.generation += 1;
     this.entries = [];
     this.entriesByMetadataKey.clear();
-    this.loaded = true;
-    this.storage.removeItem(LYRICS_CACHE_STORAGE_KEY);
+    this.loadedResults.clear();
+    this.loading = Promise.resolve();
+    this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+    await this.enqueue(() => this.store.clear());
+  }
+
+  /** Resolves once every write queued so far has reached the store. */
+  flush() {
+    return this.writes;
   }
 
   private ensureLoaded() {
-    if (this.loaded) return;
-    this.loaded = true;
-    this.entries = this.load();
-    this.rebuildIndex();
+    this.loading ??= this.load();
+    return this.loading;
   }
 
-  private put(variant: PlaybackVariant, result: LyricsResult | null) {
-    this.ensureLoaded();
+  private async load() {
+    const generation = this.generation;
+    try {
+      const records = await this.store.readIndex();
+      // Clearing while the index is still being read must not bring it back.
+      if (generation !== this.generation) return;
+      for (const record of records.filter(isIndexRecord).sort((a, b) => a.id - b.id)) {
+        this.entries.push({ ...record, result: undefined });
+        this.nextId = Math.max(this.nextId, record.id + 1);
+      }
+      this.rebuildIndex();
+    } catch (error) {
+      console.warn("Unable to read the lyrics cache", error);
+    }
+    await this.importLegacyCache();
+  }
+
+  /** Moves the pre-IndexedDB cache over, oldest first, so it keeps its eviction order. */
+  private async importLegacyCache() {
+    const raw = this.legacyStorage?.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const item of parsed.filter(isLegacyEntry)) {
+        this.put(item.variant, normalizeResult(item.result), {}, item.cachedAt);
+      }
+    } catch {
+      // A malformed legacy cache is discarded, as before.
+    }
+    await this.writes;
+  }
+
+  private put(
+    variant: PlaybackVariant,
+    result: LyricsResult | null,
+    options: PutOptions,
+    cachedAt = this.now(),
+  ) {
     this.removeMatching(variant);
-    const entry: CacheEntry = { variant, cachedAt: this.now(), result };
+    const entry: CacheEntry = {
+      id: this.nextId++,
+      variant,
+      cachedAt,
+      result,
+      ...(options.wordSyncAttempted ? { wordSyncAttempted: true } : {}),
+    };
     this.entries.push(entry);
     this.addToIndex(entry);
+
+    if (result !== null) {
+      const compact = compactLyricsResult(result);
+      entry.result = compact;
+      this.touch(entry);
+      void this.enqueue(() => this.store.write(toIndexRecord(entry), compact));
+    }
     this.trimToLimit();
-    this.persist();
   }
 
   private removeMatching(variant: PlaybackVariant) {
-    const candidates = this.entriesByMetadataKey.get(variant.metadataKey);
-    if (!candidates?.length) return;
-
-    const removed = candidates.filter((entry) => isSameCachedVariant(entry.variant, variant));
-    if (removed.length === 0) return;
-
-    for (const entry of removed) {
-      this.removeFromIndex(entry);
-    }
-    this.entries = this.entries.filter((entry) => !isSameCachedVariant(entry.variant, variant));
+    const removed = (this.entriesByMetadataKey.get(variant.metadataKey) ?? []).filter((entry) =>
+      isSameCachedVariant(entry.variant, variant),
+    );
+    for (const entry of removed) this.drop(entry);
   }
 
   private trimToLimit() {
-    if (this.entries.length <= MAX_PERSISTED_LYRICS) return;
     const overflow = this.entries.length - MAX_PERSISTED_LYRICS;
-    const removed = this.entries.splice(0, overflow);
-    for (const entry of removed) {
-      this.removeFromIndex(entry);
+    if (overflow <= 0) return;
+    for (const entry of this.entries.slice(0, overflow)) this.drop(entry);
+  }
+
+  /** Forgets an entry in memory and in the store. */
+  private drop(entry: CacheEntry) {
+    const index = this.entries.indexOf(entry);
+    if (index >= 0) this.entries.splice(index, 1);
+    this.removeFromIndex(entry);
+    this.loadedResults.delete(entry);
+    if (entry.result !== null) void this.enqueue(() => this.store.remove([entry.id]));
+  }
+
+  /** Keeps the most recently used lyrics in memory and lets go of the rest. */
+  private touch(entry: CacheEntry) {
+    this.loadedResults.delete(entry);
+    this.loadedResults.add(entry);
+    for (const loaded of this.loadedResults) {
+      if (this.loadedResults.size <= MAX_LOADED_RESULTS) break;
+      this.loadedResults.delete(loaded);
+      if (loaded.result !== null) loaded.result = undefined;
     }
   }
 
+  private async readFromStore(entry: CacheEntry) {
+    try {
+      // Reads wait for pending writes, so a result just put is never missed.
+      await this.writes;
+      const result = await this.store.readResult(entry.id);
+      return result ? normalizeResult(result) : undefined;
+    } catch (error) {
+      console.warn("Unable to read a cached lyrics result", error);
+      return undefined;
+    }
+  }
+
+  private enqueue(operation: () => Promise<void>) {
+    this.writes = this.writes.then(operation).catch((error) => {
+      console.warn("Unable to update the lyrics cache", error);
+    });
+    return this.writes;
+  }
+
   private find(variant: PlaybackVariant) {
-    this.ensureLoaded();
     const candidates = this.entriesByMetadataKey.get(variant.metadataKey);
     if (!candidates?.length) return undefined;
 
@@ -120,49 +266,6 @@ export class LyricsCache {
     }
 
     return best;
-  }
-
-  private load(): CacheEntry[] {
-    try {
-      const stored = this.storage.getItem(LYRICS_CACHE_STORAGE_KEY);
-      const parsed: unknown = stored ? JSON.parse(stored) : [];
-      if (!Array.isArray(parsed)) throw new Error("Invalid lyrics cache");
-      return parsed
-        .filter(isPersistedCacheEntry)
-        .slice(-MAX_PERSISTED_LYRICS)
-        .map(normalizePersistedEntry);
-    } catch {
-      this.storage.removeItem(LYRICS_CACHE_STORAGE_KEY);
-      return [];
-    }
-  }
-
-  private persist() {
-    while (true) {
-      const positiveEntries = this.entries.filter(
-        (entry): entry is PersistedCacheEntry => entry.result !== null,
-      );
-      const persisted = positiveEntries.map(toPersistedEntry);
-
-      try {
-        this.storage.setItem(LYRICS_CACHE_STORAGE_KEY, JSON.stringify(persisted));
-        return;
-      } catch (error) {
-        if (positiveEntries.length === 0) {
-          console.warn("Unable to persist the lyrics cache", error);
-          return;
-        }
-
-        // localStorage quotas are typically ~5MB. Drop the oldest chunk and retry
-        // so a larger cache still survives instead of failing open.
-        const dropCount = Math.max(1, Math.ceil(positiveEntries.length * 0.1));
-        const dropped = new Set(positiveEntries.slice(0, dropCount));
-        this.entries = this.entries.filter(
-          (entry) => entry.result === null || !dropped.has(entry as PersistedCacheEntry),
-        );
-        this.rebuildIndex();
-      }
-    }
   }
 
   private rebuildIndex() {
@@ -192,17 +295,146 @@ export class LyricsCache {
   }
 }
 
+/** A store that keeps everything in memory: the fallback without IndexedDB, and the test double. */
+export class MemoryLyricsStore implements LyricsStore {
+  private records = new Map<number, IndexRecord>();
+  private results = new Map<number, LyricsResult>();
+
+  async readIndex() {
+    return [...this.records.values()];
+  }
+  async readResult(id: number) {
+    return this.results.get(id);
+  }
+  async write(record: IndexRecord, result: LyricsResult) {
+    this.records.set(record.id, record);
+    this.results.set(record.id, result);
+  }
+  async writeIndex(record: IndexRecord) {
+    this.records.set(record.id, record);
+  }
+  async remove(ids: number[]) {
+    for (const id of ids) {
+      this.records.delete(id);
+      this.results.delete(id);
+    }
+  }
+  async clear() {
+    this.records.clear();
+    this.results.clear();
+  }
+}
+
+const DATABASE_NAME = "music-companion";
+const INDEX_STORE = "lyrics-index";
+const RESULT_STORE = "lyrics-results";
+
+/**
+ * One record per song, with the index apart from the lyrics so that opening the
+ * app reads a few hundred kilobytes instead of every cached lyric.
+ */
+export class IndexedDbLyricsStore implements LyricsStore {
+  private database: Promise<IDBDatabase> | null = null;
+
+  readIndex() {
+    return this.run(
+      [INDEX_STORE],
+      "readonly",
+      ([index]) => index.getAll() as IDBRequest<IndexRecord[]>,
+    );
+  }
+
+  readResult(id: number) {
+    return this.run(
+      [RESULT_STORE],
+      "readonly",
+      ([results]) => results.get(id) as IDBRequest<LyricsResult | undefined>,
+    );
+  }
+
+  async write(record: IndexRecord, result: LyricsResult) {
+    await this.run([INDEX_STORE, RESULT_STORE], "readwrite", ([index, results]) => {
+      index.put(record);
+      return results.put(result, record.id);
+    });
+  }
+
+  async writeIndex(record: IndexRecord) {
+    await this.run([INDEX_STORE], "readwrite", ([index]) => index.put(record));
+  }
+
+  async remove(ids: number[]) {
+    if (ids.length === 0) return;
+    await this.run([INDEX_STORE, RESULT_STORE], "readwrite", ([index, results]) => {
+      let last!: IDBRequest;
+      for (const id of ids) {
+        index.delete(id);
+        last = results.delete(id);
+      }
+      return last;
+    });
+  }
+
+  async clear() {
+    await this.run([INDEX_STORE, RESULT_STORE], "readwrite", ([index, results]) => {
+      index.clear();
+      return results.clear();
+    });
+  }
+
+  private open() {
+    this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(INDEX_STORE, { keyPath: "id" });
+        request.result.createObjectStore(RESULT_STORE);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    // A failed open is retried by the next call instead of failing forever.
+    this.database.catch(() => {
+      this.database = null;
+    });
+    return this.database;
+  }
+
+  /** Runs one transaction and resolves with the last request's value once it has committed. */
+  private async run<T>(
+    names: string[],
+    mode: IDBTransactionMode,
+    work: (stores: IDBObjectStore[]) => IDBRequest<T>,
+  ) {
+    const database = await this.open();
+    return new Promise<T>((resolve, reject) => {
+      const transaction = database.transaction(names, mode);
+      const request = work(names.map((name) => transaction.objectStore(name)));
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+}
+
+/** The cache the app uses: IndexedDB where it exists, memory otherwise. */
+export function createLyricsCache(legacyStorage: StorageAdapter | null) {
+  const store =
+    typeof indexedDB === "undefined" ? new MemoryLyricsStore() : new IndexedDbLyricsStore();
+  return new LyricsCache(store, legacyStorage);
+}
+
+function toIndexRecord(entry: CacheEntry): IndexRecord {
+  return {
+    id: entry.id,
+    variant: entry.variant,
+    cachedAt: entry.cachedAt,
+    ...(entry.wordSyncAttempted ? { wordSyncAttempted: true } : {}),
+  };
+}
+
 function durationDifference(left: PlaybackVariant, right: PlaybackVariant) {
   if (left.durationMs === null || right.durationMs === null) return 0;
   return Math.abs(left.durationMs - right.durationMs);
-}
-
-function toPersistedEntry(entry: PersistedCacheEntry): PersistedCacheEntry {
-  return {
-    variant: entry.variant,
-    cachedAt: entry.cachedAt,
-    result: compactLyricsResult(entry.result),
-  };
 }
 
 function compactLyricsResult(result: LyricsResult): LyricsResult {
@@ -222,36 +454,52 @@ function compactLyricsResult(result: LyricsResult): LyricsResult {
   };
 }
 
-function normalizePersistedEntry(entry: PersistedCacheEntry): PersistedCacheEntry {
+function normalizeResult(result: LyricsResult): LyricsResult {
   return {
-    variant: entry.variant,
-    cachedAt: entry.cachedAt,
-    result: {
-      source: entry.result.source,
-      trackName: entry.result.trackName,
-      artistName: entry.result.artistName,
-      albumName: entry.result.albumName,
-      duration: entry.result.duration,
-      instrumental: entry.result.instrumental,
-      syncedLyrics: entry.result.syncedLyrics ?? null,
-      plainLyrics: entry.result.plainLyrics ?? null,
-      romanizedSyncedLyrics: entry.result.romanizedSyncedLyrics ?? null,
-    },
+    source: result.source,
+    trackName: result.trackName,
+    artistName: result.artistName,
+    albumName: result.albumName,
+    duration: result.duration,
+    instrumental: result.instrumental,
+    syncedLyrics: result.syncedLyrics ?? null,
+    plainLyrics: result.plainLyrics ?? null,
+    romanizedSyncedLyrics: result.romanizedSyncedLyrics ?? null,
   };
 }
 
-function isPersistedCacheEntry(value: unknown): value is PersistedCacheEntry {
-  if (!value || typeof value !== "object") return false;
-  const entry = value as Partial<PersistedCacheEntry>;
-  const variant = entry.variant as Partial<PlaybackVariant> | undefined;
+function isValidVariant(value: unknown): value is PlaybackVariant {
+  const variant = value as Partial<PlaybackVariant> | undefined;
   return (
-    typeof entry.cachedAt === "number" &&
-    Number.isFinite(entry.cachedAt) &&
     typeof variant?.metadataKey === "string" &&
     (variant.durationMs === null ||
       (typeof variant.durationMs === "number" &&
         Number.isFinite(variant.durationMs) &&
-        variant.durationMs > 0)) &&
+        variant.durationMs > 0))
+  );
+}
+
+function isIndexRecord(value: unknown): value is IndexRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<IndexRecord>;
+  return (
+    typeof record.id === "number" &&
+    Number.isInteger(record.id) &&
+    typeof record.cachedAt === "number" &&
+    Number.isFinite(record.cachedAt) &&
+    isValidVariant(record.variant)
+  );
+}
+
+type LegacyEntry = { variant: PlaybackVariant; cachedAt: number; result: LyricsResult };
+
+function isLegacyEntry(value: unknown): value is LegacyEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<LegacyEntry>;
+  return (
+    typeof entry.cachedAt === "number" &&
+    Number.isFinite(entry.cachedAt) &&
+    isValidVariant(entry.variant) &&
     typeof entry.result === "object" &&
     entry.result !== null
   );

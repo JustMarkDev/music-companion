@@ -10,6 +10,8 @@ export type SettingsState = {
   fontSize: number;
   lineSpacing: number;
   romanizedLyrics: boolean;
+  /** Asks lrc.red to time every word of songs whose lyrics are not word-timed. */
+  wordSync: boolean;
   startAtLogin: boolean;
   accentMode: AccentMode;
   accentColor: string;
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   fontSize: 1,
   lineSpacing: 0.5,
   romanizedLyrics: true,
+  wordSync: false,
   startAtLogin: false,
   accentMode: "dynamic",
   accentColor: "#22e6c7",
@@ -83,6 +86,7 @@ export function decodeSettings(stored: string | null): SettingsState {
         typeof value.romanizedLyrics === "boolean"
           ? value.romanizedLyrics
           : DEFAULT_SETTINGS.romanizedLyrics,
+      wordSync: typeof value.wordSync === "boolean" ? value.wordSync : DEFAULT_SETTINGS.wordSync,
       startAtLogin:
         typeof value.startAtLogin === "boolean"
           ? value.startAtLogin

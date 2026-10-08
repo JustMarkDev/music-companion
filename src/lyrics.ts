@@ -185,6 +185,11 @@ export function selectLyricsDisplay(
   };
 }
 
+/** True when at least one line times two or more of its words or syllables. */
+export function hasWordTiming(raw: string | null | undefined) {
+  return Boolean(raw) && parseLyrics(raw!).some((line) => line.segments !== undefined);
+}
+
 export function parseLyrics(raw: string): LyricLine[] {
   const lines: LyricLine[] = [];
   const pattern = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
