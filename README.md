@@ -18,12 +18,16 @@ transparent, always-on-top Tauri window.
 - Queries lrc.red, LRCLIB, and Netease in parallel. Word-timed lyrics are preferred, then
   the highest-priority provider with synchronized lyrics, in that order. Netease is an unofficial,
   unauthenticated API and may change or stop working without notice.
+- Optionally asks lrc.red's alignment model to time every word of songs whose lyrics are not
+  word-timed (Settings → Sync words with AI, off by default). The first sync of a song can take
+  10 seconds or more; the lyrics on screen are upgraded in place and the result is saved.
 - Handles plain lyrics, instrumental tracks, missing lyrics, and common track
   variants without silently presenting a poor match.
 - Normalizes browser metadata such as `- Topic`, `VEVO`, and `Artist - Song`
   titles for display and lyrics searches. Official-video labels are removed,
   and their title artist takes precedence over mismatched YouTube channel metadata.
-- Caches successful lookups and restores overlay position, size, and settings.
+- Caches up to 10,000 successful lookups on the device and restores overlay position, size,
+  and settings.
 - Provides opacity, blur, typography, accent-color, start-at-login, and cache
   controls in a separate settings window.
 - Supports configurable global playback hotkeys, with a Windows media-key
@@ -202,6 +206,7 @@ macOS release job.
 ```text
 src/main.ts                     Overlay UI, settings, and lyric synchronization
 src/settings.ts                 Settings decoding and per-platform defaults
+src/lyrics-cache.ts             Lyrics cache in IndexedDB, with word-sync bookkeeping
 src/styles.css                  Overlay and settings styles
 src-tauri/src/lib.rs            Shared commands, tray, lyrics providers, updater, Windows backends
 src-tauri/src/media_macos.rs    macOS now-playing reader and transport control

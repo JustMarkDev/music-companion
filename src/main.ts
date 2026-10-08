@@ -7,9 +7,10 @@ import "@fontsource-variable/source-sans-3";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { icons, toastIcon } from "./icons";
-import { LyricsCache } from "./lyrics-cache";
+import { createLyricsCache } from "./lyrics-cache";
 import {
   getLocalLyricsNotice,
+  hasWordTiming,
   isSameSong,
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
@@ -131,7 +132,12 @@ const appWindow = tauriAvailable ? getCurrentWindow() : null;
 const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
-const lyricCache = new LyricsCache(localStorage);
+const lyricCache = createLyricsCache(localStorage);
+// Songs already tried for word timing this session, so a failure is not retried on every play.
+const wordSyncTried = new Set<string>();
+// Word syncs run one at a time, so skipping through songs never floods lrc.red.
+let wordSyncQueue: Promise<void> = Promise.resolve();
+let wordSyncingTrackKey = "";
 // Rust survives frontend reloads during development, so keep request IDs newer
 // than any IDs issued by the previous WebView document.
 let lyricsRequestId = Date.now();
@@ -204,6 +210,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <section class="lyrics-viewport" id="lyrics-viewport" aria-live="polite">
         <div class="lyrics-list" id="lyrics-list"></div>
+        <p class="word-sync-status" id="word-sync-status" role="status" hidden>
+          <span class="searching-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          Syncing words
+        </p>
       </section>
 
       <aside class="settings-panel" id="settings-panel" hidden>
@@ -299,6 +309,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <input id="start-login" type="checkbox" role="switch" />
               <span class="switch-control" aria-hidden="true"></span>
             </label>
+            <label class="switch-row" for="word-sync">
+              <span><strong>Sync words with AI</strong><small>lrc.red's model times each word of songs that lack it. The first sync of a song can take 10 seconds or more; it is saved afterwards.</small></span>
+              <input id="word-sync" type="checkbox" role="switch" />
+              <span class="switch-control" aria-hidden="true"></span>
+            </label>
             <div class="lyrics-mode-setting">
               <span><strong>Lyrics script</strong><small>Choose the preferred lyric writing system</small></span>
               <div class="segmented-control" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
@@ -331,7 +346,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.playPause)}</button></span>
             </div>
             <div class="cache-setting">
-              <span><strong>Lyrics cache</strong><small>Up to 1000 songs saved on this device</small></span>
+              <span><strong>Lyrics cache</strong><small>Saved on this device</small></span>
               <button class="clear-cache-button" id="clear-lyrics-cache">Clear</button>
             </div>
           </div>
@@ -679,6 +694,12 @@ function wireUi() {
     renderSettings();
   });
 
+  document.querySelector<HTMLInputElement>("#word-sync")?.addEventListener("change", (event) => {
+    settings.wordSync = (event.currentTarget as HTMLInputElement).checked;
+    saveSettings();
+    syncCurrentSongWords();
+  });
+
   document
     .querySelector<HTMLInputElement>("#start-login")
     ?.addEventListener("change", async (event) => {
@@ -881,6 +902,7 @@ function wireWindowEvents() {
     renderSettings();
     applyLyrics(currentLyricsResult);
     renderLyrics();
+    syncCurrentSongWords();
   });
 }
 
@@ -1072,13 +1094,14 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
   }
 
   lyricsNotice = "";
+  renderWordSyncStatus();
   const lyricsMetadata = normalizeLyricsMetadata(media);
-  const cachedResult = lyricCache.get(expectedVariant);
+  const cachedResult = await lyricCache.get(expectedVariant);
+  if (currentTrackKey !== expectedTrackKey) return;
   if (cachedResult !== undefined) {
     console.info("[latency] lyrics cache hit", { key: expectedTrackKey });
-    if (currentTrackKey === expectedTrackKey) {
-      applyLyrics(cachedResult, localNotice);
-    }
+    applyLyrics(cachedResult, localNotice);
+    scheduleWordSync(media, expectedVariant, cachedResult);
     return;
   }
 
@@ -1101,7 +1124,7 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
     });
     const requestIsCurrent = requestId === lyricsRequestId && currentTrackKey === expectedTrackKey;
     if (requestIsCurrent) {
-      lyricCache.putIfCurrent(cacheGeneration, expectedVariant, result);
+      void lyricCache.putIfCurrent(cacheGeneration, expectedVariant, result);
     }
     console.info("[latency] lyrics ready", {
       key: expectedTrackKey,
@@ -1110,6 +1133,7 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
     });
     if (requestIsCurrent) {
       applyLyrics(result, localNotice);
+      scheduleWordSync(media, expectedVariant, result);
     }
   } catch {
     if (currentTrackKey === expectedTrackKey) {
@@ -1119,6 +1143,79 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
       renderLyrics();
     }
   }
+}
+
+/** Starts word timing for the song on screen, once its lyrics are in. */
+function syncCurrentSongWords() {
+  if (!currentPlaybackVariant || lyricsMode === "searching") return;
+  scheduleWordSync(currentMedia, currentPlaybackVariant, currentLyricsResult);
+}
+
+/**
+ * Asks lrc.red to time every word of a song whose lyrics are not word-timed,
+ * when the setting is on and the song has not been tried before.
+ */
+function scheduleWordSync(
+  media: MediaState,
+  variant: PlaybackVariant,
+  result: LyricsResult | null,
+) {
+  if (!tauriAvailable || isSettingsWindow || !settings.wordSync) return;
+  if (result?.instrumental || hasWordTiming(result?.syncedLyrics)) return;
+  // A title marked as a remix, live cut or cover has no lyrics to time.
+  if (!result && getLocalLyricsNotice(media.title)) return;
+  const trackKey = variantToken(variant);
+  if (wordSyncTried.has(trackKey)) return;
+  wordSyncTried.add(trackKey);
+  wordSyncQueue = wordSyncQueue.then(() => syncWords(media, variant, trackKey));
+}
+
+async function syncWords(media: MediaState, variant: PlaybackVariant, trackKey: string) {
+  // Waiting in the queue may have outlasted the song or the setting.
+  if (currentTrackKey !== trackKey || !settings.wordSync) {
+    wordSyncTried.delete(trackKey);
+    return;
+  }
+  if (await lyricCache.wordSyncAttempted(variant)) return;
+
+  wordSyncingTrackKey = trackKey;
+  renderWordSyncStatus();
+  try {
+    const metadata = normalizeLyricsMetadata(media);
+    const cacheGeneration = lyricCache.requestGeneration();
+    const startedAt = performance.now();
+    const synced = await invoke<LyricsResult | null>("sync_lyrics_words", {
+      title: metadata.title,
+      artist: metadata.artist,
+      durationMs: media.durationMs,
+    });
+    console.info("[latency] word sync", {
+      key: trackKey,
+      durationMs: Math.round(performance.now() - startedAt),
+      timed: Boolean(synced),
+    });
+    if (!synced) {
+      // lrc.red has nothing to time for this song, and asking again will not change that.
+      await lyricCache.markWordSyncAttempted(variant);
+      return;
+    }
+    // Kept even if the song has changed since, so playing it again needs no wait.
+    await lyricCache.putIfCurrent(cacheGeneration, variant, synced, { wordSyncAttempted: true });
+    if (currentTrackKey === trackKey) {
+      applyLyrics(synced, getLocalLyricsNotice(media.title));
+      renderLyrics();
+    }
+  } catch (error) {
+    console.warn("[lyrics] word sync failed", error);
+  } finally {
+    wordSyncingTrackKey = "";
+    renderWordSyncStatus();
+  }
+}
+
+function renderWordSyncStatus() {
+  const status = document.querySelector<HTMLElement>("#word-sync-status");
+  if (status) status.hidden = wordSyncingTrackKey === "" || wordSyncingTrackKey !== currentTrackKey;
 }
 
 function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null = null) {
@@ -1514,6 +1611,7 @@ function renderSettings() {
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
   document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  document.querySelector<HTMLInputElement>("#word-sync")!.checked = settings.wordSync;
   document.querySelectorAll<HTMLButtonElement>("[data-accent-mode]").forEach((button) => {
     const selected = button.dataset.accentMode === settings.accentMode;
     button.classList.toggle("active", selected);
@@ -1662,7 +1760,8 @@ function saveSettings() {
 }
 
 function clearLyricsCache() {
-  lyricCache.clear();
+  void lyricCache.clear();
+  wordSyncTried.clear();
   console.info("[latency] lyrics cache cleared");
 }
 

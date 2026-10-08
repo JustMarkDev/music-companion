@@ -1,19 +1,6 @@
 import { describe, test } from "vite-plus/test";
-import { LyricsCache } from "./lyrics-cache";
+import { LyricsCache, MemoryLyricsStore } from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
-
-class MemoryStorage {
-  values = new Map<string, string>();
-  getItem(key: string) {
-    return this.values.get(key) ?? null;
-  }
-  setItem(key: string, value: string) {
-    this.values.set(key, value);
-  }
-  removeItem(key: string) {
-    this.values.delete(key);
-  }
-}
 
 function variant(index: number, durationMs: number): PlaybackVariant {
   return {
@@ -35,28 +22,33 @@ function lyrics(index: number): LyricsResult {
   };
 }
 
-function filledCache(size: number) {
-  const cache = new LyricsCache(new MemoryStorage());
+async function filledCache(size: number) {
+  const cache = new LyricsCache(new MemoryLyricsStore());
   const generation = cache.requestGeneration();
   for (let index = 0; index < size; index += 1) {
-    cache.putIfCurrent(generation, variant(index, 180_000 + (index % 5) * 1_000), lyrics(index));
+    await cache.putIfCurrent(
+      generation,
+      variant(index, 180_000 + (index % 5) * 1_000),
+      lyrics(index),
+    );
   }
   return cache;
 }
 
-describe("lyrics cache", () => {
-  const hotCache = filledCache(500);
+describe("lyrics cache", async () => {
+  const hotCache = await filledCache(500);
   const probe = variant(250, 181_000);
+  await hotCache.get(probe);
 
   test("lyrics cache", async ({ bench }) => {
     await bench.compare(
-      bench("lyrics_cache_get_hot", () => {
-        hotCache.get(probe);
+      bench("lyrics_cache_get_hot", async () => {
+        await hotCache.get(probe);
       }),
-      bench("lyrics_cache_put_persist", () => {
-        const cache = new LyricsCache(new MemoryStorage());
+      bench("lyrics_cache_put_persist", async () => {
+        const cache = new LyricsCache(new MemoryLyricsStore());
         const generation = cache.requestGeneration();
-        cache.putIfCurrent(generation, variant(1, 180_000), lyrics(1));
+        await cache.putIfCurrent(generation, variant(1, 180_000), lyrics(1));
       }),
     );
   });
