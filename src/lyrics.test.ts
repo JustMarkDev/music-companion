@@ -8,6 +8,7 @@ import {
   isSameSong,
   normalizeLyricsMetadata,
   playbackVariant,
+  retimeRomanization,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   type LyricsResult,
@@ -130,6 +131,32 @@ describe("lyrics display selection", () => {
       words: ["Yume", "nara"],
       segments: [segment(1_000, 1_500, "Yume "), segment(1_500, 2_000, "nara")],
     });
+  });
+
+  it("moves a romanization timed as a whole with the words of the original", () => {
+    const lyrics = result({
+      lines: [
+        line(1_000, ["あなた", "わかって"], {
+          romanized: { segments: [segment(1_000, 2_000, "Anata wa wakatte")] },
+        }),
+      ],
+    });
+
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+
+    expect(displayed.text).toBe("Anata wa wakatte");
+    expect(displayed.segments?.map((piece) => piece.text)).toEqual(["Anata ", "wa ", "wakatte"]);
+    // The words fill the line from its start to its end.
+    expect(displayed.segments?.[0].startMs).toBe(1_000);
+    expect(displayed.segments?.[2].endMs).toBe(2_000);
+  });
+
+  it("leaves a romanization that is already timed word by word alone", () => {
+    const own = [segment(1_000, 1_500, "Yume "), segment(1_500, 2_000, "nara")];
+    const lyrics = result({
+      lines: [line(1_000, ["夢", "なら"], { romanized: { segments: own } })],
+    });
+    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0].segments).toEqual(own);
   });
 
   it("fills words only for songs whose words are timed", () => {
@@ -263,5 +290,37 @@ describe("romanization and translation", () => {
       expect(carryOverTracks(plain, untracked)).toBe(plain);
       expect(carryOverTracks(plain, null)).toBe(plain);
     });
+  });
+});
+
+describe("retimeRomanization", () => {
+  const original = [segment(0, 1_000, "ab"), segment(2_000, 4_000, "cd")];
+
+  it("lays the romanized words over the original ones by text length", () => {
+    const retimed = retimeRomanization(original, [segment(0, 4_000, "aa bb cc dd")]);
+
+    expect(retimed).toEqual([
+      segment(0, 500, "aa "),
+      segment(500, 1_000, "bb "),
+      segment(2_000, 3_000, "cc "),
+      segment(3_000, 4_000, "dd"),
+    ]);
+  });
+
+  it("lets a word that spans two original words run across the gap", () => {
+    const retimed = retimeRomanization(original, [segment(0, 4_000, "aaaaaa bb")]);
+
+    expect(retimed.map((word) => [word.startMs, word.endMs])).toEqual([
+      [0, 3_000],
+      [3_000, 4_000],
+    ]);
+  });
+
+  it("keeps the romanization as it is when there is nothing to time it by", () => {
+    const whole = [segment(0, 1_000, "kyou")];
+    expect(retimeRomanization([segment(0, 1_000, " ")], whole)).toBe(whole);
+    expect(retimeRomanization(original, [segment(0, 1_000, " ")])).toEqual([
+      segment(0, 1_000, " "),
+    ]);
   });
 });

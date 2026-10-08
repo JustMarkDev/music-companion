@@ -228,6 +228,61 @@ function nearestLine(startMs: number, lines: LyricsResultLine[]) {
   return nearest;
 }
 
+function joinSegments(segments: LyricSegment[]) {
+  return segments
+    .map((segment) => segment.text)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Gives each word of a romanization the time of the original words it sits
+ * under. Romanized words do not pair with the original ones, so the line is
+ * laid out by text length: a word starts where the share of the original text
+ * that precedes it is played.
+ */
+export function retimeRomanization(
+  original: LyricSegment[],
+  romanized: LyricSegment[],
+): LyricSegment[] {
+  const words = joinSegments(romanized).match(/\S+/g) ?? [];
+  const weights = original.map((segment) => Array.from(segment.text.replace(/\s+/g, "")).length);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (words.length === 0 || total === 0) return romanized;
+
+  // The time at which `share` (0-1) of the original text has been played. Where one
+  // original word ends and the next begins, a word's start takes the next one's time
+  // and its end the previous one's.
+  const timeAt = (share: number, isEnd: boolean) => {
+    let passed = 0;
+    const target = share * total;
+    for (let index = 0; index < original.length; index += 1) {
+      if (weights[index] === 0) continue;
+      const reached = isEnd ? target <= passed + weights[index] : target < passed + weights[index];
+      if (reached || index === original.length - 1) {
+        const { startMs, endMs } = original[index];
+        const within = Math.min(1, Math.max(0, (target - passed) / weights[index]));
+        return Math.round(startMs + within * (endMs - startMs));
+      }
+      passed += weights[index];
+    }
+    return original[original.length - 1].endMs;
+  };
+
+  const letters = words.reduce((sum, word) => sum + Array.from(word).length, 0);
+  let before = 0;
+  return words.map((word, index) => {
+    const startMs = timeAt(before / letters, false);
+    before += Array.from(word).length;
+    return {
+      startMs,
+      endMs: timeAt(before / letters, true),
+      text: index < words.length - 1 ? `${word} ` : word,
+    };
+  });
+}
+
 function buildLines(result: LyricsResult, romanizedLyrics: boolean): LyricLine[] {
   const lines = result.lines.map((line) =>
     createLyricLine(line, result.wordTimed, romanizedLyrics),
@@ -252,11 +307,12 @@ function createLyricLine(
 ): LyricLine {
   // A line the romanization skips keeps its original text.
   const shown = romanizedLyrics && line.romanized ? line.romanized : line;
-  const text = shown.segments
-    .map((segment) => segment.text)
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
+  // A romanization timed as a whole, under words that are timed one by one, moves with them.
+  const segments =
+    shown !== line && wordTimed && shown.segments.length < line.segments.length
+      ? retimeRomanization(line.segments, shown.segments)
+      : shown.segments;
+  const text = joinSegments(segments);
   const lyricLine: LyricLine = {
     timeMs: line.startMs,
     endTimeMs: Math.max(line.endMs, line.startMs + MIN_LINE_DURATION_MS),
@@ -264,7 +320,7 @@ function createLyricLine(
     words: text.match(/\S+/g) ?? [],
     voice: line.voice,
   };
-  if (wordTimed && shown.segments.length > 0) lyricLine.segments = shown.segments;
+  if (wordTimed && segments.length > 0) lyricLine.segments = segments;
   if (shown.background?.length) lyricLine.background = shown.background;
   if (line.translation) lyricLine.translation = line.translation;
   return lyricLine;
