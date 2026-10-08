@@ -2042,6 +2042,9 @@ mod lyrics {
         artist: &str,
         duration_ms: Option<u64>,
     ) -> Lookup {
+        // Featured-artist suffixes often point at the same recording indexed under
+        // the base title, so search and rank on the stripped title.
+        let title = strip_feature_credits(title);
         let query = format!("{title} {artist}");
         let broad_url = format!(
             "https://lrclib.net/api/search?q={}",
@@ -2049,7 +2052,7 @@ mod lyrics {
         );
         let structured_url = format!(
             "https://lrclib.net/api/search?track_name={}&artist_name={}",
-            urlencoding::encode(title),
+            urlencoding::encode(&title),
             urlencoding::encode(artist)
         );
         let request_started_at = std::time::Instant::now();
@@ -2082,12 +2085,65 @@ mod lyrics {
         results.retain(|item| duration_matches(item.duration, duration_ms));
 
         let normalized_artist = normalize(artist);
-        let normalized_title = canonical_title(title, &normalized_artist);
+        let normalized_title = canonical_title(&title, &normalized_artist);
         results.sort_by_key(|item| {
             ranking_key(item, &normalized_title, &normalized_artist, duration_ms)
         });
 
         Ok(results.into_iter().next().map(LrclibLyrics::into_result))
+    }
+
+    /// Drops trailing "(feat. X)", "[ft. X]", "(with X)" or " featuring X" credits.
+    /// Returns the title unchanged if stripping would leave nothing.
+    fn strip_feature_credits(title: &str) -> String {
+        let trimmed = title.trim();
+        let mut stripped = trimmed.to_string();
+        while let Some(next) = strip_one_feature_credit(&stripped) {
+            if next.is_empty() {
+                return trimmed.to_string();
+            }
+            stripped = next;
+        }
+        stripped
+    }
+
+    fn strip_one_feature_credit(title: &str) -> Option<String> {
+        let title = title.trim_end();
+        strip_trailing_feature_group(title).or_else(|| strip_trailing_feature_phrase(title))
+    }
+
+    fn strip_trailing_feature_group(title: &str) -> Option<String> {
+        let open_index = match title.chars().last()? {
+            ')' => title.rfind('(')?,
+            ']' => title.rfind('[')?,
+            _ => return None,
+        };
+        let inner = &title[open_index + 1..title.len() - 1];
+        is_feature_credit_label(inner).then(|| title[..open_index].trim_end().to_string())
+    }
+
+    fn strip_trailing_feature_phrase(title: &str) -> Option<String> {
+        let lower = title.to_ascii_lowercase();
+        [" feat. ", " feat ", " ft. ", " ft ", " featuring "]
+            .iter()
+            .find_map(|marker| lower.rfind(marker))
+            .map(|index| title[..index].trim_end().to_string())
+            .filter(|stripped| !stripped.is_empty())
+    }
+
+    fn is_feature_credit_label(label: &str) -> bool {
+        let label = label.trim().to_ascii_lowercase();
+        [
+            "feat.",
+            "feat ",
+            "ft.",
+            "ft ",
+            "featuring ",
+            "with ",
+            "con ",
+        ]
+        .iter()
+        .any(|prefix| label.starts_with(prefix))
     }
 
     fn merge_candidates(
@@ -3434,6 +3490,49 @@ mod lyrics {
                 });
                 assert_eq!(ranked[0].artist_name.as_deref(), Some("DanceHype"));
             });
+        }
+
+        #[test]
+        fn strips_featured_artist_credits_from_titles() {
+            for title in [
+                "Love Me Not (feat. Rex Orange County)",
+                "Love Me Not [ft. Rex Orange County]",
+                "Love Me Not (with Rex Orange County)",
+                "Love Me Not feat. Rex Orange County",
+                "Love Me Not featuring Rex Orange County",
+                "Love Me Not",
+            ] {
+                assert_eq!(strip_feature_credits(title), "Love Me Not", "{title}");
+            }
+            assert_eq!(
+                strip_feature_credits("Song (Official Video)"),
+                "Song (Official Video)"
+            );
+            assert_eq!(strip_feature_credits("(feat. X)"), "(feat. X)");
+        }
+
+        #[test]
+        fn base_title_synced_lyrics_outrank_feature_title_plain_lyrics() {
+            let normalized_artist = normalize("Ravyn Lenae");
+            let normalized_title = canonical_title(
+                &strip_feature_credits("Love Me Not (feat. Rex Orange County)"),
+                &normalized_artist,
+            );
+            let mut feat_plain = candidate_with_metadata(
+                "Love Me Not (feat. Rex Orange County)",
+                "Ravyn Lenae",
+                None,
+                213.5,
+                false,
+            );
+            feat_plain.synced_lyrics = None;
+            let mut results = [feat_plain, candidate("Love Me Not", "Ravyn Lenae", 213.0)];
+
+            results.sort_by_key(|item| {
+                ranking_key(item, &normalized_title, &normalized_artist, Some(213_500))
+            });
+
+            assert_eq!(results[0].track_name.as_deref(), Some("Love Me Not"));
         }
     }
 }
