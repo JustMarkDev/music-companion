@@ -107,18 +107,31 @@ pub fn parse(ttml: &str) -> Option<Lyrics> {
                 .map(|node| collapse_whitespace(&all_text(*node)))
                 .filter(|text| !text.is_empty());
 
-            Some(Line {
+            let agent = paragraph
+                .ancestors()
+                .find_map(|node| attribute_named(node, "agent"));
+            let line = Line {
                 start_ms,
                 end_ms,
-                voice: singers.voice(paragraph),
+                voice: 0,
                 text,
                 romanized,
                 translation,
-            })
+            };
+            Some((line, agent))
         })
         .collect::<Vec<_>>();
 
-    lines.sort_by_key(|line| line.start_ms);
+    // Voices are given in time order, so that the singer heard first leads even
+    // when the file lists its lines in another order.
+    lines.sort_by_key(|(line, _)| line.start_ms);
+    let lines = lines
+        .into_iter()
+        .map(|(mut line, agent)| {
+            line.voice = singers.voice(agent);
+            line
+        })
+        .collect::<Vec<_>>();
     (!lines.is_empty()).then_some(Lyrics { lines })
 }
 
@@ -175,12 +188,10 @@ impl<'a> Singers<'a> {
         }
     }
 
-    /// The singer is set on the line, or inherited from its section or the body.
-    fn voice(&mut self, paragraph: Node<'a, '_>) -> u8 {
-        let Some(agent) = paragraph
-            .ancestors()
-            .find_map(|node| attribute_named(node, "agent"))
-        else {
+    /// The voice of a line sung by `agent`, which the line sets or inherits from
+    /// its section or the body. Lines must come in time order.
+    fn voice(&mut self, agent: Option<&'a str>) -> u8 {
+        let Some(agent) = agent else {
             return 0;
         };
         if self.groups.contains(&agent) {
@@ -490,6 +501,25 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(voices, [0, 1]);
+    }
+
+    #[test]
+    fn the_singer_heard_first_leads_even_when_the_file_lists_lines_out_of_order() {
+        let ttml = format!(
+            r#"{HEAD}<body><div><p begin="3" end="4" ttm:agent="v3">Second</p><p begin="1" end="2" ttm:agent="v2">First</p></div></body></tt>"#
+        );
+
+        let lyrics = parse(&ttml).unwrap();
+
+        assert_eq!(texts(&lyrics.lines[0].text.segments), ["First"]);
+        assert_eq!(
+            lyrics
+                .lines
+                .iter()
+                .map(|line| line.voice)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
     }
 
     #[test]

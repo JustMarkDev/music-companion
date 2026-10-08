@@ -159,6 +159,43 @@ describe("lyrics display selection", () => {
     expect(selectLyricsDisplay(lyrics, "Song", true).lines[0].segments).toEqual(own);
   });
 
+  it("keeps background vocals when the romanization has none of its own", () => {
+    const background = [segment(1_200, 1_800, "(ooh)")];
+    const lyrics = result({
+      lines: [
+        line(1_000, ["あなた"], {
+          background,
+          romanized: { segments: [segment(1_000, 1_500, "Anata")] },
+        }),
+      ],
+    });
+
+    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+      text: "Anata",
+      background,
+    });
+    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0].background).toEqual(background);
+  });
+
+  it("shows the background vocals of the romanization when it has them", () => {
+    const romanizedBackground = [segment(1_200, 1_800, "(uu)")];
+    const lyrics = result({
+      lines: [
+        line(1_000, ["あなた"], {
+          background: [segment(1_200, 1_800, "(ooh)")],
+          romanized: {
+            segments: [segment(1_000, 1_500, "Anata")],
+            background: romanizedBackground,
+          },
+        }),
+      ],
+    });
+
+    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0].background).toEqual(
+      romanizedBackground,
+    );
+  });
+
   it("fills words only for songs whose words are timed", () => {
     const wholeLine = result({
       wordTimed: false,
@@ -247,7 +284,7 @@ describe("romanization and translation", () => {
       result({
         wordTimed: false,
         lines: [
-          { ...line(1_000, ["A"]), romanized: { segments: [segment(1_000, 2_000, "A")] } },
+          { ...line(1_000, ["A"]), romanized: { segments: [segment(1_000, 1_500, "A")] } },
           { ...line(4_000, ["B"]), translation: "Bee" },
         ],
       });
@@ -255,7 +292,8 @@ describe("romanization and translation", () => {
     it("gives the synced lines the tracks the song had", () => {
       const carried = carryOverTracks(synced([1_200, 4_100]), previous());
 
-      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_000, 2_000, "A")] });
+      // The synced line lasts twice as long as the line it follows, and the track with it.
+      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_200, 2_200, "A")] });
       expect(carried.lines[0].translation).toBeUndefined();
       expect(carried.lines[1].translation).toBe("Bee");
       expect(carried.lines[1].segments).toEqual(synced([1_200, 4_100]).lines[1].segments);
@@ -264,7 +302,7 @@ describe("romanization and translation", () => {
     it("matches lines by time when the sync has a different number of them", () => {
       const carried = carryOverTracks(synced([1_300, 2_900, 4_100]), previous());
 
-      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_000, 2_000, "A")] });
+      expect(carried.lines[0].romanized).toEqual({ segments: [segment(1_300, 2_300, "A")] });
       expect(carried.lines[1].romanized).toBeUndefined();
       expect(carried.lines[1].translation).toBeUndefined();
       expect(carried.lines[2].translation).toBe("Bee");
@@ -279,6 +317,39 @@ describe("romanization and translation", () => {
 
       const nothingNear = synced([20_000]);
       expect(carryOverTracks(nothingNear, previous())).toBe(nothingNear);
+    });
+
+    it("carries each track on its own when the synced line already has the other", () => {
+      const withTranslation = result({
+        lines: [line(1_000, ["Synced", "words"], { translation: "Own translation" })],
+      });
+      const carried = carryOverTracks(withTranslation, previous());
+
+      expect(carried.lines[0].translation).toBe("Own translation");
+      expect(carried.lines[0].romanized).toBeDefined();
+
+      const withRomanization = result({
+        lines: [
+          line(4_000, ["Synced", "words"], {
+            romanized: { segments: [segment(4_000, 5_000, "B")] },
+          }),
+        ],
+      });
+      const other = carryOverTracks(withRomanization, previous());
+
+      expect(other.lines[0].romanized).toEqual({ segments: [segment(4_000, 5_000, "B")] });
+      expect(other.lines[0].translation).toBe("Bee");
+    });
+
+    it("keeps the singer and the background vocals of the song, timed to the synced line", () => {
+      const duet = result({
+        wordTimed: false,
+        lines: [line(1_000, ["A"], { voice: 1, background: [segment(1_100, 1_300, "(oh)")] })],
+      });
+      const carried = carryOverTracks(synced([1_200]), duet);
+
+      expect(carried.lines[0].voice).toBe(1);
+      expect(carried.lines[0].background).toEqual([segment(1_400, 1_800, "(oh)")]);
     });
 
     it("leaves the sync alone when it has tracks of its own or the song had none", () => {

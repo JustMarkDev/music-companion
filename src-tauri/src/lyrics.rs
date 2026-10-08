@@ -326,28 +326,38 @@ fn rank_matches<T>(
 /// Like `rank_matches` for an edit of a song (a TV size or short version): the
 /// recording lrc.red has is the full one, so it may be any length from the
 /// edit's up, the closest first.
+///
+/// A length that only has to be at least the edit's cannot tell the song from
+/// the artist's others, so a title in another script is taken only from the
+/// first hit, the one lrc.red itself ranks highest. `hits` come in that order.
 fn rank_edit_matches<T>(
-    mut hits: Vec<(Candidate, T)>,
+    hits: Vec<(Candidate, T)>,
     title: &str,
     artist: &str,
     edit_ms: u64,
 ) -> Vec<(Candidate, T)> {
-    const LENGTH_TOLERANCE_MS: u64 = 3_000;
+    // Room for the rounding of durations; a recording shorter than the edit is not its full version.
+    const LENGTH_TOLERANCE_MS: u64 = 1_000;
     let normalized_artist = normalize(artist);
     let normalized_title = canonical_title(title, &normalized_artist);
-    hits.retain(|(candidate, _)| {
-        candidate
-            .duration
-            .filter(|seconds| seconds.is_finite())
-            .is_some_and(|seconds| (seconds * 1_000.0) as u64 + LENGTH_TOLERANCE_MS >= edit_ms)
-            && is_same_song(
-                candidate,
-                title,
-                &normalized_title,
-                &normalized_artist,
-                true,
-            )
-    });
+    let mut hits = hits
+        .into_iter()
+        .enumerate()
+        .filter(|(index, (candidate, _))| {
+            candidate
+                .duration
+                .filter(|seconds| seconds.is_finite())
+                .is_some_and(|seconds| (seconds * 1_000.0) as u64 + LENGTH_TOLERANCE_MS >= edit_ms)
+                && is_same_song(
+                    candidate,
+                    title,
+                    &normalized_title,
+                    &normalized_artist,
+                    *index == 0,
+                )
+        })
+        .map(|(_, hit)| hit)
+        .collect::<Vec<_>>();
     hits.sort_by_key(|(candidate, _)| {
         ranking_key(
             candidate,
@@ -393,9 +403,10 @@ fn strip_edit_marker(title: &str) -> Option<String> {
         })
         .filter(|open| is_marker(&title[open + 1..title.len() - 1]))
         .map(|open| title[..open].trim_end());
-    let dashed = title
-        .rsplit_once(" - ")
-        .filter(|(_, label)| is_marker(label))
+    let dashed = [" - ", " \u{2013} ", " \u{2014} "]
+        .iter()
+        .filter_map(|dash| title.rsplit_once(dash))
+        .find(|(_, label)| is_marker(label))
         .map(|(rest, _)| rest.trim_end());
     grouped
         .or(dashed)
@@ -651,11 +662,13 @@ async fn search_lrc_red_edit(
     edit_ms: u64,
 ) -> Lookup {
     let hits = lrc_red_hits(client, title, artist, None).await?;
-    let ranked = rank_edit_matches(hit_candidates(hits), title, artist, edit_ms)
-        .into_iter()
-        .take(1)
-        .collect();
-    first_lyrics(client, ranked).await
+    let mut ranked = rank_edit_matches(hit_candidates(hits), title, artist, edit_ms);
+    if ranked.is_empty() {
+        // As for any song, the text search finds what `/match.json` cannot.
+        let hits = lrc_red_text_hits(client, title, artist).await?;
+        ranked = rank_edit_matches(hit_candidates(hits), title, artist, edit_ms);
+    }
+    first_lyrics(client, ranked.into_iter().take(1).collect()).await
 }
 
 /// The lyrics of the first ranked recording that has any.
@@ -1095,6 +1108,8 @@ mod tests {
         assert_eq!(stripped("The Cruel Angel's Thesis (TV Size)"), expected);
         assert_eq!(stripped("The Cruel Angel's Thesis [Short Ver.]"), expected);
         assert_eq!(stripped("The Cruel Angel's Thesis - TV Size"), expected);
+        assert_eq!(stripped("The Cruel Angel's Thesis – TV Size"), expected);
+        assert_eq!(stripped("The Cruel Angel's Thesis — TV Size"), expected);
         assert_eq!(stripped("The Cruel Angel's Thesis"), None);
         assert_eq!(stripped("Song (Live)"), None);
         assert_eq!(stripped("(TV Size)"), None);
@@ -1127,16 +1142,52 @@ mod tests {
         let full = candidate("残酷な天使のテーゼ", "Yoko Takahashi", 245.9);
         let shorter = candidate("残酷な天使のテーゼ", "Yoko Takahashi", 60.0);
         let other_artist = candidate("残酷な天使のテーゼ", "Someone Else", 245.9);
+        // lrc.red lists the song it ranks highest first.
         let hits = vec![
+            (full, "full"),
             (shorter, "shorter"),
             (other_artist, "other"),
-            (full, "full"),
         ];
 
         let ranked = rank_edit_matches(hits, "The Cruel Angel's Thesis", "Yoko Takahashi", 93_200);
 
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].1, "full");
+    }
+
+    #[test]
+    fn an_edit_does_not_take_another_song_of_the_artist_in_another_script() {
+        // "IRIS OUT (TV Size)": lrc.red's own best hit is another song, and 感電 is longer.
+        let hits = vec![
+            (candidate("KICK BACK", "Kenshi Yonezu", 193.5), "kick back"),
+            (candidate("感電", "Kenshi Yonezu", 264.5), "another song"),
+        ];
+
+        assert!(rank_edit_matches(hits, "IRIS OUT", "Kenshi Yonezu", 93_000).is_empty());
+    }
+
+    #[test]
+    fn an_edit_with_the_same_title_is_matched_wherever_lrc_red_lists_it() {
+        let hits = vec![
+            (candidate("Different Tune", "Artist", 200.0), "other"),
+            (candidate("Song", "Artist", 200.0), "full"),
+        ];
+
+        let ranked = rank_edit_matches(hits, "Song", "Artist", 90_000);
+
+        assert_eq!(ranked.iter().map(|hit| hit.1).collect::<Vec<_>>(), ["full"]);
+    }
+
+    #[test]
+    fn an_edit_prefers_the_full_version_to_a_recording_shorter_than_itself() {
+        let hits = vec![
+            (candidate("Song", "Artist", 91.0), "slightly shorter"),
+            (candidate("Song", "Artist", 245.9), "full"),
+        ];
+
+        let ranked = rank_edit_matches(hits, "Song", "Artist", 93_200);
+
+        assert_eq!(ranked.iter().map(|hit| hit.1).collect::<Vec<_>>(), ["full"]);
     }
 
     fn lrc_red_hit(isrc: &str, title: &str) -> LrcRedHit {

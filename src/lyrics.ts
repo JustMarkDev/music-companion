@@ -188,13 +188,15 @@ export function hasTranslation(result: LyricsResult | null | undefined) {
 }
 
 /**
- * Gives freshly word-synced lyrics the romanization and translation the song
- * had before, which neither the sync nor the TTML lrc.red serves afterwards
- * carry. Two lines are paired when each is the other's nearest in time, within
- * a few seconds, so a track is never put on a line it does not belong to.
+ * Gives freshly word-synced lyrics what the song had before and the sync does not
+ * carry: its romanization, translation, background vocals and the singer of each
+ * line. Each is carried on its own, so one the synced line already has does not
+ * stop the others. Two lines are paired when each is the other's nearest in time,
+ * within a few seconds, so nothing is put on a line it does not belong to; what is
+ * carried is re-timed to the synced line.
  */
 export function carryOverTracks(synced: LyricsResult, previous: LyricsResult | null | undefined) {
-  if (!previous || hasRomanization(synced) || hasTranslation(synced)) return synced;
+  if (!previous) return synced;
 
   const forward = synced.lines.map((line) => nearestLine(line.startMs, previous.lines));
   const backward = previous.lines.map((line) => nearestLine(line.startMs, synced.lines));
@@ -202,16 +204,47 @@ export function carryOverTracks(synced: LyricsResult, previous: LyricsResult | n
   const lines = synced.lines.map((line, index) => {
     const match = forward[index];
     if (match < 0 || backward[match] !== index) return line;
-    const { romanized, translation } = previous.lines[match];
-    if (!romanized && !translation) return line;
-    carried = true;
-    return {
-      ...line,
-      ...(romanized ? { romanized } : {}),
-      ...(translation ? { translation } : {}),
-    };
+    const earlier = previous.lines[match];
+    const carriedLine = carryOverLine(line, earlier);
+    if (carriedLine !== line) carried = true;
+    return carriedLine;
   });
   return carried ? { ...synced, lines } : synced;
+}
+
+/** `line` with what `earlier`, the same line before a sync, had and it lacks. */
+function carryOverLine(line: LyricsResultLine, earlier: LyricsResultLine): LyricsResultLine {
+  const extras: Partial<LyricsResultLine> = {};
+  if (earlier.romanized && !line.romanized) {
+    extras.romanized = {
+      segments: retimeSegments(earlier.romanized.segments, earlier, line),
+      ...(earlier.romanized.background?.length
+        ? { background: retimeSegments(earlier.romanized.background, earlier, line) }
+        : {}),
+    };
+  }
+  if (earlier.translation && !line.translation) extras.translation = earlier.translation;
+  if (earlier.background?.length && !line.background?.length) {
+    extras.background = retimeSegments(earlier.background, earlier, line);
+  }
+  if (earlier.voice > 0 && line.voice === 0) extras.voice = earlier.voice;
+  return Object.keys(extras).length > 0 ? { ...line, ...extras } : line;
+}
+
+/** Maps times within the span of the line `from` onto the span of the line `to`. */
+function retimeSegments(
+  segments: LyricSegment[],
+  from: Pick<LyricsResultLine, "startMs" | "endMs">,
+  to: Pick<LyricsResultLine, "startMs" | "endMs">,
+): LyricSegment[] {
+  const length = from.endMs - from.startMs;
+  const scale = length > 0 ? (to.endMs - to.startMs) / length : 1;
+  const at = (ms: number) => Math.max(0, Math.round(to.startMs + (ms - from.startMs) * scale));
+  return segments.map((segment) => ({
+    ...segment,
+    startMs: at(segment.startMs),
+    endMs: at(segment.endMs),
+  }));
 }
 
 /** Index of the line that starts closest to `startMs`, or -1 when none is within tolerance. */
@@ -321,7 +354,9 @@ function createLyricLine(
     voice: line.voice,
   };
   if (wordTimed && segments.length > 0) lyricLine.segments = segments;
-  if (shown.background?.length) lyricLine.background = shown.background;
+  // A transliteration of the lead vocal has no background vocals of its own.
+  const background = shown.background?.length ? shown.background : line.background;
+  if (background?.length) lyricLine.background = background;
   if (line.translation) lyricLine.translation = line.translation;
   return lyricLine;
 }
