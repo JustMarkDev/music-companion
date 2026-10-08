@@ -13,8 +13,8 @@ transparent, always-on-top Tauri window.
 - Displays synchronized lyrics with smooth highlighting and scrolling.
 - Highlights word by word when a provider times individual words (lrc.red and Netease do
   for many tracks), and line by line otherwise. Romanized lyrics keep the word timing.
-- Romanizes Japanese, Korean, and Chinese lyrics. lrc.red's own romanization is used when it
-  has one; otherwise the lyrics are romanized on the device.
+- Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics when lrc.red provides a
+  transliteration. Japanese, Korean, and Chinese lyrics are otherwise romanized on the device.
 - Queries lrc.red, LRCLIB, and Netease in parallel. Word-timed lyrics are preferred, then
   the highest-priority provider with synchronized lyrics, in that order. Netease is an unofficial,
   unauthenticated API and may change or stop working without notice.

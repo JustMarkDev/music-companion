@@ -1501,8 +1501,9 @@ mod romanization {
 
     /// Builds an enhanced LRC from the transliteration track of an lrc.red TTML
     /// file, keeping the word timing the provider gives it. Lines the track
-    /// skips (already Latin, say) keep their original text, so the result lines
-    /// up with the original lyrics. `None` when the file has no transliteration.
+    /// skips are romanized locally when they need it and otherwise keep their
+    /// original text, so the result lines up with the original lyrics. `None`
+    /// when the file has no transliteration.
     pub fn romanize_ttml(ttml: &str) -> Option<String> {
         let document = roxmltree::Document::parse(ttml).ok()?;
         let transliterated = document
@@ -1530,6 +1531,7 @@ mod romanization {
 
                 let mut words = Vec::new();
                 collect_ttml_words(source, &mut words);
+                let mut line = format!("[{}]", lrc_timestamp(begin));
                 if words.is_empty() {
                     let text = source
                         .descendants()
@@ -1537,28 +1539,32 @@ mod romanization {
                         .filter_map(|node| node.text())
                         .collect::<String>();
                     let text = text.trim();
-                    return (!text.is_empty()).then(|| {
-                        let text = if romanized.is_some() {
-                            capitalize_first_letter(text)
-                        } else {
-                            text.to_string()
-                        };
-                        format!("[{}]{text}", lrc_timestamp(begin))
+                    if text.is_empty() {
+                        return None;
+                    }
+                    line.push_str(&if romanized.is_some() {
+                        capitalize_first_letter(text)
+                    } else {
+                        text.to_string()
                     });
-                }
-                if romanized.is_some() {
-                    words[0].text = capitalize_first_letter(&words[0].text);
-                }
-
-                let mut line = format!("[{}]", lrc_timestamp(begin));
-                for word in &words {
-                    line.push_str(&format!("<{}>{}", lrc_timestamp(word.begin), word.text));
-                    if word.space_after {
-                        line.push(' ');
+                } else {
+                    if romanized.is_some() {
+                        words[0].text = capitalize_first_letter(&words[0].text);
+                    }
+                    for word in &words {
+                        line.push_str(&format!("<{}>{}", lrc_timestamp(word.begin), word.text));
+                        if word.space_after {
+                            line.push(' ');
+                        }
+                    }
+                    if let Some(end) = end {
+                        line.push_str(&format!("<{}>", lrc_timestamp(end)));
                     }
                 }
-                if let Some(end) = end {
-                    line.push_str(&format!("<{}>", lrc_timestamp(end)));
+                // A line the track skips would otherwise stay in its own script
+                // between romanized ones, so the local romanization covers it.
+                if romanized.is_none() && may_have_provider_romanization(&line) {
+                    line = romanize_lrc(&line).unwrap_or(line);
                 }
                 Some(line)
             })
@@ -1890,6 +1896,23 @@ mod romanization {
         }
 
         #[test]
+        fn lines_the_transliteration_skips_are_romanized_locally() {
+            let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal"><head><metadata><transliterations><transliteration xml:lang="ja-Latn"><text for="L1">kyou wa</text></transliteration></transliterations></metadata></head><body><div><p begin="1" end="2" lrc:key="L1">今日は</p><p begin="3" end="4" lrc:key="L2"><span begin="3" end="4">ありがとう</span></p><p begin="5" end="6" lrc:key="L3">Hello</p></div></body></tt>"#;
+            let expected = [
+                "[00:01.00]Kyou wa",
+                "[00:03.00]<00:03.00>Arigatou<00:04.00>",
+                "[00:05.00]Hello",
+            ];
+            assert_eq!(
+                romanize_ttml(ttml),
+                Some(expected.join(
+                    "
+"
+                ))
+            );
+        }
+
+        #[test]
         fn ttml_without_a_transliteration_is_not_romanized() {
             let without = TTML
                 .replace("transliteration", "unused")
@@ -2072,6 +2095,8 @@ mod lyrics {
     const PROVIDER_TIMEOUT: Duration = Duration::from_secs(6);
     /// Longest lrc.red's romanization may take after its lyrics have arrived.
     const LRC_RED_ROMANIZATION_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Less than this is not enough to finish the request, so it is not sent.
+    const LRC_RED_ROMANIZATION_MIN_BUDGET: Duration = Duration::from_millis(100);
 
     type Lookup = Result<Option<LyricsResult>, String>;
 
@@ -2775,10 +2800,12 @@ mod lyrics {
         // The LRC has no romanization, but the TTML does, with word timing. It
         // is only worth a request for scripts that have one, and it must not
         // cost the lyrics themselves, so it gets what is left of the deadline.
-        let romanization = if super::romanization::may_have_provider_romanization(&lrc) {
-            let budget = PROVIDER_TIMEOUT
-                .saturating_sub(started_at.elapsed() + Duration::from_millis(500))
-                .min(LRC_RED_ROMANIZATION_TIMEOUT);
+        let budget = PROVIDER_TIMEOUT
+            .saturating_sub(started_at.elapsed() + Duration::from_millis(500))
+            .min(LRC_RED_ROMANIZATION_TIMEOUT);
+        let romanization = if super::romanization::may_have_provider_romanization(&lrc)
+            && budget >= LRC_RED_ROMANIZATION_MIN_BUDGET
+        {
             fetch_lrc_red_romanization(client, &isrc, budget).await
         } else {
             None
