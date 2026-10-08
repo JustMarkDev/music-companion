@@ -1479,6 +1479,146 @@ mod romanization {
         changed.then_some(lines)
     }
 
+    /// True when `lyrics` use a script that lrc.red may ship a transliteration
+    /// for (Japanese, Korean, Chinese, Arabic, Devanagari), so Latin lyrics do
+    /// not cost an extra request.
+    pub fn may_have_provider_romanization(lyrics: &str) -> bool {
+        lyrics.chars().any(|character| {
+            is_kana(character)
+                || is_hangul(character)
+                || is_han(character)
+                || matches!(character as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x0900..=0x097F)
+        })
+    }
+
+    /// One timed word of a TTML line. Adjacent spans without whitespace between
+    /// them are syllables of the same word.
+    struct TtmlWord {
+        begin: f64,
+        text: String,
+        space_after: bool,
+    }
+
+    /// Builds an enhanced LRC from the transliteration track of an lrc.red TTML
+    /// file, keeping the word timing the provider gives it. Lines the track
+    /// skips (already Latin, say) keep their original text, so the result lines
+    /// up with the original lyrics. `None` when the file has no transliteration.
+    pub fn romanize_ttml(ttml: &str) -> Option<String> {
+        let document = roxmltree::Document::parse(ttml).ok()?;
+        let transliterated = document
+            .descendants()
+            .find(|node| node.has_tag_name("transliteration"))?
+            .children()
+            .filter(|node| node.has_tag_name("text"))
+            .filter_map(|node| Some((node.attribute("for")?, node)))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut romanized_lines = 0;
+        let lines = document
+            .descendants()
+            .filter(|node| node.has_tag_name("p"))
+            .filter_map(|paragraph| {
+                let begin = paragraph.attribute("begin").and_then(parse_ttml_time)?;
+                let end = paragraph.attribute("end").and_then(parse_ttml_time);
+                let key = paragraph
+                    .attributes()
+                    .find(|attribute| attribute.name() == "key")
+                    .map(|attribute| attribute.value());
+                let romanized = key.and_then(|key| transliterated.get(key));
+                let source = romanized.copied().unwrap_or(paragraph);
+                romanized_lines += usize::from(romanized.is_some());
+
+                let mut words = Vec::new();
+                collect_ttml_words(source, &mut words);
+                if words.is_empty() {
+                    let text = source
+                        .descendants()
+                        .filter(|node| node.is_text())
+                        .filter_map(|node| node.text())
+                        .collect::<String>();
+                    let text = text.trim();
+                    return (!text.is_empty()).then(|| {
+                        let text = if romanized.is_some() {
+                            capitalize_first_letter(text)
+                        } else {
+                            text.to_string()
+                        };
+                        format!("[{}]{text}", lrc_timestamp(begin))
+                    });
+                }
+                if romanized.is_some() {
+                    words[0].text = capitalize_first_letter(&words[0].text);
+                }
+
+                let mut line = format!("[{}]", lrc_timestamp(begin));
+                for word in &words {
+                    line.push_str(&format!("<{}>{}", lrc_timestamp(word.begin), word.text));
+                    if word.space_after {
+                        line.push(' ');
+                    }
+                }
+                if let Some(end) = end {
+                    line.push_str(&format!("<{}>", lrc_timestamp(end)));
+                }
+                Some(line)
+            })
+            .collect::<Vec<_>>();
+
+        (romanized_lines > 0).then(|| lines.join("\n"))
+    }
+
+    /// Collects the timed spans below `node`, descending into spans that wrap
+    /// others (background vocals).
+    fn collect_ttml_words(node: roxmltree::Node, words: &mut Vec<TtmlWord>) {
+        for child in node.children() {
+            if child.is_element() {
+                if child.children().any(|grandchild| grandchild.is_element()) {
+                    collect_ttml_words(child, words);
+                } else if let Some(begin) = child.attribute("begin").and_then(parse_ttml_time) {
+                    let text = child.text().unwrap_or_default();
+                    if text.starts_with(char::is_whitespace)
+                        && let Some(previous) = words.last_mut()
+                    {
+                        previous.space_after = true;
+                    }
+                    if !text.trim().is_empty() {
+                        words.push(TtmlWord {
+                            begin,
+                            text: text.trim().to_string(),
+                            space_after: text.ends_with(char::is_whitespace),
+                        });
+                    }
+                }
+            } else if child.text().is_some_and(|text| text.trim().is_empty())
+                && let Some(previous) = words.last_mut()
+            {
+                previous.space_after = true;
+            }
+        }
+    }
+
+    /// Seconds from a TTML clock value such as `29.188`, `1:00.249` or `0:01:02.5`.
+    fn parse_ttml_time(value: &str) -> Option<f64> {
+        value
+            .trim()
+            .trim_end_matches('s')
+            .split(':')
+            .try_fold(0.0, |total, part| {
+                Some(total * 60.0 + part.parse::<f64>().ok()?)
+            })
+    }
+
+    /// `mm:ss.xx`, the timestamp form LRC tags use.
+    fn lrc_timestamp(seconds: f64) -> String {
+        let centiseconds = (seconds.max(0.0) * 100.0).round() as u64;
+        format!(
+            "{:02}:{:02}.{:02}",
+            centiseconds / 6000,
+            centiseconds / 100 % 60,
+            centiseconds % 100
+        )
+    }
+
     /// Romanizes the text between word tags one word at a time, so each romanized
     /// word keeps the timing of the original. Japanese and Chinese romanization is
     /// space-separated, so a space is added between words that had none; Korean
@@ -1726,8 +1866,53 @@ mod romanization {
 
     #[cfg(test)]
     mod tests {
-        use super::romanize_lrc;
+        use super::{may_have_provider_romanization, romanize_lrc, romanize_ttml};
         use std::time::{Duration, Instant};
+
+        /// Shaped like an lrc.red file: the transliteration sits in a metadata
+        /// element with its own default namespace, and L2 has no entry.
+        const TTML: &str = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xml:lang="ja"><head><metadata><sourceMetadata xmlns="http://lrc.red/lyric-ttml-internal"><translations><translation type="subtitle" xml:lang="en-US"><text for="L1">If only it were a dream</text></translation></translations><transliterations><transliteration xml:lang="ja-Latn"><text for="L1"><span begin="1.201" end="1.595" xmlns="http://www.w3.org/ns/ttml">yume</span> <span begin="1.595" end="2.112" xmlns="http://www.w3.org/ns/ttml">nara</span> <span begin="2.112" end="2.611" xmlns="http://www.w3.org/ns/ttml">ba</span><span begin="2.611" end="3.312" xmlns="http://www.w3.org/ns/ttml">dore</span></text><text for="L3"><span begin="1:00.249" end="1:01.000" xmlns="http://www.w3.org/ns/ttml">a &amp; b</span></text></transliteration></transliterations></sourceMetadata></metadata></head><body dur="1:05.000"><div><p begin="1.201" end="3.312" lrc:key="L1" ttm:agent="v1"><span begin="1.201" end="3.312">夢ならばどれ</span></p><p begin="4.000" end="5.500" lrc:key="L2" ttm:agent="v1"><span begin="4.000" end="4.700">Hello</span> <span begin="4.700" end="5.500">there</span></p><p begin="1:00.249" end="1:01.000" lrc:key="L3" ttm:agent="v1"><span begin="1:00.249" end="1:01.000">A</span></p></div></body></tt>"#;
+
+        #[test]
+        fn romanizes_from_the_ttml_transliteration_with_its_word_timing() {
+            let expected = [
+                "[00:01.20]<00:01.20>Yume <00:01.60>nara <00:02.11>ba<00:02.61>dore<00:03.31>",
+                "[00:04.00]<00:04.00>Hello <00:04.70>there<00:05.50>",
+                "[01:00.25]<01:00.25>A & b<01:01.00>",
+            ];
+            assert_eq!(
+                romanize_ttml(TTML),
+                Some(expected.join(
+                    "
+"
+                ))
+            );
+        }
+
+        #[test]
+        fn ttml_without_a_transliteration_is_not_romanized() {
+            let without = TTML
+                .replace("transliteration", "unused")
+                .replace("transliterations", "unused");
+            assert_eq!(romanize_ttml(&without), None);
+            assert_eq!(romanize_ttml("not xml"), None);
+        }
+
+        #[test]
+        fn ttml_romanization_covers_line_timed_lyrics() {
+            let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:lrc="http://lrc.red/lyric-ttml-internal"><head><metadata><transliterations><transliteration xml:lang="ko-Latn"><text for="L1">annyeong</text></transliteration></transliterations></metadata></head><body><div><p begin="2.5" end="4" lrc:key="L1">안녕</p></div></body></tt>"#;
+            assert_eq!(romanize_ttml(ttml).as_deref(), Some("[00:02.50]Annyeong"));
+        }
+
+        #[test]
+        fn only_scripts_with_a_provider_romanization_are_looked_up() {
+            assert!(may_have_provider_romanization("[00:01.00]夢ならば"));
+            assert!(may_have_provider_romanization("[00:01.00]한글"));
+            assert!(may_have_provider_romanization("[00:01.00]मेरा"));
+            assert!(may_have_provider_romanization("[00:01.00]حبيبي"));
+            assert!(!may_have_provider_romanization("[00:01.00]Señor, ça va"));
+            assert!(!may_have_provider_romanization("[00:01.00]Привет"));
+        }
 
         #[test]
         fn romanizes_each_timed_word_and_keeps_its_tags() {
@@ -1885,6 +2070,8 @@ mod lyrics {
     /// makes, not each one), so a stalled service cannot hold up an answer a
     /// lower-priority provider already has.
     const PROVIDER_TIMEOUT: Duration = Duration::from_secs(6);
+    /// Longest lrc.red's romanization may take after its lyrics have arrived.
+    const LRC_RED_ROMANIZATION_TIMEOUT: Duration = Duration::from_secs(2);
 
     type Lookup = Result<Option<LyricsResult>, String>;
 
@@ -2402,22 +2589,28 @@ mod lyrics {
     }
 
     fn synced_result(source: &str, candidate: LrclibLyrics, synced_lyrics: String) -> LyricsResult {
-        build_result(source, candidate, false, Some(synced_lyrics))
+        build_result(source, candidate, false, Some(synced_lyrics), None)
     }
 
     fn instrumental_result(source: &str, candidate: LrclibLyrics) -> LyricsResult {
-        build_result(source, candidate, true, None)
+        build_result(source, candidate, true, None, None)
     }
 
+    /// `provider_romanization` is the provider's own romanization of
+    /// `synced_lyrics`; it takes priority over the local one, which is only
+    /// worked out when the provider has none.
     fn build_result(
         source: &str,
         candidate: LrclibLyrics,
         instrumental: bool,
         synced_lyrics: Option<String>,
+        provider_romanization: Option<String>,
     ) -> LyricsResult {
-        let romanized_synced_lyrics = synced_lyrics
-            .as_deref()
-            .and_then(super::romanization::romanize_lrc);
+        let romanized_synced_lyrics = provider_romanization.or_else(|| {
+            synced_lyrics
+                .as_deref()
+                .and_then(super::romanization::romanize_lrc)
+        });
         LyricsResult {
             source: source.to_string(),
             track_name: candidate.track_name.unwrap_or_default(),
@@ -2579,7 +2772,66 @@ mod lyrics {
             "[latency] lrc.red total={}ms isrc={isrc}",
             started_at.elapsed().as_millis()
         );
-        Ok(Some(synced_result("lrc.red", candidate, lrc)))
+        // The LRC has no romanization, but the TTML does, with word timing. It
+        // is only worth a request for scripts that have one, and it must not
+        // cost the lyrics themselves, so it gets what is left of the deadline.
+        let romanization = if super::romanization::may_have_provider_romanization(&lrc) {
+            let budget = PROVIDER_TIMEOUT
+                .saturating_sub(started_at.elapsed() + Duration::from_millis(500))
+                .min(LRC_RED_ROMANIZATION_TIMEOUT);
+            fetch_lrc_red_romanization(client, &isrc, budget).await
+        } else {
+            None
+        };
+        Ok(Some(build_result(
+            "lrc.red",
+            candidate,
+            false,
+            Some(lrc),
+            romanization,
+        )))
+    }
+
+    /// lrc.red's romanization of one recording, taken from its TTML. Any
+    /// failure is a miss: the local romanization stands in for it.
+    async fn fetch_lrc_red_romanization(
+        client: &reqwest::Client,
+        isrc: &str,
+        budget: Duration,
+    ) -> Option<String> {
+        let started_at = std::time::Instant::now();
+        let fetched = tokio::time::timeout(budget, async {
+            let response = client
+                .get(format!(
+                    "https://lrc.red/s/{}.ttml",
+                    urlencoding::encode(isrc)
+                ))
+                .send()
+                .await
+                .map_err(|error| provider_error("lrc.red romanization", error))?;
+            if !response.status().is_success() {
+                return Err(provider_error("lrc.red romanization", response.status()));
+            }
+            response
+                .text()
+                .await
+                .map_err(|error| provider_error("lrc.red romanization", error))
+        })
+        .await
+        .unwrap_or_else(|_| Err(provider_error("lrc.red romanization", "timed out")));
+        let romanized = match fetched {
+            Ok(ttml) => super::romanization::romanize_ttml(&ttml),
+            Err(error) => {
+                println!("[lyrics] {error}");
+                None
+            }
+        };
+        println!(
+            "[latency] lrc.red romanization={}ms {}",
+            started_at.elapsed().as_millis(),
+            if romanized.is_some() { "found" } else { "none" }
+        );
+        romanized
     }
 
     /// The enhanced LRC for one recording, or `None` when it has no usable file.
@@ -3475,6 +3727,31 @@ mod lyrics {
             );
             assert!(!strip_word_tags(&romanized).contains(['今', 'あ']));
             assert_eq!(result.source, "lrc.red");
+        }
+
+        #[test]
+        fn the_providers_romanization_beats_the_local_one() {
+            let provider = "[00:01.00]<00:01.00>Kyou wa<00:02.00>";
+            let result = build_result(
+                "lrc.red",
+                metadata_candidate(None, None, None, None),
+                false,
+                Some("[00:01.00]<00:01.00>今日は<00:02.00>".to_string()),
+                Some(provider.to_string()),
+            );
+            assert_eq!(result.romanized_synced_lyrics.as_deref(), Some(provider));
+        }
+
+        #[test]
+        fn the_local_romanization_stands_in_when_the_provider_has_none() {
+            let result = build_result(
+                "lrc.red",
+                metadata_candidate(None, None, None, None),
+                false,
+                Some("[00:01.00]<00:01.00>今日は<00:02.00>".to_string()),
+                None,
+            );
+            assert!(result.romanized_synced_lyrics.is_some());
         }
 
         fn report_ops_per_sec(name: &str, mut work: impl FnMut()) {
