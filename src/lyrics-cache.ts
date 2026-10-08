@@ -47,6 +47,7 @@ export class LyricsCache {
   private nextId = 1;
   private loading: Promise<void> | null = null;
   private writes: Promise<void> = Promise.resolve();
+  private failedWrites = 0;
 
   constructor(
     private readonly store: LyricsStore,
@@ -68,6 +69,9 @@ export class LyricsCache {
     const generation = this.generation;
     const result = await this.readFromStore(entry);
     if (generation !== this.generation) return undefined;
+    // A put or an eviction during the read may have replaced the entry, which
+    // then must not come back; what is indexed now is the answer.
+    if (!this.isIndexed(entry)) return this.get(variant);
     if (!result) {
       this.drop(entry);
       return undefined;
@@ -149,21 +153,31 @@ export class LyricsCache {
     await this.importLegacyCache();
   }
 
-  /** Moves the pre-IndexedDB cache over, oldest first, so it keeps its eviction order. */
+  /**
+   * Moves the pre-IndexedDB cache over, oldest first, so it keeps its eviction
+   * order. The old copy is only removed once every write has reached the store;
+   * if one fails, it stays and the next launch tries again.
+   */
   private async importLegacyCache() {
     const raw = this.legacyStorage?.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
     if (!raw) return;
-    this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+
+    const failedBefore = this.failedWrites;
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
+      if (!Array.isArray(parsed)) throw new Error("Invalid lyrics cache");
       for (const item of parsed.filter(isLegacyEntry)) {
         this.put(item.variant, normalizeResult(item.result), {}, item.cachedAt);
       }
     } catch {
-      // A malformed legacy cache is discarded, as before.
+      // A malformed legacy cache has nothing to keep and is discarded.
+      this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+      return;
     }
     await this.writes;
+    if (this.failedWrites === failedBefore) {
+      this.legacyStorage?.removeItem(LEGACY_LYRICS_CACHE_STORAGE_KEY);
+    }
   }
 
   private put(
@@ -237,8 +251,13 @@ export class LyricsCache {
     }
   }
 
+  private isIndexed(entry: CacheEntry) {
+    return this.entriesByMetadataKey.get(entry.variant.metadataKey)?.includes(entry) === true;
+  }
+
   private enqueue(operation: () => Promise<void>) {
     this.writes = this.writes.then(operation).catch((error) => {
+      this.failedWrites += 1;
       console.warn("Unable to update the lyrics cache", error);
     });
     return this.writes;

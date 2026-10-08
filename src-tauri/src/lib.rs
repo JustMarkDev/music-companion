@@ -2398,10 +2398,11 @@ mod lyrics {
             .any(|char| char.is_alphabetic() && !is_latin_letter(char))
     }
 
-    /// True when only one of the two titles is written in a non-Latin script,
+    /// True when exactly one of the two titles is written in a non-Latin script,
     /// so a differing spelling says nothing about whether they are the same song.
+    /// A hit without a title tells nothing about its script.
     fn titles_differ_in_script(candidate_title: Option<&str>, playing_title: &str) -> bool {
-        candidate_title.is_none_or(|title| {
+        candidate_title.is_some_and(|title| {
             has_non_latin_letters(title) != has_non_latin_letters(playing_title)
         })
     }
@@ -2410,8 +2411,8 @@ mod lyrics {
     /// providers return fuzzy results (remixes, covers, other artists), so a hit
     /// needs a matching length and a matching title. The same song can be
     /// credited to an artist written in another script, so the artist need not
-    /// match; the title may be missing only when it is written in another script
-    /// too, never to pass off another song by the same artist.
+    /// match; a title may differ only when it is written in another script, never
+    /// to pass off another song by the same artist.
     fn rank_matches<T>(
         mut hits: Vec<(LrclibLyrics, T)>,
         title: &str,
@@ -2729,9 +2730,11 @@ mod lyrics {
         end: f64,
     }
 
-    /// `centiseconds` as `mm:ss.xx`, the precision of lrc.red's own LRC files.
+    /// `seconds` as `mm:ss.xx`, rounded to centiseconds in one step the way
+    /// lrc.red's own LRC files are: a begin of 37.175 s is `00:37.17` there, which
+    /// rounding to milliseconds first would turn into `00:37.18`.
     fn lrc_timestamp_centis(seconds: f64) -> String {
-        let centiseconds = ((seconds * 1_000.0).round() as u64 + 5) / 10;
+        let centiseconds = (seconds * 100.0).round().max(0.0) as u64;
         format!(
             "{:02}:{:02}.{:02}",
             centiseconds / 6_000,
@@ -2815,16 +2818,24 @@ mod lyrics {
         {
             matches = lrc_red_matches(client, title, primary, duration_ms).await?;
         }
-        let Some((candidate, isrc)) = matches.into_iter().next() else {
+        // A recording lrc.red cannot time falls through to the next best one.
+        let ranked = matches.into_iter().take(3).collect();
+        let found = first_found(ranked, |isrc: String| async move {
+            sync_lrc_red_words(client, &isrc).await
+        })
+        .await?;
+        let Some((candidate, isrc, lrc)) = found else {
+            println!(
+                "[latency] lrc.red sync total={}ms not timed",
+                started_at.elapsed().as_millis()
+            );
             return Ok(None);
         };
-        let lrc = sync_lrc_red_words(client, &isrc).await?;
         println!(
-            "[latency] lrc.red sync total={}ms isrc={isrc} timed={}",
-            started_at.elapsed().as_millis(),
-            lrc.is_some()
+            "[latency] lrc.red sync total={}ms isrc={isrc}",
+            started_at.elapsed().as_millis()
         );
-        Ok(lrc.map(|lrc| synced_result("lrc.red", candidate, lrc)))
+        Ok(Some(synced_result("lrc.red", candidate, lrc)))
     }
 
     #[derive(Deserialize)]
@@ -3477,6 +3488,11 @@ mod lyrics {
             assert_eq!(lrc_timestamp_centis(0.0), "00:00.00");
             assert_eq!(lrc_timestamp_centis(15.816), "00:15.82");
             assert_eq!(lrc_timestamp_centis(19.675), "00:19.68");
+            // Begins lrc.red's own LRC files round down.
+            assert_eq!(lrc_timestamp_centis(37.175), "00:37.17");
+            assert_eq!(lrc_timestamp_centis(38.495), "00:38.49");
+            assert_eq!(lrc_timestamp_centis(66.195), "01:06.19");
+            assert_eq!(lrc_timestamp_centis(0.0149), "00:00.01");
             assert_eq!(lrc_timestamp_centis(60.476), "01:00.48");
             assert_eq!(lrc_timestamp_centis(3_599.999), "60:00.00");
             assert_eq!(lrc_timestamp_centis(-1.0), "00:00.00");
@@ -3509,6 +3525,21 @@ mod lyrics {
             )];
 
             assert!(rank_matches(hits, "Back In Black", "AC/DC", Some(253_000)).is_empty());
+        }
+
+        #[test]
+        fn rank_matches_rejects_a_hit_without_a_title_that_only_shares_the_artist() {
+            let untitled = metadata_candidate(None, Some("AC/DC".to_string()), None, Some(256.0));
+
+            assert!(
+                rank_matches(
+                    vec![(untitled, "untitled")],
+                    "Back In Black",
+                    "AC/DC",
+                    Some(256_000)
+                )
+                .is_empty()
+            );
         }
 
         #[test]

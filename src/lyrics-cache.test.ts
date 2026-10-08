@@ -166,6 +166,33 @@ describe("LyricsCache", () => {
     expect(await cache.has(variant(180_000))).toBe(false);
   });
 
+  it("answers with the newer result when a song is replaced while its lyrics are being read", async () => {
+    const store = new MemoryLyricsStore();
+    const saved = new LyricsCache(store);
+    await put(saved, variant(180_000), lyrics("Old"));
+    await saved.flush();
+
+    let reachedRead!: () => void;
+    const reading = new Promise<void>((resolve) => (reachedRead = resolve));
+    let finishRead!: () => void;
+    const readMayFinish = new Promise<void>((resolve) => (finishRead = resolve));
+    const readResult = store.readResult.bind(store);
+    store.readResult = async (id) => {
+      reachedRead();
+      await readMayFinish;
+      return readResult(id);
+    };
+
+    const cache = new LyricsCache(store);
+    const pending = cache.get(variant(180_000));
+    await reading;
+    await put(cache, variant(180_000), lyrics("New"));
+    finishRead();
+
+    expect((await pending)?.trackName).toBe("New");
+    expect((await cache.get(variant(180_000)))?.trackName).toBe("New");
+  });
+
   it("omits plain lyrics from storage when synced lyrics are present", async () => {
     const store = new MemoryLyricsStore();
     const cache = new LyricsCache(store);
@@ -273,6 +300,29 @@ describe("LyricsCache", () => {
         (await new LyricsCache(store).get({ metadataKey: "artist::new", durationMs: 180_000 }))
           ?.trackName,
       ).toBe("new");
+    });
+
+    it("keeps the localStorage cache when it could not be written to the store", async () => {
+      const storage = new MemoryStorage();
+      storage.setItem(LEGACY_LYRICS_CACHE_STORAGE_KEY, JSON.stringify([legacyEntry("old", 1)]));
+      const blocked = new MemoryLyricsStore();
+      blocked.write = () => Promise.reject(new Error("blocked"));
+      const first = new LyricsCache(blocked, storage);
+
+      // Nothing is lost for the session, and nothing is removed from disk.
+      expect(
+        (await first.get({ metadataKey: "artist::old", durationMs: 180_000 }))?.trackName,
+      ).toBe("old");
+      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).not.toBeNull();
+
+      // The next launch has a working store and finishes the move.
+      const store = new MemoryLyricsStore();
+      const second = new LyricsCache(store, storage);
+      expect(
+        (await second.get({ metadataKey: "artist::old", durationMs: 180_000 }))?.trackName,
+      ).toBe("old");
+      expect(storage.getItem(LEGACY_LYRICS_CACHE_STORAGE_KEY)).toBeNull();
+      expect(await store.readIndex()).toHaveLength(1);
     });
 
     it("discards a malformed localStorage cache", async () => {
