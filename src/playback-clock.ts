@@ -1,6 +1,10 @@
 export const PAUSE_POSITION_TOLERANCE_MS = 750;
 const PLAYING_FALLBACK_TOLERANCE_MS = 10_000;
 export const RESUME_CONFIRMATION_PROGRESS_MS = 100;
+// A position that jumps away from the clock is believed once a second sample, at least this
+// long after the first, has moved on as time would have since, to within the tolerance.
+const DISCONTINUITY_CONFIRMATION_GAP_MS = 1_000;
+const DISCONTINUITY_CONFIRMATION_TOLERANCE_MS = 1_500;
 
 type PlaybackSample = {
   hasSession: boolean;
@@ -22,6 +26,7 @@ export class PlaybackClock {
   private positionAnchorMs: number;
   private pausedPositionAnchorMs: number | null = null;
   private pendingResumePositionMs: number | null = null;
+  private pendingDiscontinuity: { positionMs: number; sampledAtMs: number } | null = null;
 
   constructor(sampledAtMs: number, positionMs: number) {
     this.sampledAtMs = sampledAtMs;
@@ -45,6 +50,7 @@ export class PlaybackClock {
       this.sampledAtMs = sampledAtMs;
       this.positionAnchorMs = 0;
       this.pausedPositionAnchorMs = null;
+      this.pendingDiscontinuity = null;
       return { selectedPositionMs: 0, livePositionMs: null, usedLivePosition: false };
     }
 
@@ -56,12 +62,18 @@ export class PlaybackClock {
 
     if (media.isPlaying || !sameSong) {
       this.pausedPositionAnchorMs = null;
-      const useLivePosition =
+      const discontinuous =
         media.isPlaying &&
         sameSong &&
         !allowPlayingDiscontinuity &&
         livePositionMs !== null &&
         Math.abs(media.positionMs - livePositionMs) > PLAYING_FALLBACK_TOLERANCE_MS;
+      // One odd sample is stale data, but a song that restarted or was sought keeps
+      // reporting positions that move on from the first, which settles it.
+      const useLivePosition = discontinuous && !this.confirmsDiscontinuity(media, sampledAtMs);
+      this.pendingDiscontinuity = useLivePosition
+        ? { positionMs: media.positionMs, sampledAtMs }
+        : null;
       this.positionAnchorMs = useLivePosition ? livePositionMs : media.positionMs;
       return {
         selectedPositionMs: this.positionAnchorMs,
@@ -79,6 +91,16 @@ export class PlaybackClock {
     this.pausedPositionAnchorMs = selectedPositionMs;
     this.positionAnchorMs = selectedPositionMs;
     return { selectedPositionMs, livePositionMs, usedLivePosition };
+  }
+
+  private confirmsDiscontinuity(media: PlaybackSample, sampledAtMs: number) {
+    const pending = this.pendingDiscontinuity;
+    if (!pending || sampledAtMs - pending.sampledAtMs < DISCONTINUITY_CONFIRMATION_GAP_MS) {
+      return false;
+    }
+    const expected =
+      pending.positionMs + (sampledAtMs - pending.sampledAtMs) * playbackRate(media.playbackRate);
+    return Math.abs(media.positionMs - expected) <= DISCONTINUITY_CONFIRMATION_TOLERANCE_MS;
   }
 
   shouldDeferResume(previous: PlaybackSample, media: PlaybackSample, sameSong: boolean) {
