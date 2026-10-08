@@ -145,6 +145,17 @@ fn canonical_title(value: &str, normalized_artist: &str) -> String {
         .to_string()
 }
 
+/// True when two normalized titles have the same words in another order, as
+/// "Song (Edit) (feat. X)" and "Song (feat. X) [Edit]" do.
+fn same_words(left: &str, right: &str) -> bool {
+    fn sorted(value: &str) -> Vec<&str> {
+        let mut words = value.split_whitespace().collect::<Vec<_>>();
+        words.sort_unstable();
+        words
+    }
+    sorted(left) == sorted(right)
+}
+
 fn score(value: Option<&str>, expected: &str) -> u8 {
     if expected.is_empty() {
         return 0;
@@ -155,7 +166,7 @@ fn score(value: Option<&str>, expected: &str) -> u8 {
     };
 
     let value = normalize(value);
-    if value == expected {
+    if value == expected || same_words(&value, expected) {
         4
     } else if value.contains(expected) || expected.contains(&value) {
         2
@@ -1039,6 +1050,38 @@ mod tests {
             rank_matches(same, "IRIS OUT", "Kenshi Yonezu", None).len(),
             1
         );
+    }
+
+    #[test]
+    fn a_title_with_its_credits_in_another_order_is_the_same_song() {
+        // The player says "(Edit) (feat. X)", lrc.red "(feat. X) [Edit]".
+        let hits = vec![
+            (
+                candidate(
+                    "Just the Two of Us (feat. Bill Withers) [Edit]",
+                    "Grover Washington, Jr.",
+                    237.493,
+                ),
+                "edit",
+            ),
+            (
+                candidate("Just the Two of Us", "Grover Washington, Jr.", 443.773),
+                "album version",
+            ),
+        ];
+
+        let playing = "Just the Two of Us (Edit) (feat. Bill Withers)";
+        let known = rank_matches(
+            hits.clone(),
+            playing,
+            "Grover Washington, Jr.",
+            Some(237_381),
+        );
+        assert_eq!(known.iter().map(|hit| hit.1).collect::<Vec<_>>(), ["edit"]);
+
+        // Without a length, the exact edit is still preferred to the album version.
+        let unknown = rank_matches(hits, playing, "Grover Washington, Jr.", None);
+        assert_eq!(unknown[0].1, "edit");
     }
 
     #[test]
