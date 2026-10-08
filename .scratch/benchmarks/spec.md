@@ -15,19 +15,17 @@ so they stay out of normal `cargo test` / CI.
 
 ## Metric catalog
 
-| Metric id                  | Layer      | What it measures                                                   | Why it matters                                                    |
-| -------------------------- | ---------- | ------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `lrc_parse_full_song`      | TypeScript | Throughput of `parseLyrics` on an ~80-line synced LRC body         | Overlay must re-parse when a track or romanization toggle changes |
-| `metadata_normalize`       | TypeScript | Throughput of `normalizeLyricsMetadata` on noisy browser titles    | Runs on every media poll before cache lookup and LRCLIB search    |
-| `lyrics_display_select`    | TypeScript | Throughput of `selectLyricsDisplay` for synced + romanized results | Decides mode/notice on every lyrics update                        |
-| `playback_clock_apply`     | TypeScript | Throughput of `PlaybackClock.apply` across play/pause samples      | Anchors lyric scroll; must stay cheap on the poll loop            |
-| `playback_clock_estimate`  | TypeScript | Throughput of `PlaybackClock.estimate`                             | Called every animation/render tick while playing                  |
-| `lyrics_cache_get_hot`     | TypeScript | Throughput of `LyricsCache.get` against a filled in-memory cache   | Cache hits avoid network; lookup cost must stay near-constant     |
-| `lyrics_cache_put_persist` | TypeScript | Throughput of `putIfCurrent` with JSON persistence                 | Persisting after fetch must not stall the overlay for long        |
-| `romanize_japanese_lrc`    | Rust       | Steady-state ops/sec for Japanese LRC romanization                 | Heaviest CPU path on lyric fetch when romanization is enabled     |
-| `romanize_chinese_lrc`     | Rust       | Steady-state ops/sec for Chinese LRC romanization                  | Same path for Han lyrics                                          |
-| `romanize_korean_lrc`      | Rust       | Steady-state ops/sec for Hangul LRC romanization                   | Same path for Korean lyrics                                       |
-| `lrclib_rank_candidates`   | Rust       | Throughput of ranking/sorting a mixed LRCLIB candidate list        | Runs after every successful search before caching                 |
+| Metric id                  | Layer      | What it measures                                                   | Why it matters                                                                 |
+| -------------------------- | ---------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `lyrics_build_full_song`   | TypeScript | Throughput of `selectLyricsDisplay` on an ~80-line word-timed song | Overlay must rebuild its lines when a track or romanization toggle changes     |
+| `metadata_normalize`       | TypeScript | Throughput of `normalizeLyricsMetadata` on noisy browser titles    | Runs on every media poll before cache lookup and the lrc.red search            |
+| `lyrics_display_select`    | TypeScript | Throughput of `selectLyricsDisplay` for synced + romanized results | Decides mode/notice on every lyrics update                                     |
+| `playback_clock_apply`     | TypeScript | Throughput of `PlaybackClock.apply` across play/pause samples      | Anchors lyric scroll; must stay cheap on the poll loop                         |
+| `playback_clock_estimate`  | TypeScript | Throughput of `PlaybackClock.estimate`                             | Called every animation/render tick while playing                               |
+| `lyrics_cache_get_hot`     | TypeScript | Throughput of `LyricsCache.get` against a filled in-memory cache   | Cache hits avoid network; lookup cost must stay near-constant                  |
+| `lyrics_cache_put_persist` | TypeScript | Throughput of `putIfCurrent` with JSON persistence                 | Persisting after fetch must not stall the overlay for long                     |
+| `ttml_parse_full_song`     | Rust       | Steady-state ops/sec for parsing an 80-line word-timed TTML file   | Heaviest CPU path on lyric fetch; includes romanization and translation tracks |
+| `lrc_red_rank_candidates`  | Rust       | Throughput of ranking/sorting a mixed lrc.red hit list             | Runs after every successful match search before the TTML is fetched            |
 
 ## Reporting
 

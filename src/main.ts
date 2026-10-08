@@ -9,19 +9,21 @@ import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { icons, toastIcon } from "./icons";
 import { createLyricsCache } from "./lyrics-cache";
 import {
+  carryOverTracks,
   getLocalLyricsNotice,
-  hasWordTiming,
+  hasRomanization,
   isSameSong,
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
-  parseLyrics,
   playbackVariant,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   variantToken,
   type LyricLine,
+  type LyricSegment,
   type LyricsMode,
   type LyricsResult,
+  type LyricsResultLine,
   type PlaybackVariant,
 } from "./lyrics";
 import { PlaybackClock, PAUSE_POSITION_TOLERANCE_MS } from "./playback-clock";
@@ -105,6 +107,8 @@ const MAIN_WINDOW_GEOMETRY_STORAGE_KEY = "music-companion-main-window-geometry-v
 const POLLING_INTERVAL_MS = 2_000;
 const SYNC_OFFSET_MS = 0;
 const RESUME_CONFIRMATION_DELAY_MS = 250;
+// Just over the second the clock waits for before it believes a jump in position.
+const DISCONTINUITY_CONFIRMATION_DELAY_MS = 1_100;
 const demoState: MediaState = {
   hasSession: true,
   isPlaying: true,
@@ -119,13 +123,48 @@ const demoState: MediaState = {
   playingSessionCount: 1,
 };
 
-const demoLyrics = `[00:00.00] Waiting for a song
-[00:12.20] <00:12.20>The <00:12.90>window <00:13.70>catches <00:14.60>the <00:15.00>rhythm<00:16.80>
-[00:23.40] <00:23.40>Every <00:24.10>line <00:24.80>finds <00:25.50>its <00:25.90>light<00:27.60>
-[00:36.90] Floating over work and play
-[00:49.10] Music Companion keeps time
-[01:03.00] The chorus arrives in color
-[01:18.40] Then slips back into the night`;
+/** A preview line whose words share the line's time evenly. */
+function demoLine(
+  startMs: number,
+  endMs: number,
+  text: string,
+  extras: Partial<LyricsResultLine> = {},
+): LyricsResultLine {
+  const words = text.split(" ");
+  const step = (endMs - startMs) / words.length;
+  return {
+    startMs,
+    endMs,
+    voice: 0,
+    segments: words.map((word, index) => ({
+      startMs: Math.round(startMs + index * step),
+      endMs: Math.round(startMs + (index + 1) * step),
+      text: index < words.length - 1 ? `${word} ` : word,
+    })),
+    ...extras,
+  };
+}
+
+const demoResult: LyricsResult = {
+  trackName: demoState.title,
+  artistName: demoState.artist,
+  albumName: demoState.album,
+  duration: 184,
+  wordTimed: true,
+  lines: [
+    demoLine(12_200, 16_800, "The window catches the rhythm"),
+    demoLine(23_400, 27_600, "Every line finds its light", {
+      voice: 1,
+      background: [{ startMs: 25_500, endMs: 27_600, text: "(its light)" }],
+    }),
+    demoLine(36_900, 42_000, "Floating over work and play", {
+      translation: "Fluttuando tra lavoro e gioco",
+    }),
+    demoLine(49_100, 54_000, "Music Companion keeps time"),
+    demoLine(63_000, 68_000, "The chorus arrives in color"),
+    demoLine(78_400, 84_000, "Then slips back into the night"),
+  ],
+};
 
 const tauriAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const appWindow = tauriAvailable ? getCurrentWindow() : null;
@@ -146,7 +185,9 @@ let settings = loadSettings();
 let currentMedia: MediaState = demoState;
 let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
 let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
-let lyricsLines: LyricLine[] = tauriAvailable ? [] : parseLyrics(demoLyrics);
+let lyricsLines: LyricLine[] = tauriAvailable
+  ? []
+  : selectLyricsDisplay(demoResult, demoState.title, false).lines;
 let currentLyricsResult: LyricsResult | null = null;
 let activeLineIndex = 2;
 let lyricsMode: LyricsMode = tauriAvailable ? "searching" : "synced";
@@ -167,6 +208,7 @@ let pollQueued = false;
 let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
+let discontinuityConfirmationTimer = 0;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -321,6 +363,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <button type="button" data-lyrics-script="romanized" role="radio">Romanized</button>
               </div>
             </div>
+            <label class="switch-row" for="show-translation">
+              <span><strong>Show translation</strong><small>Show lrc.red's translation under each line that has one</small></span>
+              <input id="show-translation" type="checkbox" role="switch" />
+              <span class="switch-control" aria-hidden="true"></span>
+            </label>
           </div>
         </section>
 
@@ -693,6 +740,15 @@ function wireUi() {
     renderLyrics();
     renderSettings();
   });
+
+  document
+    .querySelector<HTMLInputElement>("#show-translation")
+    ?.addEventListener("change", (event) => {
+      settings.showTranslation = (event.currentTarget as HTMLInputElement).checked;
+      saveSettings();
+      invalidateLyricsRender();
+      renderLyrics();
+    });
 
   document.querySelector<HTMLInputElement>("#word-sync")?.addEventListener("change", (event) => {
     settings.wordSync = (event.currentTarget as HTMLInputElement).checked;
@@ -1161,7 +1217,7 @@ function scheduleWordSync(
   result: LyricsResult | null,
 ) {
   if (!tauriAvailable || isSettingsWindow || !settings.wordSync) return;
-  if (result?.instrumental || hasWordTiming(result?.syncedLyrics)) return;
+  if (result?.wordTimed) return;
   // A title marked as a remix, live cut or cover has no lyrics to time.
   if (!result && getLocalLyricsNotice(media.title)) return;
   const trackKey = variantToken(variant);
@@ -1184,11 +1240,13 @@ async function syncWords(media: MediaState, variant: PlaybackVariant, trackKey: 
     const metadata = normalizeLyricsMetadata(media);
     const cacheGeneration = lyricCache.requestGeneration();
     const startedAt = performance.now();
-    const synced = await invoke<LyricsResult | null>("sync_lyrics_words", {
+    const timed = await invoke<LyricsResult | null>("sync_lyrics_words", {
       title: metadata.title,
       artist: metadata.artist,
       durationMs: media.durationMs,
     });
+    // The sync may not return the romanization and translation the song already has.
+    const synced = timed && carryOverTracks(timed, await lyricCache.get(variant));
     console.info("[latency] word sync", {
       key: trackKey,
       durationMs: Math.round(performance.now() - startedAt),
@@ -1230,6 +1288,7 @@ function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null 
   lyricsMode = display.mode;
   lyricsNotice = display.notice;
   invalidateLyricsRender();
+  renderLyricsScript();
 }
 
 function updateActiveLine(positionMs = getSyncedPositionMs()) {
@@ -1238,16 +1297,9 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
     return;
   }
 
-  const timed = lyricsLines.some((line) => line.timeMs !== null);
-  if (!timed) {
-    activeLineIndex = -1;
-    return;
-  }
-
   let nextIndex = -1;
   for (let index = 0; index < lyricsLines.length; index += 1) {
-    const time = lyricsLines[index].timeMs;
-    if (time !== null && time <= positionMs) {
+    if (lyricsLines[index].timeMs <= positionMs) {
       nextIndex = index;
     }
   }
@@ -1298,6 +1350,13 @@ function syncMediaClock(
         livePositionMs: formatSyncTimestamp(Math.round(update.selectedPositionMs)),
         differenceMs: Math.round(media.positionMs - update.selectedPositionMs),
       });
+      // A restart or a seek that the player did not announce is believed once a second
+      // sample agrees, so ask for it now rather than at the next poll. It must stay a
+      // fallback poll: an authoritative one would also believe a stale position.
+      window.clearTimeout(discontinuityConfirmationTimer);
+      discontinuityConfirmationTimer = window.setTimeout(() => {
+        void pollMedia("fallback-poll");
+      }, DISCONTINUITY_CONFIRMATION_DELAY_MS);
     } else if (!sameSong || playbackChanged) {
       logSync("media state applied", {
         reason,
@@ -1416,7 +1475,7 @@ function renderLyrics() {
     return;
   }
 
-  if (lyricsMode === "instrumental" || lyricsMode === "excluded" || lyricsMode === "unsynced") {
+  if (lyricsMode === "instrumental" || lyricsMode === "excluded") {
     list.innerHTML = `<p class="empty-state">${escapeHtml(lyricsNotice || "Instrumental")}</p>`;
     return;
   }
@@ -1426,29 +1485,39 @@ function renderLyrics() {
     return;
   }
 
+  const duet = lyricsLines.some((line) => line.voice > 0);
   list.innerHTML = lyricsLines
     .map((line, index) => {
       const distance = Math.abs(index - activeLineIndex);
-      const showNeighborFocus = lyricsMode !== "synced";
       const className = [
         "lyric-line",
         line.segments ? "word-synced" : "",
+        duet ? (line.voice > 0 ? "voice-second" : "voice-lead") : "",
         index === activeLineIndex ? "active" : "",
-        showNeighborFocus && distance === 1 ? "near" : "",
         distance > 4 ? "far" : "",
       ]
         .filter(Boolean)
         .join(" ");
-      const content = line.segments
-        ? line.segments
-            .map((segment) => `<span class="lyric-word">${escapeHtml(segment.text)}</span>`)
-            .join("")
-        : escapeHtml(line.text);
-      return `<p class="${className}" data-line-index="${index}">${content}</p>`;
+      const background = line.background
+        ? `<span class="lyric-background">${renderWords(line.background)}</span>`
+        : "";
+      const translation =
+        settings.showTranslation && line.translation
+          ? `<span class="lyric-translation">${escapeHtml(line.translation)}</span>`
+          : "";
+      return `<p class="${className}" data-line-index="${index}"><span class="lyric-main">${
+        line.segments ? renderWords(line.segments) : escapeHtml(line.text)
+      }</span>${background}${translation}</p>`;
     })
     .join("");
 
   updateSyncFrame();
+}
+
+function renderWords(segments: LyricSegment[]) {
+  return segments
+    .map((segment) => `<span class="lyric-word">${escapeHtml(segment.text)}</span>`)
+    .join("");
 }
 
 function startSyncLoop() {
@@ -1500,8 +1569,10 @@ function updateSyncFrame() {
 
 /** Fills each word of the active line left to right as its timing plays out. */
 function updateWordProgress(positionMs: number) {
-  const segments = lyricsLines[activeLineIndex]?.segments;
-  if (!segments || segments.length !== activeWordElements.length) return;
+  const line = lyricsLines[activeLineIndex];
+  if (!line?.segments) return;
+  const segments = [...line.segments, ...(line.background ?? [])];
+  if (segments.length !== activeWordElements.length) return;
   segments.forEach((segment, index) => {
     const span = segment.endMs - segment.startMs;
     const raw =
@@ -1539,10 +1610,8 @@ function updateLyricDom() {
   lineElements.forEach((lineElement) => {
     const lineIndex = Number(lineElement.dataset.lineIndex);
     const distance = Math.abs(lineIndex - activeLineIndex);
-    const showNeighborFocus = lyricsMode !== "synced";
 
     lineElement.classList.toggle("active", lineIndex === activeLineIndex);
-    lineElement.classList.toggle("near", showNeighborFocus && distance === 1);
     lineElement.classList.toggle("far", distance > 4);
   });
 
@@ -1574,7 +1643,6 @@ function getLyricsRenderKey() {
     lyricsMode === "searching" ||
     lyricsMode === "missing" ||
     lyricsMode === "error" ||
-    lyricsMode === "unsynced" ||
     lyricsMode === "instrumental" ||
     lyricsMode === "excluded"
   ) {
@@ -1593,6 +1661,22 @@ function getLyricsRenderKey() {
 function invalidateLyricsRender() {
   renderedLyricsKey = "";
   lyricsRenderGeneration += 1;
+}
+
+/** Romanized is offered only for songs that have a romanization. */
+function renderLyricsScript() {
+  const available = !currentLyricsResult || hasRomanization(currentLyricsResult);
+  const romanized = settings.romanizedLyrics && available;
+  document.querySelectorAll<HTMLButtonElement>("[data-lyrics-script]").forEach((button) => {
+    const isRomanized = button.dataset.lyricsScript === "romanized";
+    const selected = isRomanized === romanized;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-checked", String(selected));
+    if (isRomanized) {
+      button.disabled = !available;
+      button.title = available ? "" : "This song has no romanization";
+    }
+  });
 }
 
 function renderSettings() {
@@ -1622,11 +1706,8 @@ function renderSettings() {
     button.classList.toggle("active", selected);
     button.setAttribute("aria-checked", String(selected));
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-lyrics-script]").forEach((button) => {
-    const selected = (button.dataset.lyricsScript === "romanized") === settings.romanizedLyrics;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-checked", String(selected));
-  });
+  document.querySelector<HTMLInputElement>("#show-translation")!.checked = settings.showTranslation;
+  renderLyricsScript();
   document.querySelector<HTMLElement>("#material-description")!.textContent =
     materialCopy[settings.backdropMaterial].description;
   document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;

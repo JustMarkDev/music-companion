@@ -11,14 +11,19 @@ function variant(index: number, durationMs: number): PlaybackVariant {
 
 function lyrics(index: number): LyricsResult {
   return {
-    source: "LRCLIB",
     trackName: `Song ${index}`,
     artistName: `Artist ${index % 200}`,
     albumName: "",
     duration: 180,
-    instrumental: false,
-    syncedLyrics: `[00:00.00]Song ${index}`,
-    plainLyrics: `Song ${index}`,
+    wordTimed: false,
+    lines: [
+      {
+        startMs: 0,
+        endMs: 2_000,
+        voice: 0,
+        segments: [{ startMs: 0, endMs: 2_000, text: `Song ${index}` }],
+      },
+    ],
   };
 }
 

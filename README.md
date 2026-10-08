@@ -2,27 +2,29 @@
 
 Music Companion is a Windows 10/11 and macOS desktop lyrics overlay. It follows the
 active system media session, retrieves lyrics from
-[lrc.red](https://lrc.red/), [LRCLIB](https://lrclib.net/), and
-[Netease Cloud Music](https://music.163.com/), and presents them in a
-transparent, always-on-top Tauri window.
+[lrc.red](https://lrc.red/), and presents them in a transparent, always-on-top Tauri window.
 
 ## Key capabilities
 
 - Follows the system media session on both platforms, including desktop players
   and browsers.
 - Displays synchronized lyrics with smooth highlighting and scrolling.
-- Highlights word by word when a provider times individual words (lrc.red and Netease do
-  for many tracks), and line by line otherwise. Romanized lyrics keep the word timing.
-- Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics when lrc.red provides a
-  transliteration. Japanese, Korean, and Chinese lyrics are otherwise romanized on the device.
-- Queries lrc.red, LRCLIB, and Netease in parallel. Word-timed lyrics are preferred, then
-  the highest-priority provider with synchronized lyrics, in that order. Netease is an unofficial,
-  unauthenticated API and may change or stop working without notice.
+- Highlights word by word when lrc.red times individual words (many tracks), and line by
+  line otherwise. Romanized lyrics keep their own word timing.
+- Reads each song as a TTML file from lrc.red, the only lyrics provider. Lyrics, romanization,
+  translation, singers, and background vocals all come from that one file.
+- Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics with the transliteration
+  lrc.red provides. Songs without one have no Romanized option; nothing is romanized on the
+  device.
+- Optionally shows lrc.red's translation under each line (Settings → Show translation, off by
+  default) when the song has one.
+- Sets the second singer of a duet on the right and shows background vocals smaller under the
+  line, filled word by word like the lead.
 - Optionally asks lrc.red's alignment model to time every word of songs whose lyrics are not
   word-timed (Settings → Sync words with AI, off by default). The first sync of a song can take
   10 seconds or more; the lyrics on screen are upgraded in place and the result is saved.
-- Handles plain lyrics, instrumental tracks, missing lyrics, and common track
-  variants without silently presenting a poor match.
+- Recognizes instrumental tracks and common track variants (remixes, live cuts, covers) from the
+  title, and says so instead of silently presenting a poor match.
 - Normalizes browser metadata such as `- Topic`, `VEVO`, and `Artist - Song`
   titles for display and lyrics searches. Official-video labels are removed,
   and their title artist takes precedence over mismatched YouTube channel metadata.
@@ -208,7 +210,9 @@ src/main.ts                     Overlay UI, settings, and lyric synchronization
 src/settings.ts                 Settings decoding and per-platform defaults
 src/lyrics-cache.ts             Lyrics cache in IndexedDB, with word-sync bookkeeping
 src/styles.css                  Overlay and settings styles
-src-tauri/src/lib.rs            Shared commands, tray, lyrics providers, updater, Windows backends
+src-tauri/src/lib.rs            Shared commands, tray, updater, Windows backends
+src-tauri/src/lyrics.rs         lrc.red lookup, ranking of its matches, and word sync
+src-tauri/src/ttml.rs           Lyrics model and the parser for lrc.red's TTML files
 src-tauri/src/media_macos.rs    macOS now-playing reader and transport control
 src-tauri/src/backdrop_macos.rs macOS overlay backdrop
 src-tauri/src/z_order_macos.rs  macOS overlay stacking
@@ -228,6 +232,6 @@ architectural changes, and broad refactors before implementation.
 ## License
 
 Music Companion is available under the [GNU General Public License v3.0 only](LICENSE). It is not
-affiliated with Spotify, lrc.red, LRCLIB, Netease, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.
+affiliated with Spotify, lrc.red, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.
 The bundled MediaRemote adapter is licensed separately under the BSD 3-Clause
 License; see `src-tauri/vendor/mediaremote-adapter/LICENSE`.

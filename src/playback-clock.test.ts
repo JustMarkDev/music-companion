@@ -64,6 +64,77 @@ describe("PlaybackClock", () => {
     expect(clock.syncedPosition(sample(), 2_966)).toBe(35_442);
   });
 
+  describe("a fallback sample that jumps away from the clock", () => {
+    const restarted = (positionMs: number) => sample({ positionMs });
+
+    it("is followed once a second sample moves on from it as time would have", () => {
+      // The song was restarted at 36 s; no media event announced it.
+      const clock = new PlaybackClock(0, 36_000);
+      const first = clock.apply(
+        sample({ positionMs: 36_000 }),
+        restarted(1_200),
+        true,
+        2_000,
+        false,
+      );
+      expect(first.selectedPositionMs).toBe(38_000);
+      expect(first.usedLivePosition).toBe(true);
+
+      const second = clock.apply(restarted(1_200), restarted(3_200), true, 4_000, false);
+      expect(second.selectedPositionMs).toBe(3_200);
+      expect(second.usedLivePosition).toBe(false);
+      expect(clock.syncedPosition(restarted(3_200), 5_000)).toBe(4_200);
+    });
+
+    it("stays rejected while the samples are stale rather than moving", () => {
+      const clock = new PlaybackClock(0, 36_000);
+      clock.apply(sample({ positionMs: 36_000 }), restarted(1_200), true, 2_000, false);
+
+      const second = clock.apply(restarted(1_200), restarted(1_200), true, 4_000, false);
+      expect(second.usedLivePosition).toBe(true);
+      expect(second.selectedPositionMs).toBe(40_000);
+    });
+
+    it("does not believe a stale sample that still stands still when the confirmation poll comes", () => {
+      const clock = new PlaybackClock(0, 38_000);
+      clock.apply(sample({ positionMs: 38_000 }), restarted(1_200), true, 2_000, false);
+
+      // The poll scheduled 1.1 s later reads the same stale position.
+      const second = clock.apply(restarted(1_200), restarted(1_200), true, 3_100, false);
+      expect(second.usedLivePosition).toBe(true);
+      expect(second.selectedPositionMs).toBe(41_100);
+    });
+
+    it("needs the second sample to come a moment after the first", () => {
+      const clock = new PlaybackClock(0, 36_000);
+      clock.apply(sample({ positionMs: 36_000 }), restarted(1_200), true, 2_000, false);
+
+      const second = clock.apply(restarted(1_200), restarted(1_250), true, 2_050, false);
+      expect(second.usedLivePosition).toBe(true);
+    });
+
+    it("forgets a lone odd sample once the clock agrees again", () => {
+      const clock = new PlaybackClock(0, 36_000);
+      clock.apply(sample({ positionMs: 36_000 }), restarted(1_200), true, 2_000, false);
+      clock.apply(
+        sample({ positionMs: 38_000 }),
+        sample({ positionMs: 40_000 }),
+        true,
+        4_000,
+        false,
+      );
+
+      const later = clock.apply(
+        sample({ positionMs: 40_000 }),
+        restarted(3_200),
+        true,
+        6_000,
+        false,
+      );
+      expect(later.usedLivePosition).toBe(true);
+    });
+  });
+
   it("accepts a five-second seek from a fallback sample", () => {
     const clock = new PlaybackClock(0, 10_000);
     const update = clock.apply(
