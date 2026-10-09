@@ -222,10 +222,22 @@ fn metadata_scores(
         Some(_) => track_title_score(candidate, normalized_title, normalized_artist),
         None => score(candidate.album_name.as_deref(), normalized_title),
     };
+    // lrc.red credits some artists in another script ("Paolo Conte" is
+    // "帕羅康提"), which says nothing against the playing artist. It only
+    // counts for a hit whose title matches, or any song in that script would
+    // pass for the playing one.
+    let other_script = title_score > 0
+        && !normalized_artist.is_empty()
+        && candidate
+            .artist_name
+            .as_deref()
+            .is_some_and(has_non_latin_letters)
+        && !has_non_latin_letters(normalized_artist);
     let artist_score = [
         score(candidate.artist_name.as_deref(), normalized_artist),
         score(candidate.track_name.as_deref(), normalized_artist),
         score(candidate.album_name.as_deref(), normalized_artist),
+        if other_script { 2 } else { 0 },
     ]
     .into_iter()
     .max()
@@ -238,15 +250,16 @@ fn ranking_key(
     normalized_title: &str,
     normalized_artist: &str,
     duration_ms: Option<u64>,
-) -> (std::cmp::Reverse<bool>, std::cmp::Reverse<u8>, u64) {
+) -> (std::cmp::Reverse<bool>, std::cmp::Reverse<(u8, u8)>, u64) {
     let (title_score, artist_score) =
         metadata_scores(candidate, normalized_title, normalized_artist);
-    let metadata_score = title_score * 4 + artist_score * 3;
     let metadata_matches = title_score > 0 && artist_score > 0;
 
     (
         std::cmp::Reverse(metadata_matches),
-        std::cmp::Reverse(metadata_score),
+        // The title decides before the artist: "Via con me" by "帕羅康提" is the
+        // song, "Via con me (Live)" by "Paolo Conte" another recording of it.
+        std::cmp::Reverse((title_score, artist_score)),
         duration_difference_ms(candidate.duration, duration_ms),
     )
 }
@@ -536,6 +549,12 @@ fn merge_lrc_red_hits(by_title: Vec<LrcRedHit>, by_duration: Vec<LrcRedHit>) -> 
         .collect()
 }
 
+/// The free text `/search.json` is asked. It finds nothing for a word with an
+/// apostrophe ("L'orchestrina") but does for the words around it.
+fn search_query(title: &str, artist: &str) -> String {
+    format!("{title} {artist}").replace(['\'', '’'], " ")
+}
+
 /// One `/search.json` query: the hits for a title and artist written as free
 /// text. It finds songs `/match.json` cannot when lrc.red credits the artist
 /// differently (IRIS OUT is by "米津玄师", not "Kenshi Yonezu").
@@ -547,7 +566,7 @@ async fn lrc_red_text_hits(
     let response = client
         .get(format!(
             "https://lrc.red/search.json?q={}",
-            urlencoding::encode(&format!("{title} {artist}"))
+            urlencoding::encode(&search_query(title, artist))
         ))
         .send()
         .await
@@ -572,17 +591,38 @@ async fn lrc_red_matches(
     artist: &str,
     duration_ms: Option<u64>,
 ) -> Result<Vec<(Candidate, String)>, String> {
-    let matched = lrc_red_match_candidates(client, title, artist, duration_ms).await?;
-    if !matched.is_empty() {
+    let mut matched = lrc_red_match_candidates(client, title, artist, duration_ms).await?;
+    if has_exact_title(&matched, title, artist) {
         return Ok(matched);
     }
-    let hits = lrc_red_text_hits(client, title, artist).await?;
-    Ok(rank_matches(
-        hit_candidates(hits),
-        title,
-        artist,
-        duration_ms,
-    ))
+    // `/match.json` only knows the live version of "Via con me"; the studio
+    // one is credited to "帕羅康提" and found by the text search.
+    let hits = match lrc_red_text_hits(client, title, artist).await {
+        Ok(hits) => hits,
+        Err(_) if !matched.is_empty() => return Ok(matched),
+        Err(error) => return Err(error),
+    };
+    let known = matched
+        .iter()
+        .map(|(_, isrc)| isrc.clone())
+        .collect::<HashSet<_>>();
+    matched.extend(
+        hit_candidates(hits)
+            .into_iter()
+            .filter(|(_, isrc)| !known.contains(isrc)),
+    );
+    Ok(rank_matches(matched, title, artist, duration_ms))
+}
+
+/// True when some hit is named exactly like the playing song and is not
+/// credited to another artist.
+fn has_exact_title(hits: &[(Candidate, String)], title: &str, artist: &str) -> bool {
+    let normalized_artist = normalize(artist);
+    let normalized_title = canonical_title(title, &normalized_artist);
+    hits.iter().any(|(candidate, _)| {
+        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+            && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
+    })
 }
 
 /// The recordings `/match.json` lists for a song that plausibly are it.
@@ -878,6 +918,52 @@ pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_studio_recording_credited_in_another_script_beats_a_live_one() {
+        let hits = vec![
+            (candidate("Via con me (Live)", "Paolo Conte", 168.3), 1),
+            (candidate("Via Con Me", "帕羅康提", 166.5), 2),
+            (candidate("Via Con Me", "Fiorello", 237.2), 3),
+        ];
+
+        let ranked = rank_matches(hits, "Via con me", "Paolo Conte", Some(166_500));
+
+        assert_eq!(ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn another_script_credit_only_vouches_for_a_matching_title() {
+        let hits = vec![
+            (candidate("感電", "周杰伦", 166.0), 1),
+            (candidate("Via Con Me", "帕羅康提", 166.0), 2),
+        ];
+
+        let ranked = rank_matches(hits, "Via con me", "Paolo Conte", Some(166_500));
+        assert_eq!(ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [2]);
+
+        // Without a playing artist, no credit is preferred over another.
+        let scores = |artist| metadata_scores(&candidate("Song", artist, 100.0), "song", "");
+        assert_eq!(scores("アーティスト"), scores("Artist"));
+    }
+
+    #[test]
+    fn a_cover_by_another_artist_is_not_an_exact_title_hit() {
+        let cover = vec![(candidate("Via Con Me", "Fiorello", 166.2), "a".to_string())];
+        let studio = vec![(candidate("Via Con Me", "帕羅康提", 166.5), "b".to_string())];
+
+        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte"));
+        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte"));
+    }
+
+    #[test]
+    fn the_text_search_has_no_apostrophes() {
+        assert_eq!(
+            search_query("L'orchestrina", "Paolo Conte"),
+            "L orchestrina Paolo Conte"
+        );
+        assert_eq!(search_query("Don’t Stop", "Journey"), "Don t Stop Journey");
+    }
 
     fn candidate(track_name: &str, artist_name: &str, duration: f64) -> Candidate {
         Candidate {
