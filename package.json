@@ -22,7 +22,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:windows": "tauri build --target x86_64-pc-windows-msvc",
-    "tauri:build:macos": "tauri build --target universal-apple-darwin"
+    "tauri:build:macos": "tauri build --target universal-apple-darwin",
+    "prepare": "vp config"
   },
   "dependencies": {
     "@fontsource-variable/nunito": "^5.3.0",
@@ -34,11 +35,19 @@
     "@tauri-apps/cli": "^2.12.1",
     "@voidzero-dev/vite-plus-core": "^1.0.0",
     "typescript": "^7.0.2",
-    "vite-plus": "^1.0.0"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0",
+    "vite-plus": "1.1.0"
   },
   "overrides": {
     "nanoid": "^3.3.16",
     "postcss": "^8.5.23",
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "bun",
+      "version": "1.4.2",
+      "onFail": "download"
+    }
   }
 }
