@@ -14,6 +14,7 @@ import {
   getLocalLyricsNotice,
   hasRomanization,
   isSameSong,
+  lyricsEmptyState,
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
   playbackVariant,
@@ -1551,7 +1552,8 @@ function renderLyrics() {
   }
 
   if (lyricsMode === "error") {
-    list.innerHTML = `<p class="empty-state"><span>Unable to search for lyrics.</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
+    const state = lyricsEmptyState("error");
+    list.innerHTML = `<p class="empty-state"><span>${escapeHtml(state.title)}</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
     return;
   }
 
@@ -1561,7 +1563,8 @@ function renderLyrics() {
   }
 
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
-    list.innerHTML = `<p class="empty-state"><span>No lyrics found.</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
+    const state = lyricsEmptyState("missing");
+    list.innerHTML = `<p class="empty-state"><span>${escapeHtml(state.title)}</span><span class="empty-hint">${escapeHtml(state.hint ?? "")}</span></p>`;
     return;
   }
 

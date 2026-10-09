@@ -71,6 +71,31 @@ export type LyricsDisplay = {
   notice: string;
 };
 
+/** What the empty state shows when a lyrics lookup found nothing usable. */
+export type LyricsEmptyState = {
+  title: string;
+  /** Extra guidance shown under the title, if any. */
+  hint: string | null;
+  /** True only when looking the song up again can help. */
+  retryable: boolean;
+};
+
+/**
+ * Describes the empty state for a lyrics lookup that found nothing usable. A
+ * definitive provider miss offers no retry: asking lrc.red again returns the
+ * same miss. A transient error does, since the next attempt may succeed.
+ */
+export function lyricsEmptyState(mode: "error" | "missing"): LyricsEmptyState {
+  if (mode === "error") {
+    return { title: "Unable to search for lyrics.", hint: null, retryable: true };
+  }
+  return {
+    title: "No lyrics found.",
+    hint: "Check the song title, or clear saved lyrics in Settings to search again.",
+    retryable: false,
+  };
+}
+
 export function playbackVariant(media: MediaMetadata): PlaybackVariant | null {
   if (!media.hasSession || !media.title) return null;
   const metadata = normalizeLyricsMetadata(media);

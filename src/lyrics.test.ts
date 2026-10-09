@@ -6,6 +6,7 @@ import {
   hasTranslation,
   isSameCachedVariant,
   isSameSong,
+  lyricsEmptyState,
   normalizeLyricsMetadata,
   playbackVariant,
   retimeRomanization,
@@ -264,6 +265,29 @@ describe("lyrics display selection", () => {
     expect(getLocalLyricsNotice("Song slowed down + reverberated")).toBe(
       "Slowed + Reverb - No Lyrics",
     );
+  });
+
+  it("reports a definitive provider miss as missing, never as an error", () => {
+    expect(selectLyricsDisplay(null, "Song", false)).toMatchObject({ mode: "missing", lines: [] });
+    expect(selectLyricsDisplay(result({ lines: [] }), "Song", false).mode).toBe("missing");
+  });
+});
+
+describe("empty-state retry", () => {
+  it("offers a retry only when the lookup can recover", () => {
+    expect(lyricsEmptyState("error")).toMatchObject({
+      title: "Unable to search for lyrics.",
+      hint: null,
+      retryable: true,
+    });
+  });
+
+  it("guides instead of retrying when the provider has no lyrics", () => {
+    const state = lyricsEmptyState("missing");
+    expect(state.retryable).toBe(false);
+    expect(state.title).toBe("No lyrics found.");
+    expect(state.hint).toMatch(/song title/i);
+    expect(state.hint).toMatch(/clear saved lyrics/i);
   });
 });
 
