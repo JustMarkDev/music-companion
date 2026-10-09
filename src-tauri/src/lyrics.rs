@@ -593,7 +593,7 @@ async fn lrc_red_matches(
     duration_ms: Option<u64>,
 ) -> Result<Vec<(Candidate, String)>, String> {
     let mut matched = lrc_red_match_candidates(client, title, artist, duration_ms).await?;
-    if has_exact_title(&matched, title, artist) {
+    if has_exact_title(&matched, title, artist, duration_ms) {
         return Ok(matched);
     }
     // `/match.json` only knows the live version of "Via con me"; the studio
@@ -605,13 +605,13 @@ async fn lrc_red_matches(
     }
     // A title in two scripts ("クスシキ - KUSUSHIKI") finds nothing as free
     // text, while either half alone names the song.
-    if !has_exact_title(&matched, title, artist) && !title_halves(title).is_empty() {
+    if !has_exact_title(&matched, title, artist, duration_ms) && !title_halves(title).is_empty() {
         matched = merge_half_hits(client, matched, title, artist).await;
     }
     // A duet ("Kenshi Yonezu & Hikaru Utada") finds nothing as free text when
     // lrc.red credits one singer in another script ("米津玄師, Utada"); the
     // first singer alone finds the song.
-    if !has_exact_title(&matched, title, artist)
+    if !has_exact_title(&matched, title, artist, duration_ms)
         && let Some(primary) = primary_artist(artist)
         && let Ok(hits) = lrc_red_text_hits(client, title, primary).await
     {
@@ -670,7 +670,7 @@ fn title_halves(title: &str) -> Vec<String> {
     // The rightmost dash, so a dash inside the title is kept whatever kind it is.
     DASHES
         .iter()
-        .filter_map(|dash| title.split_once(dash))
+        .filter_map(|dash| title.rsplit_once(dash))
         .max_by_key(|(rest, _)| rest.len())
         .map(|(first, second)| vec![first.trim().to_string(), second.trim().to_string()])
         .unwrap_or_default()
@@ -679,13 +679,21 @@ fn title_halves(title: &str) -> Vec<String> {
         .collect()
 }
 
-/// True when some hit is named exactly like the playing song and is not
-/// credited to another artist.
-fn has_exact_title(hits: &[(Candidate, String)], title: &str, artist: &str) -> bool {
+/// True when some hit is named exactly like the playing song, is not
+/// credited to another artist, and matches the known length. A wrong-length
+/// exact hit must not suppress the fallbacks: `rank_matches` would filter it
+/// out afterwards and the lookup would miss.
+fn has_exact_title(
+    hits: &[(Candidate, String)],
+    title: &str,
+    artist: &str,
+    duration_ms: Option<u64>,
+) -> bool {
     let normalized_artist = normalize(artist);
     let normalized_title = canonical_title(title, &normalized_artist);
     hits.iter().any(|(candidate, _)| {
-        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+        duration_matches(candidate.duration, duration_ms)
+            && track_title_score(candidate, &normalized_title, &normalized_artist) == 4
             && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
     })
 }
@@ -1029,8 +1037,24 @@ mod tests {
         let cover = vec![(candidate("Via Con Me", "Fiorello", 166.2), "a".to_string())];
         let studio = vec![(candidate("Via Con Me", "帕羅康提", 166.5), "b".to_string())];
 
-        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte"));
-        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte"));
+        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte", None));
+        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte", None));
+    }
+
+    #[test]
+    fn a_wrong_length_exact_hit_does_not_suppress_the_fallbacks() {
+        let hit = vec![(
+            candidate("JANE DOE", "Kenshi Yonezu", 180.0),
+            "cover".to_string(),
+        )];
+
+        assert!(has_exact_title(&hit, "JANE DOE", "Kenshi Yonezu", None));
+        assert!(!has_exact_title(
+            &hit,
+            "JANE DOE",
+            "Kenshi Yonezu",
+            Some(236_000),
+        ));
     }
 
     #[test]
@@ -1423,6 +1447,8 @@ mod tests {
         assert!(title_halves("JANE DOE").is_empty());
         // An empty half is dropped, the other still searches.
         assert_eq!(title_halves(" - KUSUSHIKI"), ["KUSUSHIKI"]);
+        // A repeated dash splits at the rightmost one.
+        assert_eq!(title_halves("A - B - C"), ["A - B", "C"]);
     }
 
     #[test]
@@ -1454,6 +1480,7 @@ mod tests {
             &[(cover.clone(), "cover".to_string())],
             "JANE DOE",
             "Kenshi Yonezu & Hikaru Utada",
+            Some(236_000),
         ));
 
         let ranked = rank_matches(
@@ -1498,6 +1525,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             "クスシキ - KUSUSHIKI",
             "Mrs. GREEN APPLE",
+            Some(189_000),
         ));
 
         let ranked = rank_matches(
