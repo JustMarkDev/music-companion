@@ -261,15 +261,11 @@ let resumeConfirmationTimer = 0;
 let discontinuityConfirmationTimer = 0;
 // A transient lrc.red failure retries with backoff and then stops, so a single
 // stalled lookup never sticks until the next track but also never polls the
-// provider forever. User-initiated retries ("Try again", restarting or seeking
-// back) reset the budget.
+// provider forever. The "Try again" button resets the budget.
 let lyricsErrorRetryTimer = 0;
 let lyricsErrorRetryCount = 0;
 const LYRICS_ERROR_RETRY_DELAY_MS = 15_000;
 const MAX_LYRICS_ERROR_RETRIES = 2;
-// A jump back in the same song retries a failed or missed lookup, so
-// restarting the track recovers without clearing the cache.
-const RESTART_RETRY_TOLERANCE_MS = 5_000;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -1159,7 +1155,6 @@ async function pollMedia(reason = "manual") {
     if (shouldDeferResume(nextMedia, sameSong, reason, requestDurationMs)) {
       return;
     }
-    const previousPositionMs = currentMedia.positionMs;
     syncMediaClock(nextMedia, sameSong, sampledAtMs, reason, requestDurationMs);
     const wasPlaying = currentMedia.isPlaying;
     currentMedia = nextMedia;
@@ -1173,13 +1168,6 @@ async function pollMedia(reason = "manual") {
       lyricsRequestId += 1;
       void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
       void loadLyrics(currentMedia, nextVariant);
-    } else if (nextVariant && sameSong && (lyricsMode === "error" || lyricsMode === "missing")) {
-      // Restarting (or seeking back in) the same song retries a failed or
-      // missed lookup, so recovery needs no cache clearing.
-      const jumpedBack = previousPositionMs - nextMedia.positionMs > RESTART_RETRY_TOLERANCE_MS;
-      if (jumpedBack) {
-        void retryLyricsForCurrentSong();
-      }
     }
 
     if (!nextVariant) {
@@ -1600,7 +1588,7 @@ function renderLyrics() {
 
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
     const state = lyricsEmptyState("missing");
-    list.innerHTML = `<p class="empty-state"><span>${escapeHtml(state.title)}</span><span class="empty-hint">${escapeHtml(state.hint ?? "")}</span></p>`;
+    list.innerHTML = `<p class="empty-state">${escapeHtml(state.title)}</p>`;
     return;
   }
 
