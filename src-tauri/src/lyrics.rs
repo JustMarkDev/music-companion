@@ -582,9 +582,10 @@ async fn lrc_red_text_hits(
 }
 
 /// The recordings lrc.red lists for a song that plausibly are it, best
-/// first, each with its ISRC. `/match.json` is asked first, and the text
-/// search only when it has nothing, so a song costs one more request only when
-/// it would otherwise be missed.
+/// first, each with its ISRC. `/match.json` is asked first; the text search,
+/// the halves of a dual-script title, and the primary artist of a joined one
+/// follow only while no hit is named exactly like the playing song, so a song
+/// costs extra requests only while it would otherwise be missed or covered.
 async fn lrc_red_matches(
     client: &reqwest::Client,
     title: &str,
@@ -592,16 +593,39 @@ async fn lrc_red_matches(
     duration_ms: Option<u64>,
 ) -> Result<Vec<(Candidate, String)>, String> {
     let mut matched = lrc_red_match_candidates(client, title, artist, duration_ms).await?;
-    if has_exact_title(&matched, title, artist) {
+    if has_exact_title(&matched, title, artist, duration_ms) {
         return Ok(matched);
     }
     // `/match.json` only knows the live version of "Via con me"; the studio
     // one is credited to "帕羅康提" and found by the text search.
-    let hits = match lrc_red_text_hits(client, title, artist).await {
-        Ok(hits) => hits,
+    match lrc_red_text_hits(client, title, artist).await {
+        Ok(hits) => matched = merge_text_hits(matched, hits),
         Err(_) if !matched.is_empty() => return Ok(matched),
         Err(error) => return Err(error),
-    };
+    }
+    // A title in two scripts ("クスシキ - KUSUSHIKI") finds nothing as free
+    // text, while either half alone names the song.
+    if !has_exact_title(&matched, title, artist, duration_ms) && !title_halves(title).is_empty() {
+        matched = merge_half_hits(client, matched, title, artist).await;
+    }
+    // A duet ("Kenshi Yonezu & Hikaru Utada") finds nothing as free text when
+    // lrc.red credits one singer in another script ("米津玄師, Utada"); the
+    // first singer alone finds the song.
+    if !has_exact_title(&matched, title, artist, duration_ms)
+        && let Some(primary) = primary_artist(artist)
+        && let Ok(hits) = lrc_red_text_hits(client, title, primary).await
+    {
+        matched = merge_text_hits(matched, hits);
+    }
+    Ok(rank_matches(matched, title, artist, duration_ms))
+}
+
+/// Adds text-search hits to ranked candidates, skipping ISRCs already known.
+/// Ranking happens later, once every fallback query has answered.
+fn merge_text_hits(
+    mut matched: Vec<(Candidate, String)>,
+    hits: Vec<LrcRedHit>,
+) -> Vec<(Candidate, String)> {
     let known = matched
         .iter()
         .map(|(_, isrc)| isrc.clone())
@@ -611,16 +635,65 @@ async fn lrc_red_matches(
             .into_iter()
             .filter(|(_, isrc)| !known.contains(isrc)),
     );
-    Ok(rank_matches(matched, title, artist, duration_ms))
+    matched
 }
 
-/// True when some hit is named exactly like the playing song and is not
-/// credited to another artist.
-fn has_exact_title(hits: &[(Candidate, String)], title: &str, artist: &str) -> bool {
+/// Merges the text-search hits of each half of a dual-script title. The halves
+/// are asked together; a failed half only loses its own hits.
+async fn merge_half_hits(
+    client: &reqwest::Client,
+    mut matched: Vec<(Candidate, String)>,
+    title: &str,
+    artist: &str,
+) -> Vec<(Candidate, String)> {
+    let halves = title_halves(title);
+    let Some(first) = halves.first() else {
+        return matched;
+    };
+    let (first_hits, second_hits) = tokio::join!(lrc_red_text_hits(client, first, artist), async {
+        match halves.get(1) {
+            Some(second) => lrc_red_text_hits(client, second, artist).await,
+            None => Ok(Vec::new()),
+        }
+    });
+    for hits in [first_hits, second_hits].into_iter().flatten() {
+        matched = merge_text_hits(matched, hits);
+    }
+    matched
+}
+
+/// The halves of a title naming a song twice ("クスシキ - KUSUSHIKI"), so each
+/// half can be searched on its own. Only a dash with spaces around it splits,
+/// so "KICK BACK -ANIME edit" stays whole.
+fn title_halves(title: &str) -> Vec<String> {
+    const DASHES: [&str; 3] = [" - ", " \u{2013} ", " \u{2014} "];
+    // The rightmost dash, so a dash inside the title is kept whatever kind it is.
+    DASHES
+        .iter()
+        .filter_map(|dash| title.rsplit_once(dash))
+        .max_by_key(|(rest, _)| rest.len())
+        .map(|(first, second)| vec![first.trim().to_string(), second.trim().to_string()])
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|half| !half.is_empty())
+        .collect()
+}
+
+/// True when some hit is named exactly like the playing song, is not
+/// credited to another artist, and matches the known length. A wrong-length
+/// exact hit must not suppress the fallbacks: `rank_matches` would filter it
+/// out afterwards and the lookup would miss.
+fn has_exact_title(
+    hits: &[(Candidate, String)],
+    title: &str,
+    artist: &str,
+    duration_ms: Option<u64>,
+) -> bool {
     let normalized_artist = normalize(artist);
     let normalized_title = canonical_title(title, &normalized_artist);
     hits.iter().any(|(candidate, _)| {
-        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+        duration_matches(candidate.duration, duration_ms)
+            && track_title_score(candidate, &normalized_title, &normalized_artist) == 4
             && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
     })
 }
@@ -964,8 +1037,24 @@ mod tests {
         let cover = vec![(candidate("Via Con Me", "Fiorello", 166.2), "a".to_string())];
         let studio = vec![(candidate("Via Con Me", "帕羅康提", 166.5), "b".to_string())];
 
-        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte"));
-        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte"));
+        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte", None));
+        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte", None));
+    }
+
+    #[test]
+    fn a_wrong_length_exact_hit_does_not_suppress_the_fallbacks() {
+        let hit = vec![(
+            candidate("JANE DOE", "Kenshi Yonezu", 180.0),
+            "cover".to_string(),
+        )];
+
+        assert!(has_exact_title(&hit, "JANE DOE", "Kenshi Yonezu", None));
+        assert!(!has_exact_title(
+            &hit,
+            "JANE DOE",
+            "Kenshi Yonezu",
+            Some(236_000),
+        ));
     }
 
     #[test]
@@ -1329,6 +1418,127 @@ mod tests {
         assert_eq!(primary_artist("Ravyn Lenae feat. Rex"), Some("Ravyn Lenae"));
         assert_eq!(primary_artist("Gorillaz"), None);
         assert_eq!(primary_artist("Simon&Garfunkel"), None);
+    }
+
+    #[test]
+    fn primary_artist_of_a_duet_is_the_first_singer() {
+        assert_eq!(
+            primary_artist("Kenshi Yonezu & Hikaru Utada"),
+            Some("Kenshi Yonezu")
+        );
+    }
+
+    #[test]
+    fn a_dual_script_title_splits_into_searchable_halves() {
+        assert_eq!(
+            title_halves("クスシキ - KUSUSHIKI"),
+            ["クスシキ", "KUSUSHIKI"]
+        );
+        assert_eq!(
+            title_halves("革命道中 – On The Way"),
+            ["革命道中", "On The Way"]
+        );
+        assert_eq!(
+            title_halves("革命道中 — On The Way"),
+            ["革命道中", "On The Way"]
+        );
+        // A dash without spaces around it is part of the title.
+        assert!(title_halves("KICK BACK -ANIME edit").is_empty());
+        assert!(title_halves("JANE DOE").is_empty());
+        // An empty half is dropped, the other still searches.
+        assert_eq!(title_halves(" - KUSUSHIKI"), ["KUSUSHIKI"]);
+        // A repeated dash splits at the rightmost one.
+        assert_eq!(title_halves("A - B - C"), ["A - B", "C"]);
+    }
+
+    #[test]
+    fn merged_text_hits_skip_recordings_already_known() {
+        let matched = vec![(candidate("Song", "Artist", 200.0), "A".to_string())];
+        let hits = vec![lrc_red_hit("A", "Song"), lrc_red_hit("B", "Song (Live)")];
+
+        let merged = merge_text_hits(matched, hits);
+
+        let isrcs = merged
+            .iter()
+            .map(|(_, isrc)| isrc.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(isrcs, ["A", "B"]);
+    }
+
+    #[test]
+    fn the_official_duet_beats_a_cover_the_joined_search_misses() {
+        // What the merged fallbacks list for "JANE DOE" by
+        // "Kenshi Yonezu & Hikaru Utada": the cover from the joined-artist
+        // queries, whose file holds a few placeholder lines, and the official
+        // recording from the primary-artist text search, credited to
+        // "米津玄師, Utada".
+        let cover = candidate("JANE DOE", "vally.exe", 234.44);
+
+        // The cover alone never counts as exact: its artist says nothing
+        // about the duet, so the fallbacks run.
+        assert!(!has_exact_title(
+            &[(cover.clone(), "cover".to_string())],
+            "JANE DOE",
+            "Kenshi Yonezu & Hikaru Utada",
+            Some(236_000),
+        ));
+
+        let ranked = rank_matches(
+            vec![
+                (cover, "cover".to_string()),
+                (
+                    candidate("JANE DOE", "米津玄師, Utada", 235.947),
+                    "official".to_string(),
+                ),
+            ],
+            "JANE DOE",
+            "Kenshi Yonezu & Hikaru Utada",
+            Some(236_000),
+        );
+
+        assert_eq!(
+            ranked.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
+            ["official", "cover"]
+        );
+    }
+
+    #[test]
+    fn a_dual_script_title_prefers_the_half_matching_recording() {
+        // What the half query "KUSUSHIKI Mrs. GREEN APPLE" lists: the official
+        // recording and a cover. The full title only ever scores a partial
+        // match, so the half fallbacks run.
+        let hits = vec![
+            (
+                candidate("KUSUSHIKI", "Mrs. GREEN APPLE", 189.427),
+                "official",
+            ),
+            (candidate("Kusushiki", "Olwen Mari", 91.698), "cover"),
+            (
+                candidate("Inferno", "Mrs. GREEN APPLE", 212.547),
+                "other song",
+            ),
+        ];
+        assert!(!has_exact_title(
+            &hits
+                .iter()
+                .map(|(candidate, id)| (candidate.clone(), id.to_string()))
+                .collect::<Vec<_>>(),
+            "クスシキ - KUSUSHIKI",
+            "Mrs. GREEN APPLE",
+            Some(189_000),
+        ));
+
+        let ranked = rank_matches(
+            hits,
+            "クスシキ - KUSUSHIKI",
+            "Mrs. GREEN APPLE",
+            Some(189_000),
+        );
+
+        assert_eq!(
+            ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+            ["official"]
+        );
     }
 
     fn run<T>(future: impl Future<Output = T>) -> T {
