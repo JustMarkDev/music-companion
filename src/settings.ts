@@ -66,7 +66,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   wordSync: false,
   startAtLogin: false,
   accentMode: "dynamic",
-  accentColor: "#22e6c7",
+  accentColor: "#FF8A65",
   backdropMaterial: "acrylic",
   hotkeys: { ...DEFAULT_HOTKEYS },
 };

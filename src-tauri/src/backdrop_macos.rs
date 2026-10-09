@@ -6,7 +6,7 @@
 
 use objc2::ffi::class_addMethod;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
-use objc2::sel;
+use objc2::{msg_send, sel};
 use tauri::{Manager, WebviewWindow};
 use tauri_plugin_liquid_glass::{GlassMaterialVariant, LiquidGlassConfig, LiquidGlassExt};
 
@@ -31,7 +31,44 @@ pub fn apply(window: &WebviewWindow, intensity: u8, material: &str) -> Result<()
         .map_err(|error| error.to_string())?;
 
     keep_glass_active(window);
+    set_glass_style(window, material);
     Ok(())
+}
+
+/// The plugin chooses Regular or Clear through the private `set_variant:`, which
+/// current macOS accepts and ignores, so both options looked the same. The public
+/// `style` property does switch the glass, and `GlassMaterialVariant`'s Regular (0)
+/// and Clear (1) match `NSGlassEffectViewStyle`. Older macOS has no glass view to
+/// find, so this does nothing there.
+fn set_glass_style(window: &WebviewWindow, material: &str) {
+    let style = variant_for(material) as isize;
+    let window = window.clone();
+    let target = window.clone();
+    let _ = target.run_on_main_thread(move || {
+        let (Ok(handle), Some(glass_class)) =
+            (window.ns_window(), AnyClass::get(c"NSGlassEffectView"))
+        else {
+            return;
+        };
+        // SAFETY: `ns_window` is a live `NSWindow`, this closure runs on the main thread, and
+        // every selector is public AppKit API on the receiver it is sent to.
+        unsafe {
+            let ns_window = handle.cast::<AnyObject>();
+            let content: *mut AnyObject = msg_send![ns_window, contentView];
+            if content.is_null() {
+                return;
+            }
+            let subviews: *mut AnyObject = msg_send![content, subviews];
+            let count: usize = msg_send![subviews, count];
+            for index in 0..count {
+                let view: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+                let is_glass: Bool = msg_send![view, isKindOfClass: glass_class];
+                if is_glass.as_bool() {
+                    let _: () = msg_send![view, setStyle: style];
+                }
+            }
+        }
+    });
 }
 
 extern "C-unwind" fn always_active(_this: &AnyObject, _cmd: Sel) -> Bool {

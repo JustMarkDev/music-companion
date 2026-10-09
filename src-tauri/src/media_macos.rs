@@ -13,6 +13,7 @@
 
 use super::MediaState;
 use std::{
+    collections::HashSet,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -594,6 +595,14 @@ return "ok""#,
     Ok(false)
 }
 
+/// Returns true the first time a given error message is seen.
+fn report_once(error: &str) -> bool {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(Mutex::default)
+        .lock()
+        .is_ok_and(|mut seen| seen.insert(error.to_string()))
+}
+
 fn run_applescript(script: &str) -> Option<String> {
     let output = Command::new("/usr/bin/osascript")
         .arg("-e")
@@ -603,7 +612,9 @@ fn run_applescript(script: &str) -> Option<String> {
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         let error = error.trim();
-        if !error.is_empty() {
+        // The fallback polls every couple of seconds, and a player that is not
+        // installed fails the same way every time, so each error prints once.
+        if !error.is_empty() && report_once(error) {
             eprintln!("[media] AppleScript failed: {error}");
         }
         return None;
