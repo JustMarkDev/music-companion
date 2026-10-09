@@ -254,10 +254,14 @@ let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
 let discontinuityConfirmationTimer = 0;
-// A transient lrc.red failure retries once after a short wait, so a single
-// stalled lookup never sticks until the next track.
+// A transient lrc.red failure retries with backoff and then stops, so a single
+// stalled lookup never sticks until the next track but also never polls the
+// provider forever. User-initiated retries ("Try again", restarting or seeking
+// back) reset the budget.
 let lyricsErrorRetryTimer = 0;
+let lyricsErrorRetryCount = 0;
 const LYRICS_ERROR_RETRY_DELAY_MS = 15_000;
+const MAX_LYRICS_ERROR_RETRIES = 2;
 // A jump back in the same song retries a failed or missed lookup, so
 // restarting the track recovers without clearing the cache.
 const RESTART_RETRY_TOLERANCE_MS = 5_000;
@@ -1129,6 +1133,7 @@ async function pollMedia(reason = "manual") {
 
     if (nextVariant && startsNewVariant) {
       window.clearTimeout(lyricsErrorRetryTimer);
+      lyricsErrorRetryCount = 0;
       currentPlaybackVariant = nextVariant;
       currentTrackKey = variantToken(nextVariant);
       lyricsRequestId += 1;
@@ -1230,6 +1235,7 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
     });
     if (requestIsCurrent) {
       window.clearTimeout(lyricsErrorRetryTimer);
+      lyricsErrorRetryCount = 0;
       applyLyrics(result, localNotice);
       scheduleWordSync(media, expectedVariant, result);
     }
@@ -1248,11 +1254,13 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
  * Looks the current song up again after a transient failure, forgetting the
  * cached miss first so the retry reaches lrc.red instead of reusing it.
  */
-async function retryLyricsForCurrentSong() {
+async function retryLyricsForCurrentSong(resetBudget = true) {
   if (!currentPlaybackVariant || isSettingsWindow) return;
   const variant = currentPlaybackVariant;
   const trackKey = variantToken(variant);
   window.clearTimeout(lyricsErrorRetryTimer);
+  // User-initiated retries get a fresh automatic budget; timer retries consume it.
+  if (resetBudget) lyricsErrorRetryCount = 0;
   wordSyncTried.delete(trackKey);
   await lyricCache.forget(variant);
   if (currentPlaybackVariant !== variant || variantToken(variant) !== currentTrackKey) return;
@@ -1263,11 +1271,14 @@ async function retryLyricsForCurrentSong() {
 
 function scheduleLyricsErrorRetry(trackKey: string) {
   window.clearTimeout(lyricsErrorRetryTimer);
+  if (lyricsErrorRetryCount >= MAX_LYRICS_ERROR_RETRIES) return;
+  lyricsErrorRetryCount += 1;
+  const delayMs = LYRICS_ERROR_RETRY_DELAY_MS * lyricsErrorRetryCount;
   lyricsErrorRetryTimer = window.setTimeout(() => {
     if (currentTrackKey !== trackKey || lyricsMode !== "error") return;
     if (!currentPlaybackVariant || variantToken(currentPlaybackVariant) !== trackKey) return;
-    void retryLyricsForCurrentSong();
-  }, LYRICS_ERROR_RETRY_DELAY_MS);
+    void retryLyricsForCurrentSong(false);
+  }, delayMs);
 }
 
 /** Starts word timing for the song on screen, once its lyrics are in. */
@@ -1814,14 +1825,13 @@ function applySettings() {
 }
 
 /**
- * Accent-tinted lyrics belong to the see-through glass only, and the two
- * platforms tint opposite materials: macOS Clear (acrylic) is the open glass
- * while Regular (mica) is the frosted one; Windows Acrylic is the frosted
- * backdrop and legacy Mica was the wallpaper-tinted one. With Windows fixed
- * to Acrylic, accent text is effectively macOS Clear only.
+ * Accent-tinted lyrics belong to the see-through glass only: macOS Clear
+ * (acrylic) is the open glass while Regular (mica) is the frosted one.
+ * Windows is fixed to Acrylic, which keeps the standard white text, so
+ * accent text is effectively macOS Clear only.
  */
 function usesAccentText() {
-  if (PLATFORM === "windows") return settings.backdropMaterial === "mica";
+  if (PLATFORM === "windows") return false;
   return settings.backdropMaterial === "acrylic";
 }
 
@@ -1909,6 +1919,7 @@ function saveSettings() {
 
 function clearLyricsCache() {
   window.clearTimeout(lyricsErrorRetryTimer);
+  lyricsErrorRetryCount = 0;
   void lyricCache.clear();
   wordSyncTried.clear();
   console.info("[latency] lyrics cache cleared");
