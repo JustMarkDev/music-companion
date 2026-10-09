@@ -34,11 +34,13 @@ jobs:
           node-version: lts/*
 
       # Bumps tauri.conf.json, Cargo.toml and Cargo.lock, commits, tags, and creates a draft release.
+      # --force: package.json pins bun through devEngines, so npm/npx aborts
+      # with EBADDEVENGINES without it (only way to skip the check per npm/rfcs#830).
       - name: Run semantic-release
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx -y -p semantic-release@latest -p @semantic-release/exec@latest -p @semantic-release/git@latest semantic-release
+        run: npx --force -y -p semantic-release@latest -p @semantic-release/exec@latest -p @semantic-release/git@latest semantic-release
 
   release-windows:
     name: Build and publish Windows installers
