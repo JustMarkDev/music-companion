@@ -91,7 +91,7 @@ export function lyricsEmptyState(mode: "error" | "missing"): LyricsEmptyState {
   }
   return {
     title: "No lyrics found.",
-    hint: "Check the song title, or clear saved lyrics in Settings to search again.",
+    hint: "Check the song title, or restart the song or seek back to search again.",
     retryable: false,
   };
 }

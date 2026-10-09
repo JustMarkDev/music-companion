@@ -287,7 +287,7 @@ describe("empty-state retry", () => {
     expect(state.retryable).toBe(false);
     expect(state.title).toBe("No lyrics found.");
     expect(state.hint).toMatch(/song title/i);
-    expect(state.hint).toMatch(/clear saved lyrics/i);
+    expect(state.hint).toMatch(/restart the song or seek back/i);
   });
 });
 
