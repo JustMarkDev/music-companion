@@ -419,6 +419,28 @@ mod tests {
     }
 
     #[test]
+    fn syllables_of_one_romanized_word_concatenate_while_words_stay_apart() {
+        // lrc.red writes syllables of one word as adjacent spans and separates
+        // words with whitespace; the segments keep that break as trailing spaces.
+        let ttml = format!(
+            r#"{HEAD}<head><metadata><transliterations><transliteration xml:lang="ja-Latn"><text for="L1"><span begin="3.151" end="4.171" xmlns="http://www.w3.org/ns/ttml">dare</span><span begin="4.171" end="4.505" xmlns="http://www.w3.org/ns/ttml">ka</span> <span begin="4.505" end="5.023" xmlns="http://www.w3.org/ns/ttml">o</span></text></transliteration></transliterations></metadata></head><body><div><p begin="3.151" end="5.023" lrc:key="L1"><span begin="3.151" end="4.171">誰</span><span begin="4.171" end="4.505">か</span><span begin="4.505" end="5.023">を</span></p></div></body></tt>"#
+        );
+
+        let lyrics = parse(&ttml).unwrap();
+
+        let romanized = lyrics.lines[0].romanized.as_ref().unwrap();
+        assert_eq!(texts(&romanized.segments), ["Dare", "ka ", "o"]);
+        assert_eq!(
+            romanized
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            "Dareka o"
+        );
+    }
+
+    #[test]
     fn a_plain_transliteration_spans_the_whole_line() {
         let ttml = format!(
             r#"{HEAD}<head><metadata><transliterations><transliteration xml:lang="ko-Latn"><text for="L1">annyeong</text></transliteration></transliterations></metadata></head><body><div><p begin="2.5" end="4" lrc:key="L1">안녕</p></div></body></tt>"#

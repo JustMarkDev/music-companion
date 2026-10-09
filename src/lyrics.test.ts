@@ -4,6 +4,8 @@ import {
   getLocalLyricsNotice,
   hasRomanization,
   hasTranslation,
+  isLatinOnlyLine,
+  isRedundantTranslation,
   isSameCachedVariant,
   isSameSong,
   normalizeLyricsMetadata,
@@ -393,5 +395,155 @@ describe("retimeRomanization", () => {
     expect(retimeRomanization(original, [segment(0, 1_000, " ")])).toEqual([
       segment(0, 1_000, " "),
     ]);
+  });
+});
+
+describe("isLatinOnlyLine", () => {
+  it("accepts Latin letters with accents and ignores everything else", () => {
+    expect(isLatinOnlyLine("Just you…")).toBe(true);
+    expect(isLatinOnlyLine("Voilà")).toBe(true);
+    expect(isLatinOnlyLine("過去しがみ疾走 Yeah")).toBe(false);
+    expect(isLatinOnlyLine("どの私も私よ")).toBe(false);
+  });
+
+  it("needs at least one letter", () => {
+    expect(isLatinOnlyLine("♪")).toBe(false);
+    expect(isLatinOnlyLine("…")).toBe(false);
+    expect(isLatinOnlyLine("123")).toBe(false);
+  });
+});
+
+describe("isRedundantTranslation", () => {
+  it("spots a translation that repeats the displayed line", () => {
+    expect(isRedundantTranslation("Spinning Spinning", "Spinning Spinning")).toBe(true);
+    expect(isRedundantTranslation("Spinning Spinning", "  spinning SPINNING ")).toBe(true);
+    expect(isRedundantTranslation("夢", "夢")).toBe(true);
+  });
+
+  it("spots lrc.red's English echo of a Latin line", () => {
+    // GO GHOST (King Gnu) L1/L6/L48: the "translation" of "just u…" is "Just you…".
+    expect(isRedundantTranslation("just u…", "Just you…", "just u…")).toBe(true);
+    // In Romanized mode the displayed line is the romanization, same echo.
+    expect(isRedundantTranslation("Just u...", "Just you…", "just u…")).toBe(true);
+  });
+
+  it("keeps genuine translations of Japanese lines", () => {
+    // GO GHOST L3, in both modes.
+    expect(
+      isRedundantTranslation(
+        "壊れかけの日々さえも",
+        "Even the days that were falling apart",
+        "壊れかけの日々さえも",
+      ),
+    ).toBe(false);
+    expect(
+      isRedundantTranslation(
+        "kowarekake no hibi sae mo",
+        "Even the days that were falling apart",
+        "壊れかけの日々さえも",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a real translation between two Latin-script languages", () => {
+    // La Vie En Rose: French into English is worth showing.
+    expect(
+      isRedundantTranslation(
+        "Des yeux qui font baisser les miens",
+        "Eyes that make me lower mine",
+        "Des yeux qui font baisser les miens",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a non-Latin translation of a Latin line", () => {
+    expect(isRedundantTranslation("Hello", "こんにちは", "Hello")).toBe(false);
+  });
+});
+
+describe("translation display", () => {
+  it("drops a translation that only echoes the line, in either script mode", () => {
+    const echo = result({
+      lines: [
+        line(1_000, ["just ", "u…"], {
+          romanized: { segments: [segment(1_000, 1_500, "Just "), segment(1_500, 2_000, "u...")] },
+          translation: "Just you…",
+        }),
+      ],
+    });
+    expect(selectLyricsDisplay(echo, "Song", false).lines[0]).not.toHaveProperty("translation");
+    expect(selectLyricsDisplay(echo, "Song", true).lines[0]).not.toHaveProperty("translation");
+  });
+
+  it("shows one main line with the translation as a secondary line", () => {
+    const kanji: LyricsResultLine = {
+      startMs: 1_000,
+      endMs: 2_000,
+      voice: 0,
+      segments: [segment(1_000, 1_500, "壊"), segment(1_500, 2_000, "れ")],
+      romanized: { segments: [segment(1_000, 2_000, "Koware")] },
+      translation: "To break",
+    };
+    const lyrics = result({ lines: [kanji] });
+    // Romanized mode: the romanization is the main line, never beside the kanji.
+    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+      text: "Koware",
+      translation: "To break",
+    });
+    // Original mode: the kanji is the main line, same secondary translation.
+    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0]).toMatchObject({
+      text: "壊れ",
+      translation: "To break",
+    });
+  });
+});
+
+describe("romanized spacing", () => {
+  it("concatenates syllables of one word and separates words as lrc.red breaks them", () => {
+    // GO GHOST L3 shapes: adjacent spans are syllables, spaced spans are words.
+    const lyrics = result({
+      lines: [
+        line(1_000, ["壊", "れ", "かけ", "の", "日々", "さ", "え", "も"], {
+          romanized: {
+            segments: [
+              segment(1_000, 1_200, "kowa"),
+              segment(1_200, 1_400, "re"),
+              segment(1_400, 1_600, "kake "),
+              segment(1_600, 1_800, "no "),
+              segment(1_800, 2_000, "hibi "),
+              segment(2_000, 2_200, "sa"),
+              segment(2_200, 2_400, "e "),
+              segment(2_400, 2_600, "mo"),
+            ],
+          },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+    expect(displayed.text).toBe("kowarekake no hibi sae mo");
+    expect(displayed.words).toEqual(["kowarekake", "no", "hibi", "sae", "mo"]);
+    expect(displayed.segments?.map((piece) => piece.text)).toEqual([
+      "kowa",
+      "re",
+      "kake ",
+      "no ",
+      "hibi ",
+      "sa",
+      "e ",
+      "mo",
+    ]);
+  });
+
+  it("rebuilds a whole-line romanization with single spaces between its words", () => {
+    const lyrics = result({
+      lines: [
+        line(1_000, ["あなた", "わかって"], {
+          romanized: { segments: [segment(1_000, 2_000, "  Anata   wa wakatte  ")] },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+    expect(displayed.text).toBe("Anata wa wakatte");
+    expect(displayed.segments?.map((piece) => piece.text)).toEqual(["Anata ", "wa ", "wakatte"]);
   });
 });
