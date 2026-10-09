@@ -223,11 +223,15 @@ fn metadata_scores(
         None => score(candidate.album_name.as_deref(), normalized_title),
     };
     // lrc.red credits some artists in another script ("Paolo Conte" is
-    // "帕羅康提"), which says nothing against the playing artist.
-    let other_script = candidate
-        .artist_name
-        .as_deref()
-        .is_some_and(has_non_latin_letters)
+    // "帕羅康提"), which says nothing against the playing artist. It only
+    // counts for a hit whose title matches, or any song in that script would
+    // pass for the playing one.
+    let other_script = title_score > 0
+        && !normalized_artist.is_empty()
+        && candidate
+            .artist_name
+            .as_deref()
+            .is_some_and(has_non_latin_letters)
         && !has_non_latin_letters(normalized_artist);
     let artist_score = [
         score(candidate.artist_name.as_deref(), normalized_artist),
@@ -610,12 +614,14 @@ async fn lrc_red_matches(
     Ok(rank_matches(matched, title, artist, duration_ms))
 }
 
-/// True when some hit is named exactly like the playing song.
+/// True when some hit is named exactly like the playing song and is not
+/// credited to another artist.
 fn has_exact_title(hits: &[(Candidate, String)], title: &str, artist: &str) -> bool {
     let normalized_artist = normalize(artist);
     let normalized_title = canonical_title(title, &normalized_artist);
     hits.iter().any(|(candidate, _)| {
         track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+            && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
     })
 }
 
@@ -924,6 +930,30 @@ mod tests {
         let ranked = rank_matches(hits, "Via con me", "Paolo Conte", Some(166_500));
 
         assert_eq!(ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn another_script_credit_only_vouches_for_a_matching_title() {
+        let hits = vec![
+            (candidate("感電", "周杰伦", 166.0), 1),
+            (candidate("Via Con Me", "帕羅康提", 166.0), 2),
+        ];
+
+        let ranked = rank_matches(hits, "Via con me", "Paolo Conte", Some(166_500));
+        assert_eq!(ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [2]);
+
+        // Without a playing artist, no credit is preferred over another.
+        let scores = |artist| metadata_scores(&candidate("Song", artist, 100.0), "song", "");
+        assert_eq!(scores("アーティスト"), scores("Artist"));
+    }
+
+    #[test]
+    fn a_cover_by_another_artist_is_not_an_exact_title_hit() {
+        let cover = vec![(candidate("Via Con Me", "Fiorello", 166.2), "a".to_string())];
+        let studio = vec![(candidate("Via Con Me", "帕羅康提", 166.5), "b".to_string())];
+
+        assert!(!has_exact_title(&cover, "Via con me", "Paolo Conte"));
+        assert!(has_exact_title(&studio, "Via con me", "Paolo Conte"));
     }
 
     #[test]
