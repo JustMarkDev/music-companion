@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import "@fontsource-variable/nunito";
 import "@fontsource-variable/source-sans-3";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
@@ -96,10 +97,47 @@ type HotkeyStatus = {
 let hotkeyStatuses: HotkeyStatus[] = [];
 
 const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
-  pinned: "Pinned mode",
+  pinned: "Pin overlay",
   next: "Next song",
   previous: "Previous song",
-  playPause: "Pause song",
+  playPause: "Play / pause",
+};
+
+const ACCENT_PRESETS = [
+  "#FF8A65",
+  "#FFD166",
+  "#7EE0B5",
+  "#6FB7FF",
+  "#B79CFF",
+  "#FF8FC7",
+  "#F6F0E8",
+  "#5C5566",
+];
+// The wheel's rim is a quarter white, so dragging tops out at 75% saturation.
+const WHEEL_MAX_SATURATION = 0.75;
+
+/** Small pictures at each end of a slider that show what moving it does. */
+const SLIDER_ENDS = {
+  opacity: [
+    `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg>`,
+    `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="currentColor"/></svg>`,
+  ],
+  blur: [
+    `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4" fill="currentColor"/></svg>`,
+    `<i class="blur-dot"></i>`,
+  ],
+  size: [`<b class="size-small">A</b>`, `<b class="size-large">A</b>`],
+  spacing: [
+    `<svg viewBox="0 0 16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5.5h10M3 8h10M3 10.5h10"/></svg>`,
+    `<svg viewBox="0 0 16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 2.5h10M3 8h10M3 13.5h10"/></svg>`,
+  ],
+} as const;
+
+const ARROW_KEYCAPS: Record<string, string> = {
+  "Left Arrow": "←",
+  "Right Arrow": "→",
+  "Up Arrow": "↑",
+  "Down Arrow": "↓",
 };
 
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
@@ -259,147 +297,110 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
 
       <aside class="settings-panel" id="settings-panel" hidden>
-        <div class="settings-header" id="settings-header">
-          <div class="settings-heading">
-            <h2>Settings</h2>
-            <p>Make the overlay feel at home on your desktop.</p>
+        <div class="settings-titlebar" data-settings-drag>
+          <span class="settings-app-icon" aria-hidden="true">${icons.musicalNote}</span>
+          <span class="settings-app-name">Music Companion</span>
+          <div class="caption-buttons">
+            <button type="button" data-settings-action="minimize" title="Minimize" aria-label="Minimize">${icons.minus}</button>
+            <button type="button" class="caption-close" data-settings-action="close" title="Close" aria-label="Close settings">${icons.xMark}</button>
           </div>
-          <button class="icon-button" id="settings-close" title="Close settings" aria-label="Close settings">
-            ${icons.xMark}
-          </button>
         </div>
+        <header class="settings-header" id="settings-header" data-settings-drag>
+          <div class="traffic-lights">
+            <button type="button" class="traffic-close" data-settings-action="close" title="Close" aria-label="Close settings"></button>
+            <button type="button" class="traffic-minimize" data-settings-action="minimize" title="Minimize" aria-label="Minimize"></button>
+            <span class="traffic-zoom" aria-hidden="true"></span>
+          </div>
+          <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
+            <button type="button" class="key active" role="tab" id="tab-look" data-settings-tab="look" aria-controls="page-look" aria-selected="true">${icons.swatch}Look</button>
+            <button type="button" class="key" role="tab" id="tab-lyrics" data-settings-tab="lyrics" aria-controls="page-lyrics" aria-selected="false">${icons.musicalNote}Lyrics</button>
+            <button type="button" class="key" role="tab" id="tab-shortcuts" data-settings-tab="shortcuts" aria-controls="page-shortcuts" aria-selected="false">${icons.keyboard}Shortcuts</button>
+            <button type="button" class="key" role="tab" id="tab-general" data-settings-tab="general" aria-controls="page-general" aria-selected="false">${icons.cog}General</button>
+          </nav>
+        </header>
 
-        <section class="settings-section" aria-labelledby="appearance-title">
-          <div class="section-heading">
-            <h3 id="appearance-title">Appearance</h3>
-            <p>Fine-tune the overlay surface and typography.</p>
-          </div>
-          <div class="settings-card range-group">
-            <div class="range-control">
-              <label class="range-label" for="opacity">
-                <span><strong>Opacity</strong><small>Overlay transparency</small></span>
-                <output id="opacity-value">0%</output>
+        <section class="settings-page" id="page-look" role="tabpanel" aria-labelledby="tab-look" data-settings-page="look">
+          <div class="settings-grid">
+            <div class="card slider-card">
+              ${sliderRow("opacity", "Background", 0, 100, 1, "opacity")}
+              ${sliderRow("blur-intensity", "Blur", 1, 100, 1, "blur")}
+              ${sliderRow("font-size", "Text size", 0.5, 3, 0.05, "size")}
+              ${sliderRow("line-spacing", "Line spacing", 20, 240, 10, "spacing")}
+            </div>
+            <div class="card accent-card" id="accent-card">
+              <h3>Accent colour</h3>
+              <div class="accent-body">
+                <div class="wheel-well" id="accent-wheel">
+                  <div class="wheel" title="Drag to pick a colour"><span class="wheel-handle" id="accent-wheel-handle"></span></div>
+                </div>
+                <div class="accent-side">
+                  <div class="candies" role="group" aria-label="Accent colour presets">
+                    ${ACCENT_PRESETS.map((color) => `<button type="button" class="candy" style="--candy: ${color}" data-accent-preset="${color}" title="${color}" aria-label="Use ${color}"></button>`).join("")}
+                  </div>
+                  <input id="accent-color-hex" class="hex-input" type="text" inputmode="text" maxlength="7" spellcheck="false" aria-label="Accent colour hex value" />
+                </div>
+              </div>
+              <label class="setting-row" for="accent-dynamic">
+                <span><strong>Change with every song</strong><small>Picks a fresh colour for each track</small></span>
+                <input id="accent-dynamic" class="switch" type="checkbox" role="switch" />
               </label>
-              <input id="opacity" type="range" min="0" max="100" step="1" />
             </div>
-            <div class="range-control">
-              <label class="range-label" for="blur-intensity">
-                <span><strong>Blur intensity</strong><small>Background diffusion</small></span>
-                <output id="blur-intensity-value">100%</output>
-              </label>
-              <input id="blur-intensity" type="range" min="1" max="100" step="1" />
-            </div>
-            <div class="range-control">
-              <label class="range-label" for="font-size">
-                <span><strong>Lyric size</strong><small>Scales with the overlay size</small></span>
-                <output id="font-size-value">100%</output>
-              </label>
-              <input id="font-size" type="range" min="0.5" max="3" step="0.05" />
-            </div>
-            <div class="range-control">
-              <label class="range-label" for="line-spacing">
-                <span><strong>Line spacing</strong><small>Breathing room between lyrics</small></span>
-                <output id="line-spacing-value">0.5em</output>
-              </label>
-              <input id="line-spacing" type="range" min="0.1" max="1.2" step="0.05" />
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="material-title">
-          <div class="section-heading">
-            <h3 id="material-title">Window material</h3>
-            <p>Choose the backdrop that best suits your system.</p>
-          </div>
-          <div class="settings-card material-setting">
-            <div class="segmented-control" id="backdrop-material" role="radiogroup" aria-label="Window material">
-              <button type="button" data-backdrop-material="acrylic" role="radio">${materialCopy.acrylic.label}</button>
-              <button type="button" data-backdrop-material="mica" role="radio">${materialCopy.mica.label}</button>
-            </div>
-            <p id="material-description">${materialCopy.acrylic.description}</p>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="accent-title">
-          <div class="section-heading">
-            <h3 id="accent-title">Accent color</h3>
-            <p>Follow the current track or choose your own color.</p>
-          </div>
-          <div class="settings-card accent-color-setting">
-            <div class="segmented-control" id="accent-mode" role="radiogroup" aria-label="Accent color mode">
-              <button type="button" data-accent-mode="dynamic" role="radio">Dynamic</button>
-              <button type="button" data-accent-mode="manual" role="radio">Manual</button>
-            </div>
-            <div class="manual-accent-controls" id="manual-accent-controls">
-              <label class="color-swatch" title="Choose accent color">
-                <input id="accent-color" type="color" aria-label="Choose accent color" />
-                <span aria-hidden="true"></span>
-              </label>
-              <input id="accent-color-hex" type="text" inputmode="text" maxlength="7" spellcheck="false" aria-label="Accent color hex value" />
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="behavior-title">
-          <div class="section-heading">
-            <h3 id="behavior-title">Behavior</h3>
-            <p>Choose how Music Companion starts and displays lyrics.</p>
-          </div>
-          <div class="settings-card switch-group">
-            <label class="switch-row" for="start-login">
-              <span><strong>Start at login</strong><small>Launch automatically with ${osName}</small></span>
-              <input id="start-login" type="checkbox" role="switch" />
-              <span class="switch-control" aria-hidden="true"></span>
-            </label>
-            <label class="switch-row" for="word-sync">
-              <span><strong>Sync words with AI</strong><small>lrc.red's model times each word of songs that lack it. The first sync of a song can take 10 seconds or more; it is saved afterwards.</small></span>
-              <input id="word-sync" type="checkbox" role="switch" />
-              <span class="switch-control" aria-hidden="true"></span>
-            </label>
-            <div class="lyrics-mode-setting">
-              <span><strong>Lyrics script</strong><small>Choose the preferred lyric writing system</small></span>
-              <div class="segmented-control" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
-                <button type="button" data-lyrics-script="original" role="radio">Original</button>
-                <button type="button" data-lyrics-script="romanized" role="radio">Romanized</button>
+            <div class="card span">
+              <h3>Overlay glass</h3>
+              <div class="choices" id="backdrop-material" role="radiogroup" aria-label="Overlay glass">
+                ${(["acrylic", "mica"] as const).map((material) => `<button type="button" class="key choice" role="radio" data-backdrop-material="${material}"><span class="choice-pic glass-pic glass-${material}" aria-hidden="true"></span><span class="choice-title">${materialCopy[material].label}</span><span class="choice-description">${materialCopy[material].description}</span></button>`).join("")}
               </div>
             </div>
-            <label class="switch-row" for="show-translation">
-              <span><strong>Show translation</strong><small>Show lrc.red's translation under each line that has one</small></span>
-              <input id="show-translation" type="checkbox" role="switch" />
-              <span class="switch-control" aria-hidden="true"></span>
-            </label>
           </div>
         </section>
 
-        <section class="settings-section" aria-labelledby="system-title">
-          <div class="section-heading">
-            <h3 id="system-title">System</h3>
-          </div>
-          <div class="settings-card system-group">
-            <div class="hotkey-setting">
-              <span><strong>Pinned mode</strong><small>Toggle click-through mode</small></span>
-              <span class="hotkey-value" data-hotkey-action="pinned"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default pinned mode hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.pinned)}</button></span>
+        <section class="settings-page" id="page-lyrics" role="tabpanel" aria-labelledby="tab-lyrics" data-settings-page="lyrics" hidden>
+          <div class="settings-grid">
+            <div class="card span">
+              <h3>How lyrics are written</h3>
+              <div class="choices" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
+                <button type="button" class="key choice" role="radio" data-lyrics-script="original"><span class="choice-pic script-pic" aria-hidden="true">夜に駆ける</span><span class="choice-title">Original</span><span class="choice-description">As the artist wrote them</span></button>
+                <button type="button" class="key choice" role="radio" data-lyrics-script="romanized"><span class="choice-pic script-pic" aria-hidden="true">Yoru ni kakeru</span><span class="choice-title">Romanized</span><span class="choice-description">In Latin letters, when the song has them</span></button>
+              </div>
             </div>
-            <div class="hotkey-setting">
-              <span><strong>Next song</strong><small>Skip to the next track</small></span>
-              <span class="hotkey-value" data-hotkey-action="next"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default next song hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.next)}</button></span>
-            </div>
-            <div class="hotkey-setting">
-              <span><strong>Previous song</strong><small>Return to the previous track</small></span>
-              <span class="hotkey-value" data-hotkey-action="previous"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default previous song hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.previous)}</button></span>
-            </div>
-            <div class="hotkey-setting">
-              <span><strong>Pause song</strong><small>Toggle play or pause</small></span>
-              <span class="hotkey-value" data-hotkey-action="playPause"><button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore default play/pause hotkey">${icons.arrowPath}</button><button class="hotkey-input" type="button">${formatAccelerator(DEFAULT_HOTKEYS.playPause)}</button></span>
-            </div>
-            <div class="cache-setting">
-              <span><strong>Lyrics cache</strong><small>Saved on this device</small></span>
-              <button class="clear-cache-button" id="clear-lyrics-cache">Clear</button>
+            <div class="card span">
+              <label class="setting-row" for="show-translation">
+                <span><strong>Show translation</strong><small>A second line under each lyric, when there is one</small></span>
+                <input id="show-translation" class="switch" type="checkbox" role="switch" />
+              </label>
+              <label class="setting-row" for="word-sync">
+                <span><strong>Sync words with AI <span class="sparkle">${icons.sparkles}</span></strong><small>Lights up each word as it's sung. The first time takes about 10 seconds per song.</small></span>
+                <input id="word-sync" class="switch" type="checkbox" role="switch" />
+              </label>
             </div>
           </div>
         </section>
 
-        <p class="app-version" id="app-version">Music Companion</p>
+        <section class="settings-page" id="page-shortcuts" role="tabpanel" aria-labelledby="tab-shortcuts" data-settings-page="shortcuts" hidden>
+          <div class="hotkey-grid">
+            ${hotkeyCard("pinned", "Pin overlay", "Clicks go through it")}
+            ${hotkeyCard("playPause", "Play / pause")}
+            ${hotkeyCard("next", "Next song")}
+            ${hotkeyCard("previous", "Previous song")}
+          </div>
+          <p class="settings-tip">These work in every app. Click one and press your new combo.</p>
+        </section>
+
+        <section class="settings-page" id="page-general" role="tabpanel" aria-labelledby="tab-general" data-settings-page="general" hidden>
+          <div class="settings-grid">
+            <div class="card span">
+              <label class="setting-row" for="start-login">
+                <span><strong>Open at login</strong><small>Start with ${osName}, so lyrics are there when music is</small></span>
+                <input id="start-login" class="switch" type="checkbox" role="switch" />
+              </label>
+              <div class="setting-row">
+                <span><strong>Saved lyrics</strong><small>Kept on this device, so songs load instantly</small></span>
+                <button type="button" class="key button" id="clear-lyrics-cache">Clear</button>
+              </div>
+            </div>
+          </div>
+          <p class="app-version" id="app-version">Music Companion</p>
+        </section>
       </aside>
       <div class="resize-handles" aria-hidden="true">
         <span data-resize-direction="North"></span>
@@ -528,17 +529,6 @@ function wireUi() {
     });
   });
 
-  const overlay = document.querySelector<HTMLElement>("#overlay");
-  overlay?.addEventListener("pointermove", (event) => {
-    const rect = overlay.getBoundingClientRect();
-    overlay.classList.toggle("controls-visible", event.clientY - rect.top <= 72);
-  });
-  overlay?.addEventListener("pointerleave", () => {
-    if (!settingsOpen) {
-      overlay.classList.remove("controls-visible");
-    }
-  });
-
   document.querySelector("#chrome")?.addEventListener("pointerdown", (event) => {
     if (
       appWindow &&
@@ -551,16 +541,23 @@ function wireUi() {
     }
   });
 
-  document.querySelector("#settings-header")?.addEventListener("pointerdown", (event) => {
-    if (
-      appWindow &&
-      event instanceof PointerEvent &&
-      event.button === 0 &&
-      event.target instanceof Element &&
-      !event.target.closest("button")
-    ) {
-      void safeWindowAction(() => appWindow.startDragging());
-    }
+  document.querySelectorAll("[data-settings-drag]").forEach((region) => {
+    region.addEventListener("pointerdown", (event) => {
+      if (
+        appWindow &&
+        event instanceof PointerEvent &&
+        event.button === 0 &&
+        event.target instanceof Element &&
+        !event.target.closest("button")
+      ) {
+        void safeWindowAction(() => appWindow.startDragging());
+      }
+    });
+  });
+
+  document.querySelector(".settings-tabs")?.addEventListener("click", (event) => {
+    const tab = (event.target as Element).closest<HTMLButtonElement>("[data-settings-tab]");
+    if (tab) showSettingsTab(tab.dataset.settingsTab!);
   });
 
   document.querySelector("#lyrics-viewport")?.addEventListener("dblclick", () => {
@@ -576,8 +573,11 @@ function wireUi() {
     openSettings();
   });
 
-  document.querySelector("#settings-close")?.addEventListener("click", () => {
-    closeSettings();
+  document.querySelectorAll<HTMLButtonElement>("[data-settings-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.settingsAction === "close") closeSettings();
+      else void safeWindowAction(() => appWindow?.minimize());
+    });
   });
 
   document.querySelector("#minimize")?.addEventListener("click", () => {
@@ -682,21 +682,47 @@ function wireUi() {
     renderLyrics();
   });
 
+  // Shown as a percentage of the default spacing, which is stored as 0.5em.
   bindRange("line-spacing", (value) => {
-    settings.lineSpacing = value;
+    settings.lineSpacing = value / 200;
     saveSettings();
     applySettings();
   });
 
-  document.querySelector("#accent-mode")?.addEventListener("click", (event) => {
-    const mode = (event.target as Element).closest<HTMLButtonElement>("[data-accent-mode]")?.dataset
-      .accentMode;
-    if (!mode) return;
-    settings.accentMode = mode === "manual" ? "manual" : "dynamic";
-    saveSettings();
-    applySettings();
-    renderSettings();
-    void syncSettingsAccent();
+  document
+    .querySelector<HTMLInputElement>("#accent-dynamic")
+    ?.addEventListener("change", (event) => {
+      settings.accentMode = (event.currentTarget as HTMLInputElement).checked
+        ? "dynamic"
+        : "manual";
+      saveSettings();
+      applySettings();
+      renderSettings();
+      void syncSettingsAccent();
+    });
+
+  document.querySelector(".candies")?.addEventListener("click", (event) => {
+    const color = (event.target as Element).closest<HTMLButtonElement>("[data-accent-preset]")
+      ?.dataset.accentPreset;
+    if (color) setManualAccent(color);
+  });
+
+  const wheel = document.querySelector<HTMLElement>("#accent-wheel .wheel");
+  const pickFromWheel = (event: PointerEvent) => {
+    const bounds = wheel!.getBoundingClientRect();
+    const radius = bounds.width / 2;
+    const dx = event.clientX - bounds.left - radius;
+    const dy = event.clientY - bounds.top - radius;
+    const hue = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+    const saturation = Math.min(1, Math.hypot(dx, dy) / radius) * WHEEL_MAX_SATURATION;
+    setManualAccent(hsvToHex(hue, saturation, 1));
+  };
+  wheel?.addEventListener("pointerdown", (event) => {
+    wheel.setPointerCapture(event.pointerId);
+    pickFromWheel(event);
+  });
+  wheel?.addEventListener("pointermove", (event) => {
+    if (wheel.hasPointerCapture(event.pointerId)) pickFromWheel(event);
   });
 
   document.querySelector("#backdrop-material")?.addEventListener("click", (event) => {
@@ -710,24 +736,12 @@ function wireUi() {
     renderSettings();
   });
 
-  document.querySelector<HTMLInputElement>("#accent-color")?.addEventListener("input", (event) => {
-    const value = (event.currentTarget as HTMLInputElement).value;
-    settings.accentColor = normalizeHexColor(value);
-    saveSettings();
-    applySettings();
-    renderSettings();
-  });
-
   document
     .querySelector<HTMLInputElement>("#accent-color-hex")
     ?.addEventListener("change", (event) => {
       const input = event.currentTarget as HTMLInputElement;
-      if (isHexColor(input.value)) {
-        settings.accentColor = normalizeHexColor(input.value);
-        saveSettings();
-        applySettings();
-      }
-      renderSettings();
+      if (isHexColor(input.value)) setManualAccent(input.value);
+      else renderSettings();
     });
 
   document.querySelector("#lyrics-script")?.addEventListener("click", (event) => {
@@ -769,7 +783,7 @@ function wireUi() {
   document.querySelector("#clear-lyrics-cache")?.addEventListener("click", () => {
     clearLyricsCache();
     renderSettings();
-    showToast("Cache pulita", "I testi salvati sono stati rimossi.");
+    showToast("Lyrics cache cleared", "Saved lyrics were removed from this device.");
     if (tauriAvailable) {
       void emit("lyrics-cache-cleared");
     }
@@ -825,7 +839,7 @@ function wireHotkeyInputs() {
     input.addEventListener("focus", () => {
       pending = null;
       input.classList.add("recording");
-      input.textContent = "Press shortcut…";
+      input.textContent = "Press keys…";
       void safeInvoke("set_hotkey_recording", { recording: true });
     });
     input.addEventListener("keydown", (event) => {
@@ -838,7 +852,7 @@ function wireHotkeyInputs() {
       }
       if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return;
       pending = keyboardEventToAccelerator(event);
-      input.textContent = formatAccelerator(pending);
+      input.innerHTML = keycaps(pending);
     });
     input.addEventListener("keyup", async (event) => {
       event.preventDefault();
@@ -885,26 +899,18 @@ async function setHotkey(action: HotkeyAction, accelerator: string, retryFailed 
         )?.action;
       if (conflictingAction && conflictingAction in HOTKEY_ACTION_LABELS) {
         showToast(
-          `Hotkey già registrata su ${HOTKEY_ACTION_LABELS[conflictingAction as HotkeyAction]}`,
+          `Already used by ${HOTKEY_ACTION_LABELS[conflictingAction as HotkeyAction]}`,
           undefined,
           "error",
         );
       } else {
-        showToast(
-          "Hotkey non disponibile",
-          "La combinazione potrebbe essere utilizzata da un'altra applicazione.",
-          "error",
-        );
+        showToast("Shortcut unavailable", "Another application may be using it.", "error");
       }
     }
   } catch (error) {
     console.error("Unable to register global hotkey", error);
     if (retryFailed) {
-      showToast(
-        "Hotkey non disponibile",
-        "Non è stato possibile aggiornare la scorciatoia.",
-        "error",
-      );
+      showToast("Shortcut unavailable", "The shortcut could not be updated.", "error");
     }
   }
   renderHotkeyStatuses();
@@ -978,8 +984,7 @@ function renderHotkeyStatuses() {
     const action = element.dataset.hotkeyAction as HotkeyAction;
     const accelerator = settings.hotkeys[action];
     const input = element.querySelector<HTMLButtonElement>(".hotkey-input");
-    if (input && !input.classList.contains("recording"))
-      input.textContent = formatAccelerator(accelerator);
+    if (input && !input.classList.contains("recording")) input.innerHTML = keycaps(accelerator);
     element.querySelector<HTMLButtonElement>(".hotkey-reset")!.hidden =
       accelerator === DEFAULT_HOTKEYS[action];
     element.querySelector(".hotkey-warning")?.remove();
@@ -989,7 +994,7 @@ function renderHotkeyStatuses() {
     warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
     warning.setAttribute("aria-label", warning.title);
     warning.innerHTML = icons.exclamationTriangle;
-    element.prepend(warning);
+    element.querySelector(".hotkey-value")!.prepend(warning);
   });
 }
 
@@ -1017,6 +1022,10 @@ function toggleOverlayLock() {
   saveSettings();
   applySettings();
   renderChrome();
+  const shortcut = formatAccelerator(settings.hotkeys.pinned)
+    .split(" + ")
+    .join(PLATFORM === "macos" ? "" : "+");
+  showToast(settings.clickThrough ? `Pinned · ${shortcut} to unpin` : "Unpinned");
 }
 
 function bindRange(id: string, onChange: (value: number) => void) {
@@ -1683,7 +1692,6 @@ function renderSettings() {
   const panel = document.querySelector<HTMLElement>("#settings-panel")!;
   const overlay = document.querySelector<HTMLElement>("#overlay");
   overlay?.classList.toggle("settings-open", settingsOpen);
-  overlay?.classList.toggle("controls-visible", settingsOpen);
   panel.hidden = !settingsOpen;
 
   document.querySelector<HTMLInputElement>("#opacity")!.value = String(
@@ -1693,14 +1701,11 @@ function renderSettings() {
     settings.blurIntensity,
   );
   document.querySelector<HTMLInputElement>("#font-size")!.value = String(settings.fontSize);
-  document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(settings.lineSpacing);
+  document.querySelector<HTMLInputElement>("#line-spacing")!.value = String(
+    Math.round(settings.lineSpacing * 200),
+  );
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
   document.querySelector<HTMLInputElement>("#word-sync")!.checked = settings.wordSync;
-  document.querySelectorAll<HTMLButtonElement>("[data-accent-mode]").forEach((button) => {
-    const selected = button.dataset.accentMode === settings.accentMode;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-checked", String(selected));
-  });
   document.querySelectorAll<HTMLButtonElement>("[data-backdrop-material]").forEach((button) => {
     const selected = button.dataset.backdropMaterial === settings.backdropMaterial;
     button.classList.toggle("active", selected);
@@ -1708,17 +1713,7 @@ function renderSettings() {
   });
   document.querySelector<HTMLInputElement>("#show-translation")!.checked = settings.showTranslation;
   renderLyricsScript();
-  document.querySelector<HTMLElement>("#material-description")!.textContent =
-    materialCopy[settings.backdropMaterial].description;
-  document.querySelector<HTMLInputElement>("#accent-color")!.value = settings.accentColor;
-  const accentHex = document.querySelector<HTMLInputElement>("#accent-color-hex")!;
-  accentHex.value = settings.accentColor;
-  const manualAccent = settings.accentMode === "manual";
-  document.querySelector<HTMLInputElement>("#accent-color")!.disabled = !manualAccent;
-  accentHex.disabled = !manualAccent;
-  document
-    .querySelector<HTMLElement>("#manual-accent-controls")
-    ?.classList.toggle("disabled", !manualAccent);
+  renderAccentPicker();
   renderSettingValues();
   renderHotkeyStatuses();
 }
@@ -1731,7 +1726,7 @@ function renderSettingValues() {
   document.querySelector<HTMLOutputElement>("#font-size-value")!.value =
     `${Math.round(settings.fontSize * 100)}%`;
   document.querySelector<HTMLOutputElement>("#line-spacing-value")!.value =
-    `${settings.lineSpacing}em`;
+    `${Math.round(settings.lineSpacing * 200)}%`;
   renderRangeProgress();
 }
 
@@ -1754,9 +1749,7 @@ function applySettings() {
   applyGradient();
   renderSettingValues();
   overlay?.classList.toggle("click-through", settings.clickThrough);
-  if (settings.clickThrough) {
-    overlay?.classList.remove("controls-visible");
-  }
+  overlay?.classList.toggle("accent-text", settings.backdropMaterial === "acrylic");
   void applyOverlayInteractivity();
 }
 
@@ -1819,14 +1812,13 @@ function applyGradient() {
   }
   renderedGradientKey = nextGradientKey;
 
-  if (settings.accentMode === "manual") {
-    document.documentElement.style.setProperty("--accent", settings.accentColor);
-    return;
-  }
-
-  const hue = hashHue(nextGradientKey);
-  document.documentElement.style.setProperty("--hue", String(hue));
-  document.documentElement.style.setProperty("--accent", `hsl(${hue}, var(--bg-saturation), 56%)`);
+  const accent =
+    settings.accentMode === "manual"
+      ? settings.accentColor
+      : hslToHex(hashHue(nextGradientKey), 0.75, 0.66);
+  const root = document.documentElement.style;
+  root.setProperty("--accent", accent);
+  root.setProperty("--on-accent", readableTextOn(accent));
 }
 
 function loadSettings(): SettingsState {
@@ -1834,6 +1826,9 @@ function loadSettings(): SettingsState {
 }
 
 function saveSettings() {
+  // Pinning is toggled on the overlay, so the settings window's copy can be stale.
+  // Keeping the overlay's last saved value stops a settings change from unpinning it.
+  if (isSettingsWindow) settings.clickThrough = loadSettings().clickThrough;
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   if (tauriAvailable && isSettingsWindow) {
     void emit("settings-updated", settings);
@@ -1852,6 +1847,134 @@ function hashHue(input: string) {
     hash = (hash * 31 + input.charCodeAt(index)) | 0;
   }
   return Math.abs(hash) % 360;
+}
+
+function showSettingsTab(name: string) {
+  document.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((tab) => {
+    const selected = tab.dataset.settingsTab === name;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", String(selected));
+  });
+  document.querySelectorAll<HTMLElement>("[data-settings-page]").forEach((page) => {
+    page.hidden = page.dataset.settingsPage !== name;
+  });
+}
+
+function setManualAccent(color: string) {
+  settings.accentMode = "manual";
+  settings.accentColor = normalizeHexColor(color);
+  saveSettings();
+  applySettings();
+  renderAccentPicker();
+}
+
+function renderAccentPicker() {
+  const dynamic = settings.accentMode === "dynamic";
+  document.querySelector("#accent-card")!.classList.toggle("dynamic", dynamic);
+  document.querySelector<HTMLInputElement>("#accent-dynamic")!.checked = dynamic;
+  document.querySelector<HTMLInputElement>("#accent-color-hex")!.value = settings.accentColor;
+  document.querySelectorAll<HTMLButtonElement>("[data-accent-preset]").forEach((candy) => {
+    candy.classList.toggle("active", candy.dataset.accentPreset === settings.accentColor);
+  });
+  // Colours more saturated than the wheel offers still sit on its rim.
+  const { hue, saturation } = hexToHsv(settings.accentColor);
+  const reach = Math.min(1, saturation / WHEEL_MAX_SATURATION) * 50;
+  const angle = (hue * Math.PI) / 180;
+  const handle = document.querySelector<HTMLElement>("#accent-wheel-handle")!;
+  handle.style.left = `${50 + Math.sin(angle) * reach}%`;
+  handle.style.top = `${50 - Math.cos(angle) * reach}%`;
+  handle.style.background = settings.accentColor;
+}
+
+function hsvToHex(hue: number, saturation: number, value: number) {
+  const channel = (n: number) => {
+    const k = (n + hue / 60) % 6;
+    return value - value * saturation * Math.max(0, Math.min(k, 4 - k, 1));
+  };
+  return toHex([channel(5), channel(3), channel(1)]);
+}
+
+function hslToHex(hue: number, saturation: number, lightness: number) {
+  const a = saturation * Math.min(lightness, 1 - lightness);
+  const channel = (n: number) => {
+    const k = (n + hue / 30) % 12;
+    return lightness - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return toHex([channel(0), channel(8), channel(4)]);
+}
+
+function hexToHsv(hex: string) {
+  const [r, g, b] = hexChannels(hex).map((channel) => channel / 255);
+  const max = Math.max(r, g, b);
+  const delta = max - Math.min(r, g, b);
+  let hue = 0;
+  if (delta) {
+    if (max === r) hue = ((g - b) / delta) % 6;
+    else if (max === g) hue = (b - r) / delta + 2;
+    else hue = (r - g) / delta + 4;
+  }
+  return { hue: (hue * 60 + 360) % 360, saturation: max ? delta / max : 0 };
+}
+
+/** Dark text on light accents, light text on dark ones, so filled keys stay readable. */
+function readableTextOn(hex: string) {
+  const [r, g, b] = hexChannels(hex);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#24120c" : "#fff8f0";
+}
+
+function hexChannels(hex: string) {
+  const value = Number.parseInt(hex.replace("#", ""), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function toHex(channels: number[]) {
+  return `#${channels
+    .map((channel) =>
+      Math.round(channel * 255)
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")
+    .toUpperCase()}`;
+}
+
+function sliderRow(
+  id: string,
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+  ends: keyof typeof SLIDER_ENDS,
+) {
+  const [low, high] = SLIDER_ENDS[ends];
+  return `
+    <div class="slider-row">
+      <label class="slider-label" for="${id}"><span>${label}</span><output id="${id}-value"></output></label>
+      <div class="slider-track">
+        <span aria-hidden="true">${low}</span>
+        <input id="${id}" type="range" min="${min}" max="${max}" step="${step}" />
+        <span aria-hidden="true">${high}</span>
+      </div>
+    </div>`;
+}
+
+function hotkeyCard(action: HotkeyAction, label: string, description = "") {
+  return `
+    <div class="hotkey-card" data-hotkey-action="${action}">
+      <span class="hotkey-label"><strong>${label}</strong>${description ? `<small>${description}</small>` : ""}</span>
+      <span class="hotkey-value">
+        <button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore the default ${label.toLowerCase()} shortcut">${icons.arrowPath}</button>
+        <button class="hotkey-input" type="button" aria-label="${label} shortcut">${keycaps(DEFAULT_HOTKEYS[action])}</button>
+      </span>
+    </div>`;
+}
+
+/** Renders a shortcut as one keycap per key, with arrows drawn as arrows. */
+function keycaps(accelerator: string) {
+  return formatAccelerator(accelerator)
+    .split(" + ")
+    .map((key) => `<kbd>${escapeHtml(ARROW_KEYCAPS[key] ?? key)}</kbd>`)
+    .join("");
 }
 
 function escapeHtml(value: string) {
