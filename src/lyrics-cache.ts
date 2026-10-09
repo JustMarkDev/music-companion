@@ -115,6 +115,21 @@ export class LyricsCache {
     if (entry.result !== null) void this.enqueue(() => this.store.writeIndex(toIndexRecord(entry)));
   }
 
+  /**
+   * Forgets one song, so a retry after a transient failure looks it up again
+   * instead of reusing the cached miss. Persisted hits are removed from the
+   * store as well; anything else is memory-only.
+   */
+  async forget(variant: PlaybackVariant) {
+    await this.ensureLoaded();
+    const matching = (this.entriesByMetadataKey.get(variant.metadataKey) ?? []).filter((entry) =>
+      isSameCachedVariant(entry.variant, variant),
+    );
+    if (matching.length === 0) return;
+    this.generation += 1;
+    for (const entry of matching) this.drop(entry);
+  }
+
   async clear() {
     this.generation += 1;
     this.entries = [];

@@ -128,10 +128,12 @@ button {
   background: transparent;
 }
 
-/* Clear glass shows the desktop through it, so the text takes on the accent. The
-   accent is lifted towards white first, so even a dark accent stays readable, and
-   each state keeps its own strength: sung words are nearly white, the rest of the
-   active line is the solid accent, and other lines are a faint one. */
+/* macOS Clear glass shows the desktop through it, so the text takes on the
+   accent there. The accent is lifted towards white first, so even a dark
+   accent stays readable, and each state keeps its own strength: sung words
+   are nearly white, the rest of the active line is the solid accent, and
+   other lines are a faint one. Windows keeps the standard white text on its
+   single Acrylic backdrop; see applySettings for the platform switch. */
 .overlay.accent-text {
   --accent-text: color-mix(in srgb, var(--accent) 70%, white);
   --title-color: var(--accent-text);
@@ -484,12 +486,42 @@ button {
   display: grid;
   margin: 0;
   place-items: center;
+  align-content: center;
+  gap: 0.6em;
   color: rgba(255, 255, 255, 0.72);
   font-size: 1em;
   font-weight: 650;
   line-height: 1.3;
   text-align: center;
   transform: scale(var(--active-lyric-scale));
+}
+
+/* Failed and missed lookups offer a retry, so a transient lrc.red failure
+   never needs a settings round-trip to recover. */
+.empty-retry {
+  padding: 4px 14px 6px;
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 12px;
+  font-weight: 800;
+  background: linear-gradient(var(--key-top), var(--key-bottom));
+  border-radius: 99px;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    0 2px 0 var(--key-side),
+    0 4px 8px rgb(0 0 0 / 0.3);
+  cursor: pointer;
+}
+
+.empty-retry:hover {
+  transform: translateY(-1px);
+}
+
+.empty-retry:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 0 0 var(--key-side);
 }
 
 .lyrics-searching {
@@ -1211,6 +1243,11 @@ input[type="range"]:active::-webkit-slider-thumb {
   backdrop-filter: none;
 }
 
+/* Windows only offers Acrylic, so there is no glass choice to show. */
+:root[data-platform="windows"] #backdrop-material-card {
+  display: none;
+}
+
 .script-pic {
   display: grid;
   place-items: center;
@@ -1432,9 +1469,13 @@ input[type="range"]:active::-webkit-slider-thumb {
   stroke-width: 2;
 }
 
-/* On the overlay a toast is a small one-line pill, so it never covers the lyrics. */
+/* On the overlay a toast is a small one-line pill, so it never covers the lyrics.
+   The content column is allowed to shrink and the title ellipsizes, so a long
+   action label (e.g. "Pinned · … to unpin") stays centered instead of
+   overflowing the pill. The description is settings-only; the pill keeps just
+   the title to stay one line. */
 body:not(.settings-window) .toast {
-  grid-template-columns: 16px auto;
+  grid-template-columns: 16px minmax(0, 1fr);
   gap: 7px;
   align-items: center;
   width: max-content;
@@ -1449,9 +1490,21 @@ body:not(.settings-window) .toast-icon {
   height: 16px;
 }
 
+body:not(.settings-window) .toast-content {
+  overflow: hidden;
+  max-width: 100%;
+}
+
 body:not(.settings-window) .toast-title {
   font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+body:not(.settings-window) .toast-description {
+  display: none;
 }
 
 .toast-error .toast-icon {

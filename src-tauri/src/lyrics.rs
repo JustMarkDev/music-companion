@@ -649,11 +649,23 @@ async fn lrc_red_match_candidates(
                     Some((duration_ms as f64 / 1_000.0).round())
                 )
             );
-            match (by_title, by_duration) {
-                (Ok(by_title), Ok(by_duration)) => merge_lrc_red_hits(by_title, by_duration),
-                (Ok(hits), Err(_)) | (Err(_), Ok(hits)) => hits,
+            // A single failed query must not become a cached miss: when the
+            // surviving query has nothing, the failure is returned so the
+            // lookup is retried later instead of sticking until the next track.
+            let (hits, failure) = match (by_title, by_duration) {
+                (Ok(by_title), Ok(by_duration)) => {
+                    (merge_lrc_red_hits(by_title, by_duration), None)
+                }
+                (Ok(hits), Err(error)) | (Err(error), Ok(hits)) => (hits, Some(error)),
                 (Err(error), Err(_)) => return Err(error),
+            };
+            let ranked = rank_matches(hit_candidates(hits), title, artist, Some(duration_ms));
+            if ranked.is_empty()
+                && let Some(error) = failure
+            {
+                return Err(error);
             }
+            return Ok(ranked);
         }
     };
     Ok(rank_matches(
