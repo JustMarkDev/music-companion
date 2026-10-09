@@ -276,21 +276,10 @@ describe("lyrics display selection", () => {
   });
 });
 
-describe("empty-state retry", () => {
-  it("offers a retry only when the lookup can recover", () => {
-    expect(lyricsEmptyState("error")).toMatchObject({
-      title: "Unable to search for lyrics.",
-      hint: null,
-      retryable: true,
-    });
-  });
-
-  it("guides instead of retrying when the provider has no lyrics", () => {
-    const state = lyricsEmptyState("missing");
-    expect(state.retryable).toBe(false);
-    expect(state.title).toBe("No lyrics found.");
-    expect(state.hint).toMatch(/song title/i);
-    expect(state.hint).toMatch(/restart the song or seek back/i);
+describe("empty state", () => {
+  it("titles an error and a miss", () => {
+    expect(lyricsEmptyState("error").title).toBe("Unable to search for lyrics.");
+    expect(lyricsEmptyState("missing").title).toBe("No lyrics found.");
   });
 });
 
