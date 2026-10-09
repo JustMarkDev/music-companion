@@ -250,6 +250,9 @@ let activeWordElements: HTMLElement[] = [];
 let activeWordProgress: number[] = [];
 let pollInFlight = false;
 let pollQueued = false;
+// A media hotkey arms one pill, shown when the song or play state it changes arrives.
+let pendingHotkeyToast: { action: string; until: number } | null = null;
+const HOTKEY_TOAST_WINDOW_MS = 5_000;
 let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
@@ -818,7 +821,7 @@ function wireUi() {
   wireHotkeyInputs();
 }
 
-function showToast(title: string, description?: string, variant: "success" | "error" = "success") {
+function showToast(title: string, description?: string, variant: "success" | "error" | "note" = "success") {
   const region = document.querySelector<HTMLDivElement>("#toast-region");
   if (!region) return;
 
@@ -846,6 +849,20 @@ function showToast(title: string, description?: string, variant: "success" | "er
     toast.addEventListener("transitionend", removeToast, { once: true });
     window.setTimeout(removeToast, 250);
   }, 3_000);
+}
+
+function announceHotkeyResult(songChanged: boolean, wasPlaying: boolean) {
+  const pending = pendingHotkeyToast;
+  if (!pending || Date.now() > pending.until) return;
+  if (pending.action === "play/pause") {
+    if (currentMedia.isPlaying === wasPlaying) return;
+    showToast(currentMedia.isPlaying ? "Playing" : "Paused");
+  } else if (songChanged) {
+    showToast(`${currentMedia.title} · ${currentMedia.artist}`, undefined, "note");
+  } else {
+    return;
+  }
+  pendingHotkeyToast = null;
 }
 
 function updateToastStack(region: HTMLElement) {
@@ -981,6 +998,9 @@ function wireWindowEvents() {
   void listen("media-state-changed", () => {
     mediaEventSequence += 1;
     void pollMedia("media-event");
+  });
+  void listen<string>("media-hotkey", (event) => {
+    pendingHotkeyToast = { action: event.payload, until: Date.now() + HOTKEY_TOAST_WINDOW_MS };
   });
   void listen("lyrics-cache-cleared", () => {
     clearLyricsCache();
@@ -1129,7 +1149,9 @@ async function pollMedia(reason = "manual") {
     }
     const previousPositionMs = currentMedia.positionMs;
     syncMediaClock(nextMedia, sameSong, sampledAtMs, reason, requestDurationMs);
+    const wasPlaying = currentMedia.isPlaying;
     currentMedia = nextMedia;
+    announceHotkeyResult(startsNewVariant && !!nextVariant, wasPlaying);
 
     if (nextVariant && startsNewVariant) {
       window.clearTimeout(lyricsErrorRetryTimer);
