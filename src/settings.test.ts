@@ -77,17 +77,30 @@ describe("decodeSettings", () => {
     expect(decodeSettings(JSON.stringify({ wordSync: "yes" })).wordSync).toBe(false);
   });
 
+  it("migrates the old romanization flag and rejects unknown scripts", () => {
+    expect(decodeSettings(JSON.stringify({ romanizedLyrics: true })).lyricsScript).toBe(
+      "romanized",
+    );
+    expect(decodeSettings(JSON.stringify({ romanizedLyrics: false })).lyricsScript).toBe(
+      "original",
+    );
+    expect(decodeSettings(JSON.stringify({ lyricsScript: "both" })).lyricsScript).toBe("both");
+    expect(decodeSettings(JSON.stringify({ lyricsScript: "kanji" })).lyricsScript).toBe(
+      DEFAULT_SETTINGS.lyricsScript,
+    );
+  });
+
   it("accepts only typed booleans and string hotkeys", () => {
     expect(
       decodeSettings(
         JSON.stringify({
-          romanizedLyrics: false,
+          lyricsScript: "both",
           startAtLogin: "yes",
           hotkeys: { next: "Alt+KeyN", previous: 42 },
         }),
       ),
     ).toMatchObject({
-      romanizedLyrics: false,
+      lyricsScript: "both",
       startAtLogin: DEFAULT_SETTINGS.startAtLogin,
       hotkeys: {
         next: "Alt+KeyN",

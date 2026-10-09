@@ -125,7 +125,10 @@ impl AdapterPaths {
 /// The adapter's own `test` command reports whether Perl still reaches
 /// `MediaRemote` on this macOS version.
 fn adapter_is_entitled(paths: &AdapterPaths) -> bool {
+    // Without a playing session to read, the probe wakes MediaRemote with the
+    // test client, and fails when it is not told where that is.
     adapter_command(paths, ["test"])
+        .env("MEDIAREMOTEADAPTER_TEST_CLIENT_PATH", &paths.test_client)
         .status()
         .is_ok_and(|status| status.success())
 }

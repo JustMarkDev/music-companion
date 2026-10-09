@@ -234,7 +234,7 @@ let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
 let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
 let lyricsLines: LyricLine[] = tauriAvailable
   ? []
-  : selectLyricsDisplay(demoResult, demoState.title, false).lines;
+  : selectLyricsDisplay(demoResult, demoState.title, "original").lines;
 let currentLyricsResult: LyricsResult | null = null;
 let activeLineIndex = 2;
 let lyricsMode: LyricsMode = tauriAvailable ? "searching" : "synced";
@@ -380,11 +380,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <div class="choices" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
                 <button type="button" class="key choice" role="radio" data-lyrics-script="original"><span class="choice-pic script-pic" aria-hidden="true">夜に駆ける</span><span class="choice-title">Original</span><span class="choice-description">As the artist wrote them</span></button>
                 <button type="button" class="key choice" role="radio" data-lyrics-script="romanized"><span class="choice-pic script-pic" aria-hidden="true">Yoru ni kakeru</span><span class="choice-title">Romanized</span><span class="choice-description">In Latin letters, when the song has them</span></button>
+                <button type="button" class="key choice" role="radio" data-lyrics-script="both"><span class="choice-pic script-pic" aria-hidden="true"><span><ruby>夜<rt>yoru</rt></ruby><ruby>駆<rt>kake</rt></ruby></span></span><span class="choice-title">Original + romanized</span><span class="choice-description">Letters under each word. Hides translation</span></button>
               </div>
             </div>
             <div class="card span">
               <label class="setting-row" for="show-translation">
-                <span><strong>Show translation</strong><small>A second line under each lyric, when there is one</small></span>
+                <span><strong>Show translation</strong><small id="translation-hint">A second line under each lyric, when there is one</small></span>
                 <input id="show-translation" class="switch" type="checkbox" role="switch" />
               </label>
               <label class="setting-row" for="word-sync">
@@ -776,7 +777,8 @@ function wireUi() {
     const script = (event.target as Element).closest<HTMLButtonElement>("[data-lyrics-script]")
       ?.dataset.lyricsScript;
     if (!script) return;
-    settings.romanizedLyrics = script === "romanized";
+    if (script !== "original" && script !== "romanized" && script !== "both") return;
+    settings.lyricsScript = script;
     saveSettings();
     applyLyrics(currentLyricsResult);
     renderLyrics();
@@ -1383,7 +1385,7 @@ function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null 
   const display = selectLyricsDisplay(
     result,
     currentMedia.title,
-    settings.romanizedLyrics,
+    effectiveLyricsScript(),
     fallbackNotice,
   );
   lyricsLines = display.lines;
@@ -1609,12 +1611,15 @@ function renderLyrics() {
         ? `<span class="lyric-background">${renderWords(line.background)}</span>`
         : "";
       const translation =
-        settings.showTranslation && line.translation
+        translationVisible() && line.translation
           ? `<span class="lyric-translation">${escapeHtml(line.translation)}</span>`
           : "";
+      const romanization = line.romanization
+        ? `<span class="lyric-romanization">${escapeHtml(line.romanization)}</span>`
+        : "";
       return `<p class="${className}" data-line-index="${index}"><span class="lyric-main">${
         line.segments ? renderWords(line.segments) : escapeHtml(line.text)
-      }</span>${background}${translation}</p>`;
+      }</span>${romanization}${background}${translation}</p>`;
     })
     .join("");
 
@@ -1623,7 +1628,12 @@ function renderLyrics() {
 
 function renderWords(segments: LyricSegment[]) {
   return segments
-    .map((segment) => `<span class="lyric-word">${escapeHtml(segment.text)}</span>`)
+    .map((segment) => {
+      if (!segment.reading) return `<span class="lyric-word">${escapeHtml(segment.text)}</span>`;
+      // The spacing stays outside the ruby so it does not widen the word.
+      const word = segment.text.trimEnd();
+      return `<span class="lyric-word"><ruby>${escapeHtml(word)}<rt>${escapeHtml(segment.reading)}</rt></ruby>${escapeHtml(segment.text.slice(word.length))}</span>`;
+    })
     .join("");
 }
 
@@ -1740,7 +1750,7 @@ function updateLyricDom() {
 }
 
 function getLyricsRenderKey() {
-  const romanizedMode = settings.romanizedLyrics ? "romanized" : "original";
+  const romanizedMode = effectiveLyricsScript();
 
   if (!currentMedia.hasSession) {
     return `no-session:${romanizedMode}:${lyricsRenderGeneration}`;
@@ -1770,20 +1780,39 @@ function invalidateLyricsRender() {
   lyricsRenderGeneration += 1;
 }
 
-/** Romanized is offered only for songs that have a romanization. */
+/** Romanized and Both are offered only for songs that have a romanization. */
+function romanizationAvailable() {
+  return !currentLyricsResult || hasRomanization(currentLyricsResult);
+}
+
+function effectiveLyricsScript() {
+  return romanizationAvailable() ? settings.lyricsScript : "original";
+}
+
+/** Both fills the second line, so the translation has no room beside it. */
+function translationVisible() {
+  return settings.showTranslation && effectiveLyricsScript() !== "both";
+}
+
 function renderLyricsScript() {
-  const available = !currentLyricsResult || hasRomanization(currentLyricsResult);
-  const romanized = settings.romanizedLyrics && available;
+  const available = romanizationAvailable();
+  const script = effectiveLyricsScript();
   document.querySelectorAll<HTMLButtonElement>("[data-lyrics-script]").forEach((button) => {
-    const isRomanized = button.dataset.lyricsScript === "romanized";
-    const selected = isRomanized === romanized;
+    const selected = button.dataset.lyricsScript === script;
     button.classList.toggle("active", selected);
     button.setAttribute("aria-checked", String(selected));
-    if (isRomanized) {
+    if (button.dataset.lyricsScript !== "original") {
       button.disabled = !available;
       button.title = available ? "" : "This song has no romanization";
     }
   });
+  // The settings window does not know the song, so the switch stays usable: the
+  // overlay decides per song whether the romanization takes the translation's line.
+  document.querySelector<HTMLInputElement>("#show-translation")!.checked = settings.showTranslation;
+  document.querySelector<HTMLElement>("#translation-hint")!.textContent =
+    settings.lyricsScript === "both"
+      ? "Hidden on songs shown with Original + romanized: it needs the same line"
+      : "A second line under each lyric, when there is one";
 }
 
 function renderSettings() {
@@ -1809,7 +1838,6 @@ function renderSettings() {
     button.classList.toggle("active", selected);
     button.setAttribute("aria-checked", String(selected));
   });
-  document.querySelector<HTMLInputElement>("#show-translation")!.checked = settings.showTranslation;
   renderLyricsScript();
   renderAccentPicker();
   renderSettingValues();

@@ -1,3 +1,5 @@
+import type { LyricsScript } from "./settings";
+
 export const PLAYBACK_VARIANT_TOLERANCE_MS = 3_000;
 const INTRODUCTION_THRESHOLD_MS = 3_000;
 const MIN_LINE_DURATION_MS = 320;
@@ -11,6 +13,8 @@ export type LyricSegment = {
   endMs: number;
   /** Includes the spacing that follows it, so segments concatenate to the line. */
   text: string;
+  /** Its romanization, shown under it when the script is "both". */
+  reading?: string;
 };
 
 /** A line written in one script: its lead vocal and any background vocals. */
@@ -49,6 +53,8 @@ export type LyricLine = {
   segments?: LyricSegment[];
   background?: LyricSegment[];
   translation?: string;
+  /** The whole romanized line, for "both" on a line whose words cannot carry their own. */
+  romanization?: string;
 };
 
 export type LyricsMode = "synced" | "instrumental" | "excluded" | "searching" | "missing" | "error";
@@ -167,18 +173,18 @@ export function getLocalLyricsNotice(title: string): string | null {
 /**
  * Display policy for scripts and translations.
  *
- * A song has a single main line: the romanization when Romanized mode is on and
- * lrc.red provides one for the line, otherwise the original. The kanji and its
- * romanization are never shown as two main lines. lrc.red's translation, when
- * the user enables it, is an optional secondary line under the main one — also
- * in Romanized mode — so romanized and translated can co-occur, but only as
- * main line plus sub-line. A translation that only echoes the line is dropped
- * (see `isRedundantTranslation`).
+ * "original" and "romanized" show a single main line: the romanization when
+ * lrc.red provides one for the line, otherwise the original. "both" keeps the
+ * original and puts its romanization under it: under each word when lrc.red
+ * pairs them (see `withReadings`), else as one line below. That takes the
+ * second line, so the caller hides the translation then. lrc.red's translation,
+ * when the user enables it, is a secondary line under the main one. A
+ * translation that only echoes the line is dropped (see `isRedundantTranslation`).
  */
 export function selectLyricsDisplay(
   result: LyricsResult | null,
   title: string,
-  romanizedLyrics: boolean,
+  script: LyricsScript,
   fallbackNotice: string | null = null,
 ): LyricsDisplay {
   const currentNotice = fallbackNotice ?? getLocalLyricsNotice(title);
@@ -195,7 +201,7 @@ export function selectLyricsDisplay(
     };
   }
 
-  return { lines: buildLines(result, romanizedLyrics), mode: "synced", notice: "" };
+  return { lines: buildLines(result, script), mode: "synced", notice: "" };
 }
 
 /**
@@ -238,9 +244,20 @@ export function resolveActiveLineIndex(
   return currentIndex;
 }
 
-/** True when at least one line has a romanization. */
+/**
+ * True when at least one line has a romanization that differs from the line.
+ * lrc.red tags some Latin-script songs with a transliteration that only repeats
+ * the lyrics; there is nothing to switch to for those.
+ */
 export function hasRomanization(result: LyricsResult | null | undefined) {
-  return Boolean(result?.lines.some((line) => line.romanized));
+  return Boolean(
+    result?.lines.some(
+      (line) =>
+        line.romanized &&
+        foldLineText(joinSegments(line.romanized.segments)) !==
+          foldLineText(joinSegments(line.segments)),
+    ),
+  );
 }
 
 /** True when at least one line has a translation. */
@@ -468,10 +485,8 @@ export function retimeRomanization(
   });
 }
 
-function buildLines(result: LyricsResult, romanizedLyrics: boolean): LyricLine[] {
-  const lines = result.lines.map((line) =>
-    createLyricLine(line, result.wordTimed, romanizedLyrics),
-  );
+function buildLines(result: LyricsResult, script: LyricsScript): LyricLine[] {
+  const lines = result.lines.map((line) => createLyricLine(line, result.wordTimed, script));
   const first = lines[0];
   if (first.timeMs > INTRODUCTION_THRESHOLD_MS) {
     lines.unshift({
@@ -485,20 +500,71 @@ function buildLines(result: LyricsResult, romanizedLyrics: boolean): LyricLine[]
   return lines;
 }
 
+/**
+ * `original` with the romanization of each word attached as its reading, or
+ * unchanged when they cannot be paired. lrc.red romanizes a word-timed line span
+ * by span, so the nth romanized span sits under the nth original one. A word
+ * whose romanization repeats it ("LUV") gets none. A line with fewer than
+ * `minWords` words is not paired: its whole romanization goes on a line below.
+ */
+function withReadings(
+  original: LyricSegment[],
+  romanized: LyricSegment[] | undefined,
+  minWords: number,
+): LyricSegment[] {
+  if (!romanized || original.length < minWords || romanized.length !== original.length) {
+    return original;
+  }
+  const paired = original.map((segment, index) => {
+    const reading = romanized[index].text.trim();
+    return foldLineText(reading) === foldLineText(segment.text) ? segment : { ...segment, reading };
+  });
+  return paired.some((segment) => segment.reading) ? paired : original;
+}
+
+/**
+ * The romanized spans of a line with a space between each, when lrc.red gave none
+ * ("daitoukyou" "kyou" "sou" would run into "daitoukyoukyousou"). Spans that
+ * already have spacing are the provider's own word breaks and stay as they are,
+ * and so does a romanization that only repeats the line: its spans are the
+ * syllables of one Latin word.
+ */
+function spacedRomanization(romanized: LyricSegment[], original: LyricSegment[]): LyricSegment[] {
+  if (romanized.length < 2 || romanized.some((segment) => /\s$/.test(segment.text))) {
+    return romanized;
+  }
+  if (foldLineText(joinSegments(romanized)) === foldLineText(joinSegments(original))) {
+    return romanized;
+  }
+  return romanized.map((segment, index) =>
+    index < romanized.length - 1 ? { ...segment, text: `${segment.text} ` } : segment,
+  );
+}
+
 function createLyricLine(
   line: LyricsResultLine,
   wordTimed: boolean,
-  romanizedLyrics: boolean,
+  script: LyricsScript,
 ): LyricLine {
+  if (line.romanized) {
+    line = {
+      ...line,
+      romanized: {
+        ...line.romanized,
+        segments: spacedRomanization(line.romanized.segments, line.segments),
+      },
+    };
+  }
   // A line the romanization skips keeps its original text. Either way there is
   // one main line, never the original beside its romanization.
-  const shown = romanizedLyrics && line.romanized ? line.romanized : line;
+  const shown = script === "romanized" && line.romanized ? line.romanized : line;
   // A romanization timed as a whole, under words that are timed one by one, moves with them.
   const segments =
     shown !== line && wordTimed && shown.segments.length < line.segments.length
       ? retimeRomanization(line.segments, shown.segments)
       : shown.segments;
   const text = joinSegments(segments);
+  const pairing = script === "both" && wordTimed;
   const lyricLine: LyricLine = {
     timeMs: line.startMs,
     endTimeMs: Math.max(line.endMs, line.startMs + MIN_LINE_DURATION_MS),
@@ -506,10 +572,20 @@ function createLyricLine(
     words: text.match(/\S+/g) ?? [],
     voice: line.voice,
   };
-  if (wordTimed && segments.length > 0) lyricLine.segments = segments;
+  if (wordTimed && segments.length > 0) {
+    lyricLine.segments = pairing ? withReadings(segments, line.romanized?.segments, 2) : segments;
+  }
+  if (script === "both" && line.romanized && !lyricLine.segments?.some((s) => s.reading)) {
+    const romanization = joinSegments(line.romanized.segments);
+    if (foldLineText(romanization) !== foldLineText(text)) lyricLine.romanization = romanization;
+  }
   // A transliteration of the lead vocal has no background vocals of its own.
   const background = shown.background?.length ? shown.background : line.background;
-  if (background?.length) lyricLine.background = background;
+  if (background?.length) {
+    lyricLine.background = pairing
+      ? withReadings(background, line.romanized?.background, 1)
+      : background;
+  }
   // The translation stays an optional secondary line (rendered by the overlay
   // only when the setting is on); one that only echoes the line is dropped.
   if (line.translation) {

@@ -413,6 +413,11 @@ button {
 
 .lyric-line.active .lyric-word {
   --word-progress: 0;
+}
+
+/* A word's reading fills with it, from the progress the word inherits. */
+.lyric-line.active .lyric-word,
+.lyric-line.active .lyric-word rt {
   color: transparent;
   background-image: linear-gradient(
     90deg,
@@ -439,6 +444,23 @@ button {
   font-size: 0.62em;
   font-weight: 600;
   opacity: 0.78;
+}
+
+/* Romanization of a whole line, when its words cannot carry their own. */
+.lyric-romanization {
+  display: block;
+  margin-top: 0.2em;
+  font-size: 0.6em;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.82;
+}
+
+.lyric-word rt {
+  font-size: 0.45em;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.85;
 }
 
 .lyric-translation {
@@ -1247,6 +1269,10 @@ input[type="range"]:active::-webkit-slider-thumb {
 /* Windows only offers Acrylic, so there is no glass choice to show. */
 :root[data-platform="windows"] #backdrop-material-card {
   display: none;
+}
+
+#lyrics-script {
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .script-pic {
