@@ -459,6 +459,14 @@ describe("isRedundantTranslation", () => {
   it("keeps a non-Latin translation of a Latin line", () => {
     expect(isRedundantTranslation("Hello", "こんにちは", "Hello")).toBe(false);
   });
+
+  it("keeps a genuine short translation while exact short echoes stay redundant", () => {
+    // "Non" (fr) vs "No" (en) folds short with similarity 0.667: a real
+    // translation, not an echo.
+    expect(isRedundantTranslation("Non", "No", "Non")).toBe(false);
+    // The short-line rule is still the exact fold match.
+    expect(isRedundantTranslation("No", "no", "No")).toBe(true);
+  });
 });
 
 describe("translation display", () => {

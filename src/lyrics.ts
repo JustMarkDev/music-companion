@@ -308,6 +308,13 @@ export function isLatinOnlyLine(value: string) {
 /** Below this edit similarity a Latin translation is a real translation, not an echo. */
 const REDUNDANT_TRANSLATION_SIMILARITY = 0.6;
 
+/**
+ * Below this folded length the fuzzy echo check does not apply: on very short
+ * lines a single edit is most of the string (e.g. "Non" vs "No"), so only an
+ * exact fold match counts as redundant.
+ */
+const REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH = 4;
+
 /** Edit similarity of two folded lines: 0 for nothing alike, 1 for identical. */
 function lineSimilarity(left: string, right: string) {
   const a = Array.from(foldLineText(left));
@@ -334,7 +341,9 @@ function lineSimilarity(left: string, right: string) {
  * romanized) line is always redundant. Otherwise the original decides: lrc.red
  * echoes Latin-script lines into its English translation track ("just u…" as
  * "Just you…") instead of translating them, so a Latin-only original with a
- * near-identical Latin translation is redundant too. Genuine translations into
+ * near-identical Latin translation is redundant too (for lines long enough
+ * for the fuzzy check to mean something; very short lines only count when
+ * they fold exactly). Genuine translations into
  * another language ("Des yeux…" into "Eyes that…") share little surface text
  * and are kept.
  */
@@ -344,6 +353,14 @@ export function isRedundantTranslation(
   originalText: string = displayedText,
 ) {
   if (foldLineText(displayedText) === foldLineText(translation)) return true;
+  const foldedOriginal = foldLineText(originalText);
+  const foldedTranslation = foldLineText(translation);
+  if (
+    foldedOriginal.length < REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH ||
+    foldedTranslation.length < REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH
+  ) {
+    return false;
+  }
   return (
     isLatinOnlyLine(originalText) &&
     isLatinOnlyLine(translation) &&
