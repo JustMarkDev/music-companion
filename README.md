@@ -237,3 +237,5 @@ Music Companion is available under the [GNU General Public License v3.0 only](LI
 affiliated with Spotify, lrc.red, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.
 The bundled MediaRemote adapter is licensed separately under the BSD 3-Clause
 License; see `src-tauri/vendor/mediaremote-adapter/LICENSE`.
+
+<!-- opencode v2 smoke test -->
