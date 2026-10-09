@@ -8,6 +8,7 @@ import {
   isSameSong,
   normalizeLyricsMetadata,
   playbackVariant,
+  resolveActiveLineIndex,
   retimeRomanization,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
@@ -361,6 +362,37 @@ describe("romanization and translation", () => {
       expect(carryOverTracks(plain, untracked)).toBe(plain);
       expect(carryOverTracks(plain, null)).toBe(plain);
     });
+  });
+});
+
+describe("resolveActiveLineIndex", () => {
+  const lines = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 10_000 }, { timeMs: 15_000 }];
+
+  it("holds the current line across small backward jitter while playing", () => {
+    // Just crossed onto line 2, then one frame reports 100 ms before it.
+    expect(resolveActiveLineIndex(lines, 10_010, 2, true)).toBe(2);
+    expect(resolveActiveLineIndex(lines, 9_900, 2, true)).toBe(2);
+  });
+
+  it("moves back on a real seek or restart while playing", () => {
+    expect(resolveActiveLineIndex(lines, 9_000, 2, true)).toBe(1);
+    expect(resolveActiveLineIndex(lines, 1_200, 3, true)).toBe(0);
+  });
+
+  it("always moves forward while playing", () => {
+    expect(resolveActiveLineIndex(lines, 15_100, 1, true)).toBe(3);
+    expect(resolveActiveLineIndex(lines, 10_000, 2, true)).toBe(2);
+  });
+
+  it("follows the position freely when paused", () => {
+    expect(resolveActiveLineIndex(lines, 9_900, 2, false)).toBe(1);
+    expect(resolveActiveLineIndex(lines, 100, 3, false)).toBe(0);
+  });
+
+  it("accepts any out-of-range highlight, such as after the lyrics reload", () => {
+    expect(resolveActiveLineIndex(lines, 9_900, -1, true)).toBe(1);
+    expect(resolveActiveLineIndex(lines, 9_900, 9, true)).toBe(1);
+    expect(resolveActiveLineIndex([], 9_900, 2, true)).toBe(-1);
   });
 });
 

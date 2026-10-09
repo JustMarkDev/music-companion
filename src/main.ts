@@ -17,6 +17,7 @@ import {
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
   playbackVariant,
+  resolveActiveLineIndex,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   variantToken,
@@ -1377,13 +1378,12 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
     return;
   }
 
-  let nextIndex = -1;
-  for (let index = 0; index < lyricsLines.length; index += 1) {
-    if (lyricsLines[index].timeMs <= positionMs) {
-      nextIndex = index;
-    }
-  }
-  activeLineIndex = nextIndex;
+  activeLineIndex = resolveActiveLineIndex(
+    lyricsLines,
+    positionMs,
+    activeLineIndex,
+    currentMedia.isPlaying,
+  );
 }
 
 function getSyncedPositionMs() {
