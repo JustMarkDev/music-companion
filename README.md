@@ -15,9 +15,11 @@ active system media session, retrieves lyrics from
   translation, singers, and background vocals all come from that one file.
 - Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics with the transliteration
   lrc.red provides. Songs without one have no Romanized option; nothing is romanized on the
-  device.
+  device. Romanized mode shows the romanization as the lyric line; the original
+  script is never shown beside it as a second main line.
 - Optionally shows lrc.red's translation under each line (Settings → Show translation, off by
-  default) when the song has one.
+  default) when the song has one. Translations that only echo the line, such as
+  English translations of English lines, are hidden.
 - Sets the second singer of a duet on the right and shows background vocals smaller under the
   line, filled word by word like the lead.
 - Optionally asks lrc.red's alignment model to time every word of songs whose lyrics are not

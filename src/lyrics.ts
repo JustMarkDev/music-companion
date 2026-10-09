@@ -179,6 +179,17 @@ export function getLocalLyricsNotice(title: string): string | null {
   return match ? `${match[1]} - No Lyrics` : null;
 }
 
+/**
+ * Display policy for scripts and translations.
+ *
+ * A song has a single main line: the romanization when Romanized mode is on and
+ * lrc.red provides one for the line, otherwise the original. The kanji and its
+ * romanization are never shown as two main lines. lrc.red's translation, when
+ * the user enables it, is an optional secondary line under the main one — also
+ * in Romanized mode — so romanized and translated can co-occur, but only as
+ * main line plus sub-line. A translation that only echoes the line is dropped
+ * (see `isRedundantTranslation`).
+ */
 export function selectLyricsDisplay(
   result: LyricsResult | null,
   title: string,
@@ -326,6 +337,11 @@ function nearestLine(startMs: number, lines: LyricsResultLine[]) {
   return nearest;
 }
 
+/**
+ * The line as lrc.red breaks it: each segment carries its trailing space, so
+ * adjacent syllable spans concatenate ("kowa" + "re" is "koware") while spaced
+ * spans stay apart. Runs of whitespace collapse to one; the line is trimmed.
+ */
 function joinSegments(segments: LyricSegment[]) {
   return segments
     .map((segment) => segment.text)
@@ -335,10 +351,96 @@ function joinSegments(segments: LyricSegment[]) {
 }
 
 /**
+ * Folds a line for echo comparison: single-spaced, trimmed, lowercased.
+ */
+function foldLineText(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * True when every letter of the line is Latin, accents included (mirroring the
+ * provider match in `src-tauri/src/lyrics.rs`); digits, punctuation and spacing
+ * are ignored. Needs at least one letter, so "♪" or "…" are never Latin-only.
+ */
+export function isLatinOnlyLine(value: string) {
+  const letters = Array.from(value).filter((character) => /\p{L}/u.test(character));
+  return (
+    letters.length > 0 &&
+    letters.every((character) => /[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]/u.test(character))
+  );
+}
+
+/** Below this edit similarity a Latin translation is a real translation, not an echo. */
+const REDUNDANT_TRANSLATION_SIMILARITY = 0.6;
+
+/**
+ * Below this folded length the fuzzy echo check does not apply: on very short
+ * lines a single edit is most of the string (e.g. "Non" vs "No"), so only an
+ * exact fold match counts as redundant.
+ */
+const REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH = 4;
+
+/** Edit similarity of two folded lines: 0 for nothing alike, 1 for identical. */
+function lineSimilarity(left: string, right: string) {
+  const a = Array.from(foldLineText(left));
+  const b = Array.from(foldLineText(right));
+  if (a.length === 0 || b.length === 0) return a.length === b.length ? 1 : 0;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return 1 - previous[b.length] / Math.max(a.length, b.length);
+}
+
+/**
+ * True when showing `translation` under the line would only repeat it, so the
+ * sub-line is dropped. A translation matching the displayed (possibly
+ * romanized) line is always redundant. Otherwise the original decides: lrc.red
+ * echoes Latin-script lines into its English translation track ("just u…" as
+ * "Just you…") instead of translating them, so a Latin-only original with a
+ * near-identical Latin translation is redundant too (for lines long enough
+ * for the fuzzy check to mean something; very short lines only count when
+ * they fold exactly). Genuine translations into
+ * another language ("Des yeux…" into "Eyes that…") share little surface text
+ * and are kept.
+ */
+export function isRedundantTranslation(
+  displayedText: string,
+  translation: string,
+  originalText: string = displayedText,
+) {
+  if (foldLineText(displayedText) === foldLineText(translation)) return true;
+  const foldedOriginal = foldLineText(originalText);
+  const foldedTranslation = foldLineText(translation);
+  if (
+    foldedOriginal.length < REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH ||
+    foldedTranslation.length < REDUNDANT_TRANSLATION_MIN_FOLDED_LENGTH
+  ) {
+    return false;
+  }
+  return (
+    isLatinOnlyLine(originalText) &&
+    isLatinOnlyLine(translation) &&
+    lineSimilarity(originalText, translation) >= REDUNDANT_TRANSLATION_SIMILARITY
+  );
+}
+
+/**
  * Gives each word of a romanization the time of the original words it sits
  * under. Romanized words do not pair with the original ones, so the line is
  * laid out by text length: a word starts where the share of the original text
- * that precedes it is played.
+ * that precedes it is played. Words are re-split on lrc.red's own breaks —
+ * adjacent syllable spans concatenate while spaced spans stay apart — and
+ * rejoined with single spaces, so the rebuilt line keeps the provider's
+ * spacing between syllables and words.
  */
 export function retimeRomanization(
   original: LyricSegment[],
@@ -403,7 +505,8 @@ function createLyricLine(
   wordTimed: boolean,
   romanizedLyrics: boolean,
 ): LyricLine {
-  // A line the romanization skips keeps its original text.
+  // A line the romanization skips keeps its original text. Either way there is
+  // one main line, never the original beside its romanization.
   const shown = romanizedLyrics && line.romanized ? line.romanized : line;
   // A romanization timed as a whole, under words that are timed one by one, moves with them.
   const segments =
@@ -422,7 +525,14 @@ function createLyricLine(
   // A transliteration of the lead vocal has no background vocals of its own.
   const background = shown.background?.length ? shown.background : line.background;
   if (background?.length) lyricLine.background = background;
-  if (line.translation) lyricLine.translation = line.translation;
+  // The translation stays an optional secondary line (rendered by the overlay
+  // only when the setting is on); one that only echoes the line is dropped.
+  if (line.translation) {
+    const originalText = joinSegments(line.segments);
+    if (!isRedundantTranslation(text, line.translation, originalText)) {
+      lyricLine.translation = line.translation;
+    }
+  }
   return lyricLine;
 }
 
