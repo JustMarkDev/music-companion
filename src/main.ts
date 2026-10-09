@@ -1366,6 +1366,10 @@ function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null 
     fallbackNotice,
   );
   lyricsLines = display.lines;
+  // A replacement (cache hit, fetch, word sync) re-times the lines, so the old
+  // highlight is stale: clear it so the next tick follows the position
+  // directly instead of holding a line that has moved.
+  activeLineIndex = -1;
   lyricsMode = display.mode;
   lyricsNotice = display.notice;
   invalidateLyricsRender();

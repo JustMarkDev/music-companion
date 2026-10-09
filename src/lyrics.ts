@@ -179,12 +179,14 @@ export function selectLyricsDisplay(
 
 /**
  * How far below the current line playback must fall before the highlight moves
- * back while playing. Position samples jitter backwards by a frame (a stale
+ * back while playing. Position samples jitter backwards by ~100 ms (a stale
  * fallback sample, a pause reconcile), which used to flip the highlight to the
  * previous line for a frame before moving on. A real seek or restart falls much
- * further, so only it moves the highlight back.
+ * further, so only it moves the highlight back. The window stays below the gap
+ * of even dense lyrics, so a position squarely inside the previous line still
+ * moves back.
  */
-export const ACTIVE_LINE_BACKWARD_MARGIN_MS = 750;
+export const ACTIVE_LINE_BACKWARD_MARGIN_MS = 200;
 
 /**
  * Picks the lyric line for `positionMs`, holding `currentIndex` across small
@@ -207,6 +209,10 @@ export function resolveActiveLineIndex(
   if (!isPlaying) return raw;
   if (currentIndex < 0 || currentIndex >= lines.length) return raw;
   if (raw >= currentIndex) return raw;
+  // Only a single-line flicker inside the jitter window is held: a position
+  // past several lines, or squarely inside an earlier one, is a real step
+  // back even when it lands close to the current line.
+  if (raw !== currentIndex - 1) return raw;
   if (positionMs < lines[currentIndex].timeMs - ACTIVE_LINE_BACKWARD_MARGIN_MS) return raw;
   return currentIndex;
 }

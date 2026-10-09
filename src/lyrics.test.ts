@@ -394,6 +394,31 @@ describe("resolveActiveLineIndex", () => {
     expect(resolveActiveLineIndex(lines, 9_900, 9, true)).toBe(1);
     expect(resolveActiveLineIndex([], 9_900, 2, true)).toBe(-1);
   });
+
+  it("moves back when the position sits inside the previous line of dense lyrics", () => {
+    const dense = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 5_400 }];
+    // 300 ms into the previous line: a real step back, not jitter.
+    expect(resolveActiveLineIndex(dense, 5_100, 2, true)).toBe(1);
+  });
+
+  it("still holds across jitter on dense lyrics", () => {
+    const dense = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 5_400 }];
+    // 50 ms before the current line: one frame of backward jitter.
+    expect(resolveActiveLineIndex(dense, 5_350, 2, true)).toBe(2);
+  });
+
+  it("moves back past several lines even inside the jitter window", () => {
+    const dense = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 5_100 }, { timeMs: 5_200 }];
+    // Only a single-line flicker is held; landing two lines back is a real step.
+    expect(resolveActiveLineIndex(dense, 5_050, 3, true)).toBe(1);
+  });
+
+  it("follows the position directly after a lyrics reload clears the highlight", () => {
+    // applyLyrics resets the highlight, so a word-sync shift (line 2 moved
+    // 9000 -> 10000) follows the position instead of holding the stale line.
+    const reloaded = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 10_000 }];
+    expect(resolveActiveLineIndex(reloaded, 9_600, -1, true)).toBe(1);
+  });
 });
 
 describe("retimeRomanization", () => {
