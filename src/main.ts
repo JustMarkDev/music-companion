@@ -40,8 +40,10 @@ import {
 } from "./settings";
 
 type ResizeDirection = Parameters<ReturnType<typeof getCurrentWindow>["startResizeDragging"]>[0];
-// Windows composes the overlay with Mica and Acrylic; macOS uses the closest
-// Liquid Glass variants, so each platform is labelled in its own terms.
+// Windows composes the overlay with Acrylic; macOS uses the closest Liquid
+// Glass variants, so each platform is labelled in its own terms. The Windows
+// Mica entry is legacy only: Windows offers no glass choice and stored Mica
+// settings migrate back to Acrylic, while macOS keeps Clear and Regular.
 const MATERIAL_COPY: Record<
   typeof PLATFORM,
   Record<BackdropMaterial, { label: string; description: string }>
@@ -220,6 +222,11 @@ let wordSyncingTrackKey = "";
 let lyricsRequestId = Date.now();
 
 let settings = loadSettings();
+// Windows has a single backdrop, so a legacy stored Mica choice never applies.
+if (PLATFORM === "windows" && settings.backdropMaterial !== "acrylic") {
+  settings.backdropMaterial = "acrylic";
+  saveSettings();
+}
 let currentMedia: MediaState = demoState;
 let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
 let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
@@ -247,6 +254,13 @@ let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
 let discontinuityConfirmationTimer = 0;
+// A transient lrc.red failure retries once after a short wait, so a single
+// stalled lookup never sticks until the next track.
+let lyricsErrorRetryTimer = 0;
+const LYRICS_ERROR_RETRY_DELAY_MS = 15_000;
+// A jump back in the same song retries a failed or missed lookup, so
+// restarting the track recovers without clearing the cache.
+const RESTART_RETRY_TOLERANCE_MS = 5_000;
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -345,10 +359,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <input id="accent-dynamic" class="switch" type="checkbox" role="switch" />
               </label>
             </div>
-            <div class="card span">
+            <div class="card span" id="backdrop-material-card">
               <h3>Overlay glass</h3>
               <div class="choices" id="backdrop-material" role="radiogroup" aria-label="Overlay glass">
-                ${(["acrylic", "mica"] as const).map((material) => `<button type="button" class="key choice" role="radio" data-backdrop-material="${material}"><span class="choice-pic glass-pic glass-${material}" aria-hidden="true"></span><span class="choice-title">${materialCopy[material].label}</span><span class="choice-description">${materialCopy[material].description}</span></button>`).join("")}
+                ${(PLATFORM === "windows" ? (["acrylic"] as const) : (["acrylic", "mica"] as const)).map((material) => `<button type="button" class="key choice" role="radio" data-backdrop-material="${material}"><span class="choice-pic glass-pic glass-${material}" aria-hidden="true"></span><span class="choice-title">${materialCopy[material].label}</span><span class="choice-description">${materialCopy[material].description}</span></button>`).join("")}
               </div>
             </div>
           </div>
@@ -569,6 +583,13 @@ function wireUi() {
     openSettings();
   });
 
+  document.querySelector("#lyrics-list")?.addEventListener("click", (event) => {
+    const retry = (event.target as Element).closest<HTMLButtonElement>("[data-retry-lyrics]");
+    if (!retry) return;
+    event.stopPropagation();
+    void retryLyricsForCurrentSong();
+  });
+
   document.querySelector("#settings-toggle")?.addEventListener("click", () => {
     openSettings();
   });
@@ -730,6 +751,8 @@ function wireUi() {
       "[data-backdrop-material]",
     )?.dataset.backdropMaterial;
     if (!material) return;
+    // Windows offers only Acrylic; ignore any legacy Mica control.
+    if (PLATFORM === "windows") return;
     settings.backdropMaterial = material === "acrylic" ? "acrylic" : "mica";
     saveSettings();
     applySettings();
@@ -1100,15 +1123,24 @@ async function pollMedia(reason = "manual") {
     if (shouldDeferResume(nextMedia, sameSong, reason, requestDurationMs)) {
       return;
     }
+    const previousPositionMs = currentMedia.positionMs;
     syncMediaClock(nextMedia, sameSong, sampledAtMs, reason, requestDurationMs);
     currentMedia = nextMedia;
 
     if (nextVariant && startsNewVariant) {
+      window.clearTimeout(lyricsErrorRetryTimer);
       currentPlaybackVariant = nextVariant;
       currentTrackKey = variantToken(nextVariant);
       lyricsRequestId += 1;
       void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
       void loadLyrics(currentMedia, nextVariant);
+    } else if (nextVariant && sameSong && (lyricsMode === "error" || lyricsMode === "missing")) {
+      // Restarting (or seeking back in) the same song retries a failed or
+      // missed lookup, so recovery needs no cache clearing.
+      const jumpedBack = previousPositionMs - nextMedia.positionMs > RESTART_RETRY_TOLERANCE_MS;
+      if (jumpedBack) {
+        void retryLyricsForCurrentSong();
+      }
     }
 
     if (!nextVariant) {
@@ -1197,6 +1229,7 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
       found: Boolean(result),
     });
     if (requestIsCurrent) {
+      window.clearTimeout(lyricsErrorRetryTimer);
       applyLyrics(result, localNotice);
       scheduleWordSync(media, expectedVariant, result);
     }
@@ -1206,8 +1239,35 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
       lyricsMode = "error";
       invalidateLyricsRender();
       renderLyrics();
+      scheduleLyricsErrorRetry(expectedTrackKey);
     }
   }
+}
+
+/**
+ * Looks the current song up again after a transient failure, forgetting the
+ * cached miss first so the retry reaches lrc.red instead of reusing it.
+ */
+async function retryLyricsForCurrentSong() {
+  if (!currentPlaybackVariant || isSettingsWindow) return;
+  const variant = currentPlaybackVariant;
+  const trackKey = variantToken(variant);
+  window.clearTimeout(lyricsErrorRetryTimer);
+  wordSyncTried.delete(trackKey);
+  await lyricCache.forget(variant);
+  if (currentPlaybackVariant !== variant || variantToken(variant) !== currentTrackKey) return;
+  lyricsRequestId += 1;
+  void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
+  await loadLyrics(currentMedia, variant);
+}
+
+function scheduleLyricsErrorRetry(trackKey: string) {
+  window.clearTimeout(lyricsErrorRetryTimer);
+  lyricsErrorRetryTimer = window.setTimeout(() => {
+    if (currentTrackKey !== trackKey || lyricsMode !== "error") return;
+    if (!currentPlaybackVariant || variantToken(currentPlaybackVariant) !== trackKey) return;
+    void retryLyricsForCurrentSong();
+  }, LYRICS_ERROR_RETRY_DELAY_MS);
 }
 
 /** Starts word timing for the song on screen, once its lyrics are in. */
@@ -1480,7 +1540,7 @@ function renderLyrics() {
   }
 
   if (lyricsMode === "error") {
-    list.innerHTML = `<p class="empty-state">Unable to search for lyrics.</p>`;
+    list.innerHTML = `<p class="empty-state"><span>Unable to search for lyrics.</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
     return;
   }
 
@@ -1490,7 +1550,7 @@ function renderLyrics() {
   }
 
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
-    list.innerHTML = `<p class="empty-state">No lyrics found.</p>`;
+    list.innerHTML = `<p class="empty-state"><span>No lyrics found.</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
     return;
   }
 
@@ -1749,8 +1809,20 @@ function applySettings() {
   applyGradient();
   renderSettingValues();
   overlay?.classList.toggle("click-through", settings.clickThrough);
-  overlay?.classList.toggle("accent-text", settings.backdropMaterial === "acrylic");
+  overlay?.classList.toggle("accent-text", usesAccentText());
   void applyOverlayInteractivity();
+}
+
+/**
+ * Accent-tinted lyrics belong to the see-through glass only, and the two
+ * platforms tint opposite materials: macOS Clear (acrylic) is the open glass
+ * while Regular (mica) is the frosted one; Windows Acrylic is the frosted
+ * backdrop and legacy Mica was the wallpaper-tinted one. With Windows fixed
+ * to Acrylic, accent text is effectively macOS Clear only.
+ */
+function usesAccentText() {
+  if (PLATFORM === "windows") return settings.backdropMaterial === "mica";
+  return settings.backdropMaterial === "acrylic";
 }
 
 async function syncSettingsAccent() {
@@ -1836,6 +1908,7 @@ function saveSettings() {
 }
 
 function clearLyricsCache() {
+  window.clearTimeout(lyricsErrorRetryTimer);
   void lyricCache.clear();
   wordSyncTried.clear();
   console.info("[latency] lyrics cache cleared");

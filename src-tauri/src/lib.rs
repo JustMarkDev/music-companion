@@ -661,7 +661,6 @@ mod persistent_backdrop {
     const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: u32 = 4;
     const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
     const DWMSBT_NONE: u32 = 1;
-    const DWMSBT_MAINWINDOW: u32 = 2;
 
     #[repr(C)]
     struct AccentPolicy {
@@ -684,15 +683,12 @@ mod persistent_backdrop {
 
     pub fn apply(window: &WebviewWindow, intensity: u8, material: &str) -> Result<(), String> {
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
-
-        if material == "mica" {
-            set_acrylic(HWND(hwnd.0), 0)?;
-            set_dwm_backdrop(HWND(hwnd.0), DWMSBT_MAINWINDOW)
-                .or_else(|_| set_acrylic(HWND(hwnd.0), intensity))
-        } else {
-            let _ = set_dwm_backdrop(HWND(hwnd.0), DWMSBT_NONE);
-            set_acrylic(HWND(hwnd.0), intensity)
-        }
+        // Windows offers only Acrylic. A stored Mica choice from an older
+        // version is treated as Acrylic so legacy settings keep working.
+        // Mica (`DWMSBT_MAINWINDOW`) is intentionally no longer applied.
+        let _ = material;
+        let _ = set_dwm_backdrop(HWND(hwnd.0), DWMSBT_NONE);
+        set_acrylic(HWND(hwnd.0), intensity)
     }
 
     fn set_acrylic(hwnd: HWND, intensity: u8) -> Result<(), String> {

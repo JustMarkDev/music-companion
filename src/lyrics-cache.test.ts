@@ -92,6 +92,27 @@ describe("LyricsCache", () => {
     expect(text(await reopened.get(variant(180_000)))).toBe("Saved");
   });
 
+  it("forgets one song so a retry looks it up again", async () => {
+    const store = new MemoryLyricsStore();
+    const cache = new LyricsCache(store);
+    await put(cache, variant(180_000), null);
+    expect(await cache.has(variant(180_000))).toBe(true);
+
+    await cache.forget(variant(180_000));
+    expect(await cache.has(variant(180_000))).toBe(false);
+    expect(await cache.get(variant(180_000))).toBeUndefined();
+  });
+
+  it("keeps other songs when forgetting one", async () => {
+    const cache = new LyricsCache(new MemoryLyricsStore());
+    await put(cache, variant(180_000), lyrics("Kept"));
+    await put(cache, variant(210_000), lyrics("Dropped"));
+    await cache.forget(variant(210_000));
+
+    expect((await cache.get(variant(180_000)))?.trackName).toBe("Kept");
+    expect(await cache.has(variant(210_000))).toBe(false);
+  });
+
   it("rejects an in-flight result after the cache is cleared", async () => {
     const store = new MemoryLyricsStore();
     const cache = new LyricsCache(store);

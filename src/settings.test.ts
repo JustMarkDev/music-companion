@@ -95,4 +95,14 @@ describe("decodeSettings", () => {
       },
     });
   });
+
+  it("migrates a stored mica backdrop back to the single windows acrylic", () => {
+    // The test runtime has no macOS user agent, so PLATFORM is windows here.
+    expect(decodeSettings(JSON.stringify({ backdropMaterial: "mica" })).backdropMaterial).toBe(
+      "acrylic",
+    );
+    expect(decodeSettings(JSON.stringify({ backdropMaterial: "acrylic" })).backdropMaterial).toBe(
+      "acrylic",
+    );
+  });
 });

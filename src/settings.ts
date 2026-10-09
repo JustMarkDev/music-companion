@@ -102,7 +102,10 @@ export function decodeSettings(stored: string | null): SettingsState {
       accentColor: isHexColor(value.accentColor)
         ? normalizeHexColor(value.accentColor)
         : DEFAULT_SETTINGS.accentColor,
-      backdropMaterial: value.backdropMaterial === "mica" ? "mica" : "acrylic",
+      // Windows only offers Acrylic; a stored Mica choice from an older
+      // version migrates back to the single backdrop instead of lingering.
+      backdropMaterial:
+        PLATFORM === "windows" ? "acrylic" : value.backdropMaterial === "mica" ? "mica" : "acrylic",
       hotkeys: {
         pinned: stringOr(hotkeys.pinned, DEFAULT_HOTKEYS.pinned),
         next: stringOr(hotkeys.next, DEFAULT_HOTKEYS.next),
