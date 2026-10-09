@@ -202,6 +202,46 @@ export function selectLyricsDisplay(
   return { lines: buildLines(result, romanizedLyrics), mode: "synced", notice: "" };
 }
 
+/**
+ * How far below the current line playback must fall before the highlight moves
+ * back while playing. Position samples jitter backwards by ~100 ms (a stale
+ * fallback sample, a pause reconcile), which used to flip the highlight to the
+ * previous line for a frame before moving on. A real seek or restart falls much
+ * further, so only it moves the highlight back. The window stays below the gap
+ * of even dense lyrics, so a position squarely inside the previous line still
+ * moves back.
+ */
+export const ACTIVE_LINE_BACKWARD_MARGIN_MS = 200;
+
+/**
+ * Picks the lyric line for `positionMs`, holding `currentIndex` across small
+ * backward jitter while playing. Moves forward freely and always moves back
+ * when paused (scrubbing) or when playback falls well before the current line
+ * (a real seek or restart).
+ */
+export function resolveActiveLineIndex(
+  lines: Pick<LyricLine, "timeMs">[],
+  positionMs: number,
+  currentIndex: number,
+  isPlaying: boolean,
+): number {
+  let raw = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].timeMs <= positionMs) {
+      raw = index;
+    }
+  }
+  if (!isPlaying) return raw;
+  if (currentIndex < 0 || currentIndex >= lines.length) return raw;
+  if (raw >= currentIndex) return raw;
+  // Only a single-line flicker inside the jitter window is held: a position
+  // past several lines, or squarely inside an earlier one, is a real step
+  // back even when it lands close to the current line.
+  if (raw !== currentIndex - 1) return raw;
+  if (positionMs < lines[currentIndex].timeMs - ACTIVE_LINE_BACKWARD_MARGIN_MS) return raw;
+  return currentIndex;
+}
+
 /** True when at least one line has a romanization. */
 export function hasRomanization(result: LyricsResult | null | undefined) {
   return Boolean(result?.lines.some((line) => line.romanized));

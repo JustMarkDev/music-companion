@@ -18,6 +18,7 @@ import {
   normalizeDisplayMetadata,
   normalizeLyricsMetadata,
   playbackVariant,
+  resolveActiveLineIndex,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   variantToken,
@@ -1398,6 +1399,10 @@ function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null 
     fallbackNotice,
   );
   lyricsLines = display.lines;
+  // A replacement (cache hit, fetch, word sync) re-times the lines, so the old
+  // highlight is stale: clear it so the next tick follows the position
+  // directly instead of holding a line that has moved.
+  activeLineIndex = -1;
   lyricsMode = display.mode;
   lyricsNotice = display.notice;
   invalidateLyricsRender();
@@ -1410,13 +1415,12 @@ function updateActiveLine(positionMs = getSyncedPositionMs()) {
     return;
   }
 
-  let nextIndex = -1;
-  for (let index = 0; index < lyricsLines.length; index += 1) {
-    if (lyricsLines[index].timeMs <= positionMs) {
-      nextIndex = index;
-    }
-  }
-  activeLineIndex = nextIndex;
+  activeLineIndex = resolveActiveLineIndex(
+    lyricsLines,
+    positionMs,
+    activeLineIndex,
+    currentMedia.isPlaying,
+  );
 }
 
 function getSyncedPositionMs() {
