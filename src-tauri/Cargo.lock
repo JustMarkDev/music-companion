@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "music-companion"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "objc2",
  "objc2-app-kit",
