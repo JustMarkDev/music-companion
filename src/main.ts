@@ -250,8 +250,8 @@ let activeWordElements: HTMLElement[] = [];
 let activeWordProgress: number[] = [];
 let pollInFlight = false;
 let pollQueued = false;
-// A media hotkey arms one pill, shown when the song or play state it changes arrives.
-let pendingHotkeyToast: { action: string; until: number } | null = null;
+// Each media hotkey press queues one pill, shown when the song or play state it changes arrives.
+let pendingHotkeyToasts: { action: string; until: number }[] = [];
 const HOTKEY_TOAST_WINDOW_MS = 5_000;
 let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
@@ -821,7 +821,11 @@ function wireUi() {
   wireHotkeyInputs();
 }
 
-function showToast(title: string, description?: string, variant: "success" | "error" | "note" = "success") {
+function showToast(
+  title: string,
+  description?: string,
+  variant: "success" | "error" | "note" = "success",
+) {
   const region = document.querySelector<HTMLDivElement>("#toast-region");
   if (!region) return;
 
@@ -852,17 +856,20 @@ function showToast(title: string, description?: string, variant: "success" | "er
 }
 
 function announceHotkeyResult(songChanged: boolean, wasPlaying: boolean) {
-  const pending = pendingHotkeyToast;
-  if (!pending || Date.now() > pending.until) return;
+  const now = Date.now();
+  pendingHotkeyToasts = pendingHotkeyToasts.filter((pending) => pending.until >= now);
+  const playbackChanged = currentMedia.isPlaying !== wasPlaying;
+  const index = pendingHotkeyToasts.findIndex((pending) =>
+    pending.action === "play/pause" ? playbackChanged : songChanged,
+  );
+  if (index === -1) return;
+  const [pending] = pendingHotkeyToasts.splice(index, 1);
   if (pending.action === "play/pause") {
-    if (currentMedia.isPlaying === wasPlaying) return;
     showToast(currentMedia.isPlaying ? "Playing" : "Paused");
-  } else if (songChanged) {
-    showToast(`${currentMedia.title} · ${currentMedia.artist}`, undefined, "note");
   } else {
-    return;
+    const { title, artist } = currentMedia;
+    showToast(artist ? `${title} · ${artist}` : title, undefined, "note");
   }
-  pendingHotkeyToast = null;
 }
 
 function updateToastStack(region: HTMLElement) {
@@ -1000,7 +1007,10 @@ function wireWindowEvents() {
     void pollMedia("media-event");
   });
   void listen<string>("media-hotkey", (event) => {
-    pendingHotkeyToast = { action: event.payload, until: Date.now() + HOTKEY_TOAST_WINDOW_MS };
+    pendingHotkeyToasts.push({
+      action: event.payload,
+      until: Date.now() + HOTKEY_TOAST_WINDOW_MS,
+    });
   });
   void listen("lyrics-cache-cleared", () => {
     clearLyricsCache();
@@ -1151,7 +1161,7 @@ async function pollMedia(reason = "manual") {
     syncMediaClock(nextMedia, sameSong, sampledAtMs, reason, requestDurationMs);
     const wasPlaying = currentMedia.isPlaying;
     currentMedia = nextMedia;
-    announceHotkeyResult(startsNewVariant && !!nextVariant, wasPlaying);
+    announceHotkeyResult(!!nextVariant && !sameSong, wasPlaying);
 
     if (nextVariant && startsNewVariant) {
       window.clearTimeout(lyricsErrorRetryTimer);
