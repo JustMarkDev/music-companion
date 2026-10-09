@@ -390,6 +390,7 @@ pub fn run() {
             };
             if let Some(action) = control {
                 println!("[hotkey] media hotkey used: {action}");
+                let _ = app.emit("media-hotkey", action);
                 let uses_same_media_key = shortcut.mods.is_empty()
                     && matches!(
                         (action, shortcut.key),

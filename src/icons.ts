@@ -35,9 +35,11 @@ export const icons = {
   sparkles: outlineIcon(paths.sparkles),
 } as const;
 
-export function toastIcon(variant: "success" | "error") {
-  return outlineIcon(
-    variant === "error" ? paths.exclamationTriangle : paths.checkCircle,
-    "toast-icon",
-  );
+export function toastIcon(variant: "success" | "error" | "note") {
+  const icon = {
+    success: paths.checkCircle,
+    error: paths.exclamationTriangle,
+    note: paths.musicalNote,
+  }[variant];
+  return outlineIcon(icon, "toast-icon");
 }
