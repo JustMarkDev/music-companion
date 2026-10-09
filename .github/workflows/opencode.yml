@@ -3,30 +3,21 @@ name: opencode
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
 
 concurrency:
-  group: opencode-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name == 'pull_request' && 'review' || 'chat' }}
+  group: opencode-${{ github.event.pull_request.number }}-review
   cancel-in-progress: true
 
 jobs:
   opencode:
-    # PRs: skip drafts, fork PRs and Dependabot PRs (no secret access). Comments: only trusted users can trigger /oc.
+    # PRs: skip drafts, fork PRs and Dependabot PRs (no secret access).
     if: >-
-      (github.event_name == 'pull_request' &&
-        !github.event.pull_request.draft &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.actor != 'dependabot[bot]') ||
-      (github.event_name != 'pull_request' &&
-        (startsWith(github.event.comment.body, '/oc') || startsWith(github.event.comment.body, '/opencode')) &&
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
-      id-token: write
       contents: read
       pull-requests: write
       issues: write
@@ -38,24 +29,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: anomalyco/opencode/github@latest
+      - name: Install OpenCode v2
+        run: npm install --global @opencode/cli
+
+      - name: Review PR
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The action ignores its agent input; default_agent picks the read-only review agent for PR
-          # reviews and the built-in read-only plan agent for /oc chat, so neither edits code. CI has
-          # nobody to answer permission prompts, so allow outside-workspace paths instead of hanging.
-          OPENCODE_CONFIG_CONTENT: ${{ github.event_name == 'pull_request' && '{"default_agent":"review","permission":{"external_directory":"allow"}}' || '{"default_agent":"plan","permission":{"external_directory":"allow"}}' }}
-        with:
-          model: opencode-go/muse-spark-1.3-contributor
-          variant: xhigh
-          share: false
-          prompt: >-
-            ${{ github.event_name == 'pull_request' && 'Review this pull request. Follow .github/opencode-review.md exactly: verify and resolve earlier findings, find new problems, post them as one inline GitHub review, then reply with the summary.' || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          opencode run --standalone --auto
+          --model 'opencode-go/muse-spark-1.3-contributor#xhigh'
+          --agent review
+          'Review this pull request. Follow .github/opencode-review.md exactly: verify and resolve earlier findings, find new problems, post them as one inline GitHub review. There is no harness: you must post the `## Review ·` summary yourself with `gh api repos/{owner}/{repo}/issues/{number}/comments -f body=...` using the exact shape from the Final message section, then stop.'
 
       # Keep one clean summary: drop the action's run-link footer, collapse older summaries.
       - name: Tidy summaries
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -72,7 +61,7 @@ jobs:
 
       # Non-required check mirroring the verdict; skipped if this run produced no summary.
       - name: Verdict check
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
