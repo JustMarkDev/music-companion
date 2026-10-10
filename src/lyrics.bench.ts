@@ -8,13 +8,13 @@ describe("lyrics hot paths", () => {
   test("lyrics hot paths", async ({ bench }) => {
     await bench.compare(
       bench("lyrics_build_full_song", () => {
-        selectLyricsDisplay(fullSong, "Bench Track", false);
+        selectLyricsDisplay(fullSong, "Bench Track", "original");
       }),
       bench("metadata_normalize", () => {
         normalizeLyricsMetadata(NOISY_METADATA);
       }),
       bench("lyrics_display_select", () => {
-        selectLyricsDisplay(SYNCED_RESULT, "Bench Track", true);
+        selectLyricsDisplay(SYNCED_RESULT, "Bench Track", "romanized");
       }),
     );
   });

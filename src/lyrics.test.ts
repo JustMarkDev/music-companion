@@ -110,13 +110,137 @@ describe("playback variants", () => {
 
 describe("lyrics display selection", () => {
   it("prefers the romanization of a line when enabled", () => {
-    expect(selectLyricsDisplay(result(), "Song", true).lines[0].text).toBe("Romanized");
-    expect(selectLyricsDisplay(result(), "Song", false).lines[0].text).toBe("Original words");
+    expect(selectLyricsDisplay(result(), "Song", "romanized").lines[0].text).toBe("Romanized");
+    expect(selectLyricsDisplay(result(), "Song", "original").lines[0].text).toBe("Original words");
+  });
+
+  it("puts the romanization of each word under it in both, as lrc.red pairs them", () => {
+    const aizo = result({
+      lines: [
+        line(1_000, ["愛憎愛憎", "渦", "巻い", "て"], {
+          romanized: {
+            segments: [
+              segment(1_000, 1_500, "aizou aizou"),
+              segment(1_500, 2_000, "uzu"),
+              segment(2_000, 2_500, "mai"),
+              segment(2_500, 3_000, "te"),
+            ],
+          },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(aizo, "Song", "both").lines;
+    expect(displayed.text).toBe("愛憎愛憎 渦 巻い て");
+    expect(displayed.segments?.map((s) => s.reading)).toEqual(["aizou aizou", "uzu", "mai", "te"]);
+    expect(displayed).not.toHaveProperty("romanization");
+  });
+
+  it("skips the reading of a word the romanization only repeats", () => {
+    const mixed = result({
+      lines: [
+        line(1_000, ["LUV", "愛"], {
+          romanized: { segments: [segment(1_000, 1_500, "LUV "), segment(1_500, 2_000, "ai")] },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(mixed, "Song", "both").lines;
+    expect(displayed.segments?.map((s) => s.reading)).toEqual([undefined, "ai"]);
+  });
+
+  it("spaces romanized chunks that lrc.red left unspaced, in every script that shows them", () => {
+    const aizo = result({
+      lines: [
+        line(1_000, ["大東京", "狂", "騒"], {
+          romanized: {
+            segments: [
+              segment(1_000, 1_500, "daitoukyou"),
+              segment(1_500, 2_000, "kyou"),
+              segment(2_000, 2_500, "sou"),
+            ],
+          },
+          translation: "Singing the great Tokyo frenzy song",
+        }),
+      ],
+    });
+    const [romanized] = selectLyricsDisplay(aizo, "Song", "romanized").lines;
+    expect(romanized.text).toBe("daitoukyou kyou sou");
+    expect(romanized.translation).toBe("Singing the great Tokyo frenzy song");
+    const [both] = selectLyricsDisplay(aizo, "Song", "both").lines;
+    expect(both.segments?.map((s) => s.reading)).toEqual(["daitoukyou", "kyou", "sou"]);
+  });
+
+  it("leaves provider spacing and Latin syllables alone", () => {
+    const spaced = result({
+      lines: [
+        line(1_000, ["夜", "に"], {
+          romanized: { segments: [segment(1_000, 1_500, "yoru "), segment(1_500, 2_000, "ni")] },
+        }),
+        line(3_000, ["Some", "one"], {
+          segments: [segment(3_000, 3_500, "Some"), segment(3_500, 4_000, "one")],
+          romanized: { segments: [segment(3_000, 3_500, "Some"), segment(3_500, 4_000, "one")] },
+        }),
+      ],
+    });
+    const lines = selectLyricsDisplay(spaced, "Song", "romanized").lines;
+    expect(lines.map((l) => l.text)).toEqual(["yoru ni", "Someone"]);
+  });
+
+  it("pairs the readings of background vocals too", () => {
+    const duet = result({
+      lines: [
+        line(1_000, ["愛", "て"], {
+          background: [segment(1_200, 1_800, "友")],
+          romanized: {
+            segments: [segment(1_000, 1_500, "ai "), segment(1_500, 2_000, "te")],
+            background: [segment(1_200, 1_800, "tomo")],
+          },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(duet, "Song", "both").lines;
+    expect(displayed.background?.map((s) => s.reading)).toEqual(["tomo"]);
+  });
+
+  it("does not offer a romanization that only repeats the lyrics", () => {
+    const echo = result({
+      lines: [
+        line(1_000, ["Just", "you"], {
+          romanized: { segments: [segment(1_000, 2_000, "just you")] },
+        }),
+      ],
+    });
+    expect(hasRomanization(echo)).toBe(false);
+    const [displayed] = selectLyricsDisplay(echo, "Song", "both").lines;
+    expect(displayed).not.toHaveProperty("romanization");
+    expect(displayed.segments?.some((s) => s.reading)).toBe(false);
+  });
+
+  it("shows a romanized line when a word sync re-split the words and they no longer pair", () => {
+    const synced = result({
+      lines: [
+        line(1_000, ["愛", "憎", "て"], {
+          romanized: { segments: [segment(1_000, 1_500, "ai "), segment(1_500, 2_500, "zou te")] },
+        }),
+      ],
+    });
+    const [displayed] = selectLyricsDisplay(synced, "Song", "both").lines;
+    expect(displayed.romanization).toBe("ai zou te");
+    expect(displayed.segments?.some((s) => s.reading)).toBe(false);
+  });
+
+  it("falls back to a romanized line under lyrics whose words are not paired", () => {
+    const [displayed] = selectLyricsDisplay(result(), "Song", "both").lines;
+    expect(displayed.text).toBe("Original words");
+    expect(displayed.romanization).toBe("Romanized");
+    expect(displayed.segments?.some((s) => s.reading)).toBe(false);
+    expect(selectLyricsDisplay(result(), "Song", "original").lines[0]).not.toHaveProperty(
+      "romanization",
+    );
   });
 
   it("keeps the original text of a line the romanization skips", () => {
     const lyrics = result({ lines: [line(1_000, ["Skipped"]), result().lines[0]] });
-    const displayed = selectLyricsDisplay(lyrics, "Song", true).lines;
+    const displayed = selectLyricsDisplay(lyrics, "Song", "romanized").lines;
     expect(displayed.map((displayedLine) => displayedLine.text)).toEqual(["Skipped", "Romanized"]);
   });
 
@@ -130,7 +254,7 @@ describe("lyrics display selection", () => {
         }),
       ],
     });
-    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+    expect(selectLyricsDisplay(lyrics, "Song", "romanized").lines[0]).toMatchObject({
       text: "Yume nara",
       words: ["Yume", "nara"],
       segments: [segment(1_000, 1_500, "Yume "), segment(1_500, 2_000, "nara")],
@@ -146,7 +270,7 @@ describe("lyrics display selection", () => {
       ],
     });
 
-    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", "romanized").lines;
 
     expect(displayed.text).toBe("Anata wa wakatte");
     expect(displayed.segments?.map((piece) => piece.text)).toEqual(["Anata ", "wa ", "wakatte"]);
@@ -160,7 +284,7 @@ describe("lyrics display selection", () => {
     const lyrics = result({
       lines: [line(1_000, ["夢", "なら"], { romanized: { segments: own } })],
     });
-    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0].segments).toEqual(own);
+    expect(selectLyricsDisplay(lyrics, "Song", "romanized").lines[0].segments).toEqual(own);
   });
 
   it("keeps background vocals when the romanization has none of its own", () => {
@@ -174,11 +298,11 @@ describe("lyrics display selection", () => {
       ],
     });
 
-    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+    expect(selectLyricsDisplay(lyrics, "Song", "romanized").lines[0]).toMatchObject({
       text: "Anata",
       background,
     });
-    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0].background).toEqual(background);
+    expect(selectLyricsDisplay(lyrics, "Song", "original").lines[0].background).toEqual(background);
   });
 
   it("shows the background vocals of the romanization when it has them", () => {
@@ -195,7 +319,7 @@ describe("lyrics display selection", () => {
       ],
     });
 
-    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0].background).toEqual(
+    expect(selectLyricsDisplay(lyrics, "Song", "romanized").lines[0].background).toEqual(
       romanizedBackground,
     );
   });
@@ -205,8 +329,8 @@ describe("lyrics display selection", () => {
       wordTimed: false,
       lines: [{ ...line(1_000, ["Hello world"]), endMs: 3_000 }],
     });
-    expect(selectLyricsDisplay(wholeLine, "Song", false).lines[0].segments).toBeUndefined();
-    expect(selectLyricsDisplay(result(), "Song", false).lines[0].segments).toHaveLength(2);
+    expect(selectLyricsDisplay(wholeLine, "Song", "original").lines[0].segments).toBeUndefined();
+    expect(selectLyricsDisplay(result(), "Song", "original").lines[0].segments).toHaveLength(2);
   });
 
   it("carries the singer, background vocals and translation of each line", () => {
@@ -214,20 +338,24 @@ describe("lyrics display selection", () => {
     const lyrics = result({
       lines: [line(1_000, ["Lead"], { voice: 1, background, translation: "Guida" })],
     });
-    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0]).toMatchObject({
+    expect(selectLyricsDisplay(lyrics, "Song", "original").lines[0]).toMatchObject({
       voice: 1,
       background,
       translation: "Guida",
     });
 
     const plain = result({ lines: [line(1_000, ["Plain"])] });
-    expect(selectLyricsDisplay(plain, "Song", false).lines[0]).not.toHaveProperty("translation");
-    expect(selectLyricsDisplay(plain, "Song", false).lines[0]).not.toHaveProperty("background");
+    expect(selectLyricsDisplay(plain, "Song", "original").lines[0]).not.toHaveProperty(
+      "translation",
+    );
+    expect(selectLyricsDisplay(plain, "Song", "original").lines[0]).not.toHaveProperty(
+      "background",
+    );
   });
 
   it("inserts an introduction only after the three-second boundary", () => {
     const startingAt = (startMs: number) =>
-      selectLyricsDisplay(result({ lines: [line(startMs, ["Hello"])] }), "Song", false).lines;
+      selectLyricsDisplay(result({ lines: [line(startMs, ["Hello"])] }), "Song", "original").lines;
     expect(startingAt(3_000)[0].text).toBe("Hello");
     expect(startingAt(3_001)[0]).toMatchObject({
       timeMs: 0,
@@ -245,23 +373,26 @@ describe("lyrics display selection", () => {
         { ...line(5_000, ["Blink"]), endMs: 5_050 },
       ],
     });
-    const [first, second] = selectLyricsDisplay(lyrics, "Song", false).lines;
+    const [first, second] = selectLyricsDisplay(lyrics, "Song", "original").lines;
     expect(first.endTimeMs).toBe(4_000);
     expect(second.endTimeMs).toBe(5_320);
   });
 
   it("shows a variant notice for a title with no lyrics", () => {
-    expect(selectLyricsDisplay(result({ lines: [] }), "Song (slowed)", true)).toMatchObject({
+    expect(selectLyricsDisplay(result({ lines: [] }), "Song (slowed)", "romanized")).toMatchObject({
       mode: "excluded",
       notice: "Slowed - No Lyrics",
       lines: [],
     });
-    expect(selectLyricsDisplay(null, "Song", true)).toMatchObject({ mode: "missing", lines: [] });
+    expect(selectLyricsDisplay(null, "Song", "romanized")).toMatchObject({
+      mode: "missing",
+      lines: [],
+    });
   });
 
   it("recognizes instrumental and combined variant titles", () => {
     expect(getLocalLyricsNotice("Song instrumental")).toBe("Instrumental");
-    expect(selectLyricsDisplay(null, "Song instrumental", true)).toMatchObject({
+    expect(selectLyricsDisplay(null, "Song instrumental", "romanized")).toMatchObject({
       mode: "instrumental",
       notice: "Instrumental",
     });
@@ -271,8 +402,11 @@ describe("lyrics display selection", () => {
   });
 
   it("reports a definitive provider miss as missing, never as an error", () => {
-    expect(selectLyricsDisplay(null, "Song", false)).toMatchObject({ mode: "missing", lines: [] });
-    expect(selectLyricsDisplay(result({ lines: [] }), "Song", false).mode).toBe("missing");
+    expect(selectLyricsDisplay(null, "Song", "original")).toMatchObject({
+      mode: "missing",
+      lines: [],
+    });
+    expect(selectLyricsDisplay(result({ lines: [] }), "Song", "original").mode).toBe("missing");
   });
 });
 
@@ -549,8 +683,12 @@ describe("translation display", () => {
         }),
       ],
     });
-    expect(selectLyricsDisplay(echo, "Song", false).lines[0]).not.toHaveProperty("translation");
-    expect(selectLyricsDisplay(echo, "Song", true).lines[0]).not.toHaveProperty("translation");
+    expect(selectLyricsDisplay(echo, "Song", "original").lines[0]).not.toHaveProperty(
+      "translation",
+    );
+    expect(selectLyricsDisplay(echo, "Song", "romanized").lines[0]).not.toHaveProperty(
+      "translation",
+    );
   });
 
   it("shows one main line with the translation as a secondary line", () => {
@@ -564,12 +702,12 @@ describe("translation display", () => {
     };
     const lyrics = result({ lines: [kanji] });
     // Romanized mode: the romanization is the main line, never beside the kanji.
-    expect(selectLyricsDisplay(lyrics, "Song", true).lines[0]).toMatchObject({
+    expect(selectLyricsDisplay(lyrics, "Song", "romanized").lines[0]).toMatchObject({
       text: "Koware",
       translation: "To break",
     });
     // Original mode: the kanji is the main line, same secondary translation.
-    expect(selectLyricsDisplay(lyrics, "Song", false).lines[0]).toMatchObject({
+    expect(selectLyricsDisplay(lyrics, "Song", "original").lines[0]).toMatchObject({
       text: "壊れ",
       translation: "To break",
     });
@@ -597,7 +735,7 @@ describe("romanized spacing", () => {
         }),
       ],
     });
-    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", "romanized").lines;
     expect(displayed.text).toBe("kowarekake no hibi sae mo");
     expect(displayed.words).toEqual(["kowarekake", "no", "hibi", "sae", "mo"]);
     expect(displayed.segments?.map((piece) => piece.text)).toEqual([
@@ -620,7 +758,7 @@ describe("romanized spacing", () => {
         }),
       ],
     });
-    const [displayed] = selectLyricsDisplay(lyrics, "Song", true).lines;
+    const [displayed] = selectLyricsDisplay(lyrics, "Song", "romanized").lines;
     expect(displayed.text).toBe("Anata wa wakatte");
     expect(displayed.segments?.map((piece) => piece.text)).toEqual(["Anata ", "wa ", "wakatte"]);
   });

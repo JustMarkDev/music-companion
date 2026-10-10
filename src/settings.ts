@@ -2,6 +2,8 @@ export type AccentMode = "dynamic" | "manual";
 export type BackdropMaterial = "mica" | "acrylic";
 export type HotkeyAction = "pinned" | "next" | "previous" | "playPause";
 export type Platform = "windows" | "macos";
+/** Which script the lyrics are written in; "both" puts the romanization under the original. */
+export type LyricsScript = "original" | "romanized" | "both";
 
 export type SettingsState = {
   clickThrough: boolean;
@@ -9,7 +11,7 @@ export type SettingsState = {
   blurIntensity: number;
   fontSize: number;
   lineSpacing: number;
-  romanizedLyrics: boolean;
+  lyricsScript: LyricsScript;
   /** Shows lrc.red's translation under each line that has one. */
   showTranslation: boolean;
   /** Asks lrc.red to time every word of songs whose lyrics are not word-timed. */
@@ -61,7 +63,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   blurIntensity: 100,
   fontSize: 1,
   lineSpacing: 0.5,
-  romanizedLyrics: true,
+  lyricsScript: "romanized",
   showTranslation: false,
   wordSync: false,
   startAtLogin: false,
@@ -85,10 +87,7 @@ export function decodeSettings(stored: string | null): SettingsState {
       blurIntensity: numeric(value.blurIntensity, DEFAULT_SETTINGS.blurIntensity, 1, 100),
       fontSize: numeric(value.fontSize, DEFAULT_SETTINGS.fontSize, 0.5, 3),
       lineSpacing: roundStep(numeric(value.lineSpacing, DEFAULT_SETTINGS.lineSpacing, 0.1, 1.2)),
-      romanizedLyrics:
-        typeof value.romanizedLyrics === "boolean"
-          ? value.romanizedLyrics
-          : DEFAULT_SETTINGS.romanizedLyrics,
+      lyricsScript: decodeLyricsScript(value),
       showTranslation:
         typeof value.showTranslation === "boolean"
           ? value.showTranslation
@@ -116,6 +115,16 @@ export function decodeSettings(stored: string | null): SettingsState {
   } catch {
     return { ...DEFAULT_SETTINGS, hotkeys: { ...DEFAULT_HOTKEYS } };
   }
+}
+
+// Settings saved before "both" existed stored a boolean `romanizedLyrics`.
+function decodeLyricsScript(value: Record<string, unknown>): LyricsScript {
+  const script = value.lyricsScript;
+  if (script === "original" || script === "romanized" || script === "both") return script;
+  if (typeof value.romanizedLyrics === "boolean") {
+    return value.romanizedLyrics ? "romanized" : "original";
+  }
+  return DEFAULT_SETTINGS.lyricsScript;
 }
 
 export function isHexColor(value: unknown): value is string {

@@ -14,9 +14,10 @@ active system media session, retrieves lyrics from
 - Reads each song as a TTML file from lrc.red, the only lyrics provider. Lyrics, romanization,
   translation, singers, and background vocals all come from that one file.
 - Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics with the transliteration
-  lrc.red provides. Songs without one have no Romanized option; nothing is romanized on the
-  device. Romanized mode shows the romanization as the lyric line; the original
-  script is never shown beside it as a second main line.
+  lrc.red provides. Songs without one fall back to the original; nothing is romanized on the
+  device. Romanized mode shows the romanization as the lyric line. Original + romanized keeps
+  the original and puts each word's romanization above it (the whole romanized line when words
+  can't be paired), and hides the translation, which would need a third line.
 - Optionally shows lrc.red's translation under each line (Settings → Show translation, off by
   default) when the song has one. Translations that only echo the line, such as
   English translations of English lines, are hidden.
