@@ -127,17 +127,24 @@ export function normalizeLyricsMetadata(media: Pick<MediaMetadata, "artist" | "t
   const artist = normalizeLyricsArtist(media.artist);
   const title = media.title.trim();
   const normalizedTitle = normalizeLyricsTitle(title);
-  const combinedTitle = normalizedTitle.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
+  const hasVideoDescriptor = normalizedTitle !== asciiBrackets(title).trim();
 
-  if (!combinedTitle) return { artist, title: normalizedTitle };
+  // 'YOASOBI「夜に駆ける」': the title in Japanese quotation marks follows the artist.
+  const quoted = normalizedTitle.match(/^(.+?)\s*[「『](.+?)[」』]$/);
+  if (quoted && isSameChannel(quoted[1], artist)) {
+    return { artist: quoted[1].trim(), title: quoted[2].trim() };
+  }
+
+  const combinedTitle = normalizedTitle.match(/^(.+?)\s+[-\u2013\u2014]\s+(.+)$/);
+  if (!combinedTitle)
+    return { artist, title: unquote(withoutChannelSuffix(normalizedTitle, artist)) };
 
   const titleArtist = combinedTitle[1].trim();
-  const songTitle = combinedTitle[2].trim();
-  const hasVideoDescriptor = normalizedTitle !== title;
-  if (
-    !hasVideoDescriptor &&
-    normalizeArtistComparison(titleArtist) !== normalizeArtistComparison(artist)
-  ) {
+  const songTitle = unquote(withoutChannelSuffix(combinedTitle[2].trim(), titleArtist));
+  // A video title names its artist first, but the channel is not always that
+  // artist (a lyrics channel, a label), so without a video descriptor the title
+  // is only split when it agrees with the channel.
+  if (!hasVideoDescriptor && !isSameChannel(titleArtist, artist)) {
     return { artist, title: normalizedTitle };
   }
 
@@ -242,6 +249,23 @@ export function resolveActiveLineIndex(
   if (raw !== currentIndex - 1) return raw;
   if (positionMs < lines[currentIndex].timeMs - ACTIVE_LINE_BACKWARD_MARGIN_MS) return raw;
   return currentIndex;
+}
+
+/**
+ * How far the position may fall behind what a word fill last showed before the
+ * fill follows it back. Each poll re-anchors the clock to the player's reported
+ * position, which lags the real one, so the clock steps back by a few hundred
+ * ms and an already-sung word at the end of a line would un-fill and refill.
+ * Only a real seek or restart falls further.
+ */
+export const WORD_PROGRESS_BACKWARD_MARGIN_MS = 500;
+
+/** The position a word fill is drawn at: it holds across small backward steps while playing. */
+export function resolveWordPosition(positionMs: number, shownMs: number, isPlaying: boolean) {
+  const behind = shownMs - positionMs;
+  return isPlaying && behind > 0 && behind < WORD_PROGRESS_BACKWARD_MARGIN_MS
+    ? shownMs
+    : positionMs;
 }
 
 /**
@@ -597,34 +621,183 @@ function createLyricLine(
   return lyricLine;
 }
 
-function normalizeLyricsTitle(title: string) {
-  let normalized = title.trim();
-  while (true) {
-    const start = Math.max(normalized.lastIndexOf("("), normalized.lastIndexOf("["));
-    if (start < 0) return normalized;
-    const closing = normalized[start] === "(" ? ")" : "]";
-    if (!normalized.endsWith(closing)) return normalized;
-    if (!isVideoDescriptor(normalized.slice(start + 1, -1))) return normalized;
-    normalized = normalized.slice(0, start).trimEnd();
-  }
-}
+/**
+ * Words a video label is made of. A label is a descriptor ("Official Music
+ * Video", "Lyrics + Traducción", "4K") when every word is one of these and at
+ * least one is a `VIDEO_KIND`; a lone quality tag ("HD") is one too.
+ */
+const VIDEO_KIND = new Set([
+  "video",
+  "videoclip",
+  "vídeo",
+  "audio",
+  "lyric",
+  "lyrics",
+  "letra",
+  "paroles",
+  "testo",
+  "visualizer",
+  "visualiser",
+  "mv",
+  "m/v",
+  "clip",
+]);
+const VIDEO_FILLER = new Set([
+  "official",
+  "oficial",
+  "officiel",
+  "ufficiale",
+  "music",
+  "full",
+  "new",
+  "with",
+  "sub",
+  "subtitulado",
+  "subtitulada",
+  "español",
+  "traducción",
+  "traduction",
+  "translation",
+  "de",
+  "y",
+  "et",
+  "and",
+  "&",
+  "+",
+  "/",
+  "|",
+  "hd",
+  "hq",
+  "4k",
+  "8k",
+  "uhd",
+  "upgrade",
+  "remaster",
+  "remastered",
+  "restored",
+]);
+const VIDEO_QUALITY = new Set(["hd", "hq", "4k", "8k", "uhd"]);
 
 function isVideoDescriptor(label: string) {
-  const normalized = label.trim();
+  const words = label
+    .toLowerCase()
+    .replace(/m\/v/g, "mv")
+    .split(/[\s,/]+/)
+    .filter(Boolean);
+  if (words.length === 0) return false;
+  if (!words.every((word) => VIDEO_KIND.has(word) || VIDEO_FILLER.has(word))) return false;
+  // "4K Remaster" is a video label, "2013 Remaster" an audio one.
+  return words.some((word) => VIDEO_KIND.has(word) || VIDEO_QUALITY.has(word));
+}
+
+/** An unbracketed ending that is a video label for sure: titles may end in "Audio" too. */
+function isBareVideoSuffix(label: string) {
   return (
-    /^(?:official\s+)?(?:(?:music|lyric(?:s)?|hd|4k)\s+)*video(?:\s+(?:hd|4k))?$/i.test(
-      normalized,
-    ) || /^(?:official\s+)?(?:audio|visuali[sz]er)$/i.test(normalized)
+    (/^official\b/i.test(label) ||
+      /^(?:hd|hq|4k|8k|uhd|mv|m\/v|lyrics?|(?:lyrics?|audio|music)\s+video|visuali[sz]er)$/i.test(
+        label,
+      )) &&
+    isVideoDescriptor(label)
   );
+}
+
+/** Brackets of other widths and kinds, as brackets this file handles. */
+function asciiBrackets(value: string) {
+  return value
+    .replace(/[\uFF08]/g, "(")
+    .replace(/[\uFF09]/g, ")")
+    .replace(/[\uFF3B\u3010]/g, "[")
+    .replace(/[\uFF3D\u3011]/g, "]");
+}
+
+/** The title without the video labels around it: "(Official Video)", "| Lyrics", "[4K]". */
+function normalizeLyricsTitle(title: string) {
+  let normalized = asciiBrackets(title).trim();
+  for (let guard = 0; guard < 8; guard += 1) {
+    const stripped = stripOneVideoLabel(normalized);
+    if (stripped === normalized) return normalized;
+    normalized = stripped;
+  }
+  return normalized;
+}
+
+function stripOneVideoLabel(title: string) {
+  // A label in front: "[MV] Artist - Song".
+  const leading = title.match(/^[([]([^)\]]*)[)\]]\s*(.+)$/);
+  if (leading && isVideoDescriptor(leading[1])) return leading[2].trim();
+
+  // A label before a featured artist: "Song (Official Video) ft. X".
+  const beforeFeature = title.match(/^(.+?)\s*[([]([^)\]]*)[)\]]\s+((?:ft|feat|featuring)\b.*)$/i);
+  if (beforeFeature && isVideoDescriptor(beforeFeature[2])) {
+    return `${beforeFeature[1].trim()} ${beforeFeature[3].trim()}`;
+  }
+
+  // A bracketed label at the end.
+  const start = Math.max(title.lastIndexOf("("), title.lastIndexOf("["));
+  if (start > 0) {
+    const closing = title[start] === "(" ? ")" : "]";
+    if (title.endsWith(closing) && isVideoDescriptor(title.slice(start + 1, -1))) {
+      return title.slice(0, start).trimEnd();
+    }
+  }
+
+  // "| Official Video" or "- 4K": a label after a separator.
+  const separated = title.match(/^(.+?)\s+[|\-\u2013\u2014]\s+([^|\-\u2013\u2014]+)$/);
+  // After a dash a bare "Video" may be the song ("Artist - Video"), so it needs a sure label.
+  if (
+    separated &&
+    (isBareVideoSuffix(separated[2]) || (/\s\|\s/.test(title) && isVideoDescriptor(separated[2])))
+  ) {
+    return separated[1].trim();
+  }
+
+  // A label that just follows the title: "Song Official Video".
+  const words = title.split(/\s+/);
+  for (let count = Math.min(5, words.length - 1); count >= 1; count -= 1) {
+    if (isBareVideoSuffix(words.slice(-count).join(" "))) {
+      return words.slice(0, -count).join(" ");
+    }
+  }
+  return title;
+}
+
+/** "Song | Artist": the channel named after the title. */
+function withoutChannelSuffix(title: string, artist: string) {
+  const tail = title.match(/^(.+?)\s+\|\s+([^|]+)$/);
+  return tail && isSameChannel(tail[2], artist) ? tail[1].trim() : title;
+}
+
+/** A title that was quoted: `"Blank Space"`. */
+function unquote(title: string) {
+  const quoted = title.match(/^["\u201C\u2018'](.+)["\u201D\u2019']$/);
+  return quoted && !/["\u201C\u201D]/.test(quoted[1]) ? quoted[1].trim() : title;
 }
 
 function normalizeLyricsArtist(artist: string) {
   const synthetic = /(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i.test(artist);
-  const normalized = artist.replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "").trim();
+  const normalized = artist
+    .replace(/\s*(?:[-\u2013\u2014]\s*topic|vevo)\s*$/i, "")
+    // "Queen Official" and "Queen - Official Channel" are channels, not names.
+    .replace(/\s+(?:[-\u2013\u2014]\s*)?official(?:\s+(?:artist\s+)?channel)?\s*$/i, "")
+    .trim();
   if (!synthetic) return normalized;
   return normalized
     .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
     .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2");
+}
+
+/** True when a title's artist is the channel's: equal, or one names the other ("A & B" and "A"). */
+function isSameChannel(titleArtist: string, channelArtist: string) {
+  const left = normalizeArtistComparison(titleArtist);
+  const right = normalizeArtistComparison(channelArtist);
+  if (left === right) return true;
+  const [short, long] =
+    left.length < right.length ? [titleArtist, channelArtist] : [channelArtist, titleArtist];
+  const words = (value: string) =>
+    ` ${normalizeTrackField(value)
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim()} `;
+  return Math.min(left.length, right.length) >= 3 && words(long).includes(words(short));
 }
 
 function normalizeArtistComparison(artist: string) {

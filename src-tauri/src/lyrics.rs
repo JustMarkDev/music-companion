@@ -385,8 +385,7 @@ fn rank_edit_matches<T>(
 /// The title without a trailing marker of a shortened edit ("(TV Size)",
 /// "<TV. Size Version>", "- Short Ver."), or `None` when it has none.
 fn strip_edit_marker(title: &str) -> Option<String> {
-    let title = title.trim_end();
-    let is_marker = |label: &str| {
+    strip_trailing_label(title, |label| {
         let label = normalize(label);
         [
             "tv size",
@@ -403,8 +402,13 @@ fn strip_edit_marker(title: &str) -> Option<String> {
         ]
         .iter()
         .any(|marker| label.contains(marker))
-    };
+    })
+}
 
+/// The title without a trailing group or dash label that `is_label` accepts
+/// ("Song (TV Size)", "Song - Short Ver."), or `None` when it has none.
+fn strip_trailing_label(title: &str, is_label: impl Fn(&str) -> bool) -> Option<String> {
+    let title = title.trim_end();
     let grouped = title
         .chars()
         .last()
@@ -414,19 +418,84 @@ fn strip_edit_marker(title: &str) -> Option<String> {
             '>' => title.rfind('<'),
             _ => None,
         })
-        .filter(|open| is_marker(&title[open + 1..title.len() - 1]))
+        .filter(|open| is_label(&title[open + 1..title.len() - 1]))
         .map(|open| title[..open].trim_end());
     // The rightmost dash, so a dash inside the title is kept whatever kind it is.
     let dashed = [" - ", " \u{2013} ", " \u{2014} "]
         .iter()
         .filter_map(|dash| title.rsplit_once(dash))
-        .filter(|(_, label)| is_marker(label))
+        .filter(|(_, label)| is_label(label))
         .max_by_key(|(rest, _)| rest.len())
         .map(|(rest, _)| rest.trim_end());
     grouped
         .or(dashed)
         .filter(|stripped| !stripped.is_empty())
         .map(str::to_string)
+}
+
+/// True for the trailing labels that name the same recording, remastered or
+/// credited differently by the player and by lrc.red: "(feat. X)", "(2011
+/// Remaster)", "- Mono Version", "[Deluxe]".
+fn is_release_label(label: &str) -> bool {
+    let label = normalize(label);
+    let mut words = label.split_whitespace();
+    matches!(
+        words.next(),
+        Some("feat" | "ft" | "featuring" | "with" | "prod")
+    ) || label
+        .split_whitespace()
+        .any(|word| word.starts_with("remaster") || matches!(word, "mono" | "stereo" | "deluxe"))
+        || [" bonus track ", " radio edit "]
+            .iter()
+            .any(|marker| format!(" {label} ").contains(marker))
+        || ["single version", "album version", "explicit", "clean"]
+            .iter()
+            .any(|marker| label == *marker)
+}
+
+/// The title without its release labels and a trailing "ft. X" credit, or
+/// `None` when there is nothing to strip. lrc.red lists "Hotel California (2013
+/// Remaster)" where a player says "Hotel California - Remastered 2011".
+fn base_title(title: &str) -> Option<String> {
+    let mut base = title.trim().to_string();
+    loop {
+        let lower = base.to_ascii_lowercase();
+        let credit = [" feat. ", " feat ", " ft. ", " ft ", " featuring "]
+            .iter()
+            .filter_map(|marker| lower.find(marker))
+            .min();
+        let next = strip_trailing_label(&base, is_release_label)
+            .or_else(|| credit.map(|index| base[..index].trim_end().to_string()))
+            .filter(|stripped| !stripped.is_empty());
+        match next {
+            Some(next) => base = next,
+            None => break,
+        }
+    }
+    (base != title.trim()).then_some(base)
+}
+
+/// "Artist - Song" as a title, the way a video channel that is not the artist
+/// names it, and the same pair the other way round: the (title, artist) forms
+/// to ask for when the title as it is finds nothing.
+fn dash_title_queries(title: &str) -> Vec<(String, String)> {
+    const DASHES: [&str; 3] = [" - ", " \u{2013} ", " \u{2014} "];
+    // The leftmost dash: an artist's name rarely has one, a song's title may.
+    let Some((first, second)) = DASHES
+        .iter()
+        .filter_map(|dash| title.split_once(dash))
+        .min_by_key(|(first, _)| first.len())
+    else {
+        return Vec::new();
+    };
+    let (first, second) = (first.trim(), second.trim());
+    if first.is_empty() || second.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        (second.to_string(), first.to_string()),
+        (first.to_string(), second.to_string()),
+    ]
 }
 
 fn provider_error(provider: &str, error: impl std::fmt::Display) -> String {
@@ -475,6 +544,12 @@ async fn fetch_lrc_red(
     {
         found = search_lrc_red(client, title, primary, duration_ms).await;
     }
+    for (alternate_title, alternate_artist) in fallback_queries(title, artist, duration_ms) {
+        if !matches!(found, Ok(None)) {
+            break;
+        }
+        found = search_lrc_red(client, &alternate_title, &alternate_artist, duration_ms).await;
+    }
     // A TV size or short version is not on lrc.red, but its full version is.
     if matches!(found, Ok(None))
         && let (Some(stripped), Some(edit_ms)) = (strip_edit_marker(title), duration_ms)
@@ -482,6 +557,22 @@ async fn fetch_lrc_red(
         found = search_lrc_red_edit(client, &stripped, artist, edit_ms).await;
     }
     found
+}
+
+/// What to ask for when the song as the player names it finds nothing: the
+/// title without its release labels, and a title that holds the artist (a
+/// channel that is not the artist uploads "Artist - Song") split into the two.
+/// A split needs the length, which keeps a title with a dash from passing for
+/// another song of that name.
+fn fallback_queries(title: &str, artist: &str, duration_ms: Option<u64>) -> Vec<(String, String)> {
+    let mut queries = Vec::new();
+    if let Some(base) = base_title(title) {
+        queries.push((base, artist.to_string()));
+    }
+    if duration_ms.is_some() {
+        queries.extend(dash_title_queries(title));
+    }
+    queries
 }
 
 /// The first credited artist of a joined artist string, or `None` when it
@@ -980,6 +1071,15 @@ pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> 
     {
         matches = lrc_red_matches(client, title, primary, duration_ms).await?;
     }
+    if matches.is_empty() {
+        for (alternate_title, alternate_artist) in fallback_queries(title, artist, duration_ms) {
+            matches =
+                lrc_red_matches(client, &alternate_title, &alternate_artist, duration_ms).await?;
+            if !matches.is_empty() {
+                break;
+            }
+        }
+    }
     // A recording lrc.red cannot time falls through to the next best one.
     let ranked = matches.into_iter().take(3).collect();
     let found = first_found(ranked, |isrc: String| async move {
@@ -1382,6 +1482,58 @@ mod tests {
         let ranked = rank_edit_matches(hits, "Song", "Artist", 93_200);
 
         assert_eq!(ranked.iter().map(|hit| hit.1).collect::<Vec<_>>(), ["full"]);
+    }
+
+    #[test]
+    fn release_labels_and_feature_credits_are_stripped_from_a_title() {
+        for (title, base) in [
+            ("Hotel California - Remastered 2011", "Hotel California"),
+            ("Hotel California (2013 Remaster)", "Hotel California"),
+            ("Despacito ft. Daddy Yankee", "Despacito"),
+            ("Uptown Funk (feat. Bruno Mars) - Radio Edit", "Uptown Funk"),
+            ("Song [Deluxe] (feat. X)", "Song"),
+        ] {
+            assert_eq!(base_title(title).as_deref(), Some(base), "{title}");
+        }
+        for title in [
+            "Song",
+            "Song (Cover)",
+            "Song (Monologue)",
+            "Song - Kimono",
+            "Song - Live",
+            "(feat. X)",
+            "Remastered",
+        ] {
+            assert_eq!(base_title(title), None, "{title}");
+        }
+    }
+
+    #[test]
+    fn an_artist_and_title_in_one_title_are_asked_both_ways_round() {
+        assert_eq!(
+            dash_title_queries("Matt Dusk - Charlie's Inferno - 60's Version"),
+            vec![
+                (
+                    "Charlie's Inferno - 60's Version".to_string(),
+                    "Matt Dusk".to_string()
+                ),
+                (
+                    "Matt Dusk".to_string(),
+                    "Charlie's Inferno - 60's Version".to_string()
+                ),
+            ]
+        );
+        assert!(dash_title_queries("Song").is_empty());
+        assert!(dash_title_queries("Self-Aware").is_empty());
+    }
+
+    #[test]
+    fn a_split_title_needs_a_known_length() {
+        assert!(fallback_queries("Love - Hate", "Someone", None).is_empty());
+        assert_eq!(
+            fallback_queries("Love - Hate", "Someone", Some(200_000)).len(),
+            2
+        );
     }
 
     fn lrc_red_hit(isrc: &str, title: &str) -> LrcRedHit {
