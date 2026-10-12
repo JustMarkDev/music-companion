@@ -19,6 +19,7 @@ import {
   normalizeLyricsMetadata,
   playbackVariant,
   resolveActiveLineIndex,
+  resolveWordPosition,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
   variantToken,
@@ -250,6 +251,8 @@ let lastScrolledLineIndex = -1;
 // Word elements of the active line and the progress last written to each.
 let activeWordElements: HTMLElement[] = [];
 let activeWordProgress: number[] = [];
+// The position the word fills were last drawn at, so a clock that steps back does not un-fill them.
+let wordPositionMs = 0;
 let pollInFlight = false;
 let pollQueued = false;
 // Each media hotkey press queues one pill, shown when the song or play state it changes arrives.
@@ -1681,7 +1684,8 @@ function updateSyncFrame() {
   if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
     updateLyricDom();
   }
-  updateWordProgress(positionMs);
+  wordPositionMs = resolveWordPosition(positionMs, wordPositionMs, currentMedia.isPlaying);
+  updateWordProgress(wordPositionMs);
 }
 
 /** Fills each word of the active line left to right as its timing plays out. */

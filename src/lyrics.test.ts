@@ -12,6 +12,7 @@ import {
   normalizeLyricsMetadata,
   playbackVariant,
   resolveActiveLineIndex,
+  resolveWordPosition,
   retimeRomanization,
   selectLyricsDisplay,
   startsNewPlaybackVariant,
@@ -75,6 +76,72 @@ describe("playback variants", () => {
         title: "Example Artist - The Song (Official Music Video)",
       }),
     ).toEqual({ artist: "Example Artist", title: "The Song" });
+  });
+
+  it("reads the artist and song out of the titles YouTube videos have", () => {
+    const cases: Array<[string, string, string, string]> = [
+      [
+        "Queen Official",
+        "Queen \u2013 Don't Stop Me Now (Official Video)",
+        "Queen",
+        "Don't Stop Me Now",
+      ],
+      ["Maroon 5", "Maroon 5 - Sugar | Official Video", "Maroon 5", "Sugar"],
+      ["Eminem", "Eminem - Lose Yourself [HD]", "Eminem", "Lose Yourself"],
+      ["Lyrical Lemonade", "Ed Sheeran - Perfect (Lyrics)", "Ed Sheeran", "Perfect"],
+      ["Ed Sheeran", "Ed Sheeran - Perfect (Letra/Lyrics)", "Ed Sheeran", "Perfect"],
+      [
+        "Glass Animals",
+        "Glass Animals - Heat Waves (Official Visualiser)",
+        "Glass Animals",
+        "Heat Waves",
+      ],
+      ["Maroon 5", "Maroon 5 - Sugar (Official Music Video) [4K Upgrade]", "Maroon 5", "Sugar"],
+      [
+        "Rick Astley",
+        "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+        "Rick Astley",
+        "Never Gonna Give You Up",
+      ],
+      [
+        "Official\u9AED\u7537dism",
+        "Official\u9AED\u7537dism - Pretender\uFF3BOfficial Video\uFF3D",
+        "Official\u9AED\u7537dism",
+        "Pretender",
+      ],
+      [
+        "YOASOBI",
+        "YOASOBI\u300C\u591C\u306B\u99C6\u3051\u308B\u300D Official Music Video",
+        "YOASOBI",
+        "\u591C\u306B\u99C6\u3051\u308B",
+      ],
+      ["Artist", "[MV] Artist - Song", "Artist", "Song"],
+      ["Taylor Swift", 'Taylor Swift - "Blank Space"', "Taylor Swift", "Blank Space"],
+      [
+        "Mark RonsonVEVO",
+        "Mark Ronson - Uptown Funk (Official Video) ft. Bruno Mars",
+        "Mark Ronson",
+        "Uptown Funk ft. Bruno Mars",
+      ],
+      [
+        "Matt Dusk",
+        "Charlie's Inferno (60's Version) | Matt Dusk",
+        "Matt Dusk",
+        "Charlie's Inferno (60's Version)",
+      ],
+    ];
+    for (const [channel, title, artist, song] of cases) {
+      expect(normalizeLyricsMetadata({ artist: channel, title }), title).toEqual({
+        artist,
+        title: song,
+      });
+    }
+  });
+
+  it("keeps the labels of an audio release and titles that end like a video label", () => {
+    for (const title of ["Hotel California (2013 Remaster)", "Song (Cover)", "Heavy Metal Audio"]) {
+      expect(normalizeLyricsMetadata({ artist: "Artist", title }).title).toBe(title);
+    }
   });
 
   it("keeps unrelated artist-title text that has no video descriptor", () => {
@@ -567,6 +634,18 @@ describe("resolveActiveLineIndex", () => {
     // 9000 -> 10000) follows the position instead of holding the stale line.
     const reloaded = [{ timeMs: 0 }, { timeMs: 5_000 }, { timeMs: 10_000 }];
     expect(resolveActiveLineIndex(reloaded, 9_600, -1, true)).toBe(1);
+  });
+});
+
+describe("resolveWordPosition", () => {
+  it("holds the fill across a small backward step while playing", () => {
+    expect(resolveWordPosition(9_700, 10_000, true)).toBe(10_000);
+  });
+
+  it("follows forward motion, a seek back and a paused position", () => {
+    expect(resolveWordPosition(10_016, 10_000, true)).toBe(10_016);
+    expect(resolveWordPosition(8_000, 10_000, true)).toBe(8_000);
+    expect(resolveWordPosition(9_700, 10_000, false)).toBe(9_700);
   });
 });
 
