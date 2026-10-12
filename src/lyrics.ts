@@ -127,7 +127,7 @@ export function normalizeLyricsMetadata(media: Pick<MediaMetadata, "artist" | "t
   const artist = normalizeLyricsArtist(media.artist);
   const title = media.title.trim();
   const normalizedTitle = normalizeLyricsTitle(title);
-  const hasVideoDescriptor = normalizedTitle !== title;
+  const hasVideoDescriptor = normalizedTitle !== asciiBrackets(title).trim();
 
   // 'YOASOBI「夜に駆ける」': the title in Japanese quotation marks follows the artist.
   const quoted = normalizedTitle.match(/^(.+?)\s*[「『](.+?)[」』]$/);
@@ -743,7 +743,13 @@ function stripOneVideoLabel(title: string) {
 
   // "| Official Video" or "- 4K": a label after a separator.
   const separated = title.match(/^(.+?)\s+[|\-\u2013\u2014]\s+([^|\-\u2013\u2014]+)$/);
-  if (separated && isVideoDescriptor(separated[2])) return separated[1].trim();
+  // After a dash a bare "Video" may be the song ("Artist - Video"), so it needs a sure label.
+  if (
+    separated &&
+    (isBareVideoSuffix(separated[2]) || (/\s\|\s/.test(title) && isVideoDescriptor(separated[2])))
+  ) {
+    return separated[1].trim();
+  }
 
   // A label that just follows the title: "Song Official Video".
   const words = title.split(/\s+/);
@@ -785,8 +791,13 @@ function isSameChannel(titleArtist: string, channelArtist: string) {
   const left = normalizeArtistComparison(titleArtist);
   const right = normalizeArtistComparison(channelArtist);
   if (left === right) return true;
-  const [short, long] = left.length < right.length ? [left, right] : [right, left];
-  return short.length >= 3 && long.includes(short);
+  const [short, long] =
+    left.length < right.length ? [titleArtist, channelArtist] : [channelArtist, titleArtist];
+  const words = (value: string) =>
+    ` ${normalizeTrackField(value)
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim()} `;
+  return Math.min(left.length, right.length) >= 3 && words(long).includes(words(short));
 }
 
 function normalizeArtistComparison(artist: string) {

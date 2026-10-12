@@ -1170,6 +1170,7 @@ async function pollMedia(reason = "manual") {
       lyricsErrorRetryCount = 0;
       currentPlaybackVariant = nextVariant;
       currentTrackKey = variantToken(nextVariant);
+      wordPositionMs = 0;
       lyricsRequestId += 1;
       void safeInvoke("cancel_lyrics_requests", { requestId: lyricsRequestId });
       void loadLyrics(currentMedia, nextVariant);
@@ -1396,6 +1397,7 @@ function applyLyrics(result: LyricsResult | null, fallbackNotice: string | null 
   // highlight is stale: clear it so the next tick follows the position
   // directly instead of holding a line that has moved.
   activeLineIndex = -1;
+  wordPositionMs = 0;
   lyricsMode = display.mode;
   lyricsNotice = display.notice;
   invalidateLyricsRender();

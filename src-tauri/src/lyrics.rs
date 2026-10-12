@@ -442,16 +442,12 @@ fn is_release_label(label: &str) -> bool {
     matches!(
         words.next(),
         Some("feat" | "ft" | "featuring" | "with" | "prod")
-    ) || [
-        "remaster",
-        "mono",
-        "stereo",
-        "deluxe",
-        "bonus track",
-        "radio edit",
-    ]
-    .iter()
-    .any(|marker| label.contains(marker))
+    ) || label
+        .split_whitespace()
+        .any(|word| word.starts_with("remaster") || matches!(word, "mono" | "stereo" | "deluxe"))
+        || [" bonus track ", " radio edit "]
+            .iter()
+            .any(|marker| format!(" {label} ").contains(marker))
         || ["single version", "album version", "explicit", "clean"]
             .iter()
             .any(|marker| label == *marker)
@@ -1502,6 +1498,8 @@ mod tests {
         for title in [
             "Song",
             "Song (Cover)",
+            "Song (Monologue)",
+            "Song - Kimono",
             "Song - Live",
             "(feat. X)",
             "Remastered",

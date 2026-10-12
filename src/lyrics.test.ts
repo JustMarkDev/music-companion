@@ -144,6 +144,23 @@ describe("playback variants", () => {
     }
   });
 
+  it("keeps a song named like a video label, a fullwidth live tag and a longer channel name", () => {
+    expect(normalizeLyricsMetadata({ artist: "Uploader", title: "Artist - Video" })).toEqual({
+      artist: "Uploader",
+      title: "Artist - Video",
+    });
+    expect(normalizeLyricsMetadata({ artist: "Uploader", title: "Artist - Song［Live］" })).toEqual(
+      {
+        artist: "Uploader",
+        title: "Artist - Song[Live]",
+      },
+    );
+    expect(normalizeLyricsMetadata({ artist: "Love", title: "Lover - Song" })).toEqual({
+      artist: "Love",
+      title: "Lover - Song",
+    });
+  });
+
   it("keeps unrelated artist-title text that has no video descriptor", () => {
     expect(normalizeLyricsMetadata({ artist: "Uploader", title: "Artist - Song" })).toEqual({
       artist: "Uploader",
