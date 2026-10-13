@@ -1,10 +1,130 @@
-# Music Companion
+<p align="center">
+  <img src="src-tauri/icons/128x128.png" alt="Music Companion app icon" width="96" height="96" />
+</p>
 
-Music Companion is a Windows 10/11 and macOS desktop lyrics overlay. It follows the
-active system media session, retrieves lyrics from
-[lrc.red](https://lrc.red/), and presents them in a transparent, always-on-top Tauri window.
+<h1 align="center">Music Companion</h1>
 
-## Key capabilities
+<p align="center">
+  <b>Synced lyrics, floating over everything.</b>
+</p>
+
+<p align="center">
+  <a href="https://music-companion-orcin.vercel.app/"><img src="docs/assets/banner.jpg" alt="Music Companion: a lyrics overlay over a city skyline, next to the settings window" width="100%" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/JustMarkDev/music-companion/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/JustMarkDev/music-companion?style=for-the-badge&labelColor=1a1033&color=ff5a8a" /></a>
+  <a href="https://github.com/JustMarkDev/music-companion/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/JustMarkDev/music-companion/total?style=for-the-badge&labelColor=1a1033&color=a770ff" /></a>
+  <a href="https://github.com/JustMarkDev/music-companion/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/JustMarkDev/music-companion/ci.yml?branch=main&style=for-the-badge&labelColor=1a1033&label=CI" /></a>
+  <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/JustMarkDev/music-companion?style=for-the-badge&labelColor=1a1033&color=7c9cff" /></a>
+</p>
+
+<p align="center">
+  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=flat-square&logo=windows11&logoColor=white" />
+  <img alt="macOS 11 and later" src="https://img.shields.io/badge/macOS-11%2B-57606a?style=flat-square&logo=apple&logoColor=white" />
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" />
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-core-DEA584?style=flat-square&logo=rust&logoColor=black" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-UI-3178C6?style=flat-square&logo=typescript&logoColor=white" />
+</p>
+
+<p align="center">
+  <b>Music Companion</b> is a Windows 10/11 and macOS desktop lyrics overlay. It follows the active
+  system media session, retrieves lyrics from <a href="https://lrc.red/">lrc.red</a>, and presents them
+  in a transparent, always-on-top Tauri window.
+</p>
+
+<p align="center">
+  <a href="https://music-companion-orcin.vercel.app/">Website</a> ·
+  <a href="#download">Download</a> ·
+  <a href="#see-it-in-action">Demo</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#project-pulse">Stats</a> ·
+  <a href="#development">Development</a>
+</p>
+
+## Download
+
+<p align="center">
+  <a href="https://music-companion-orcin.vercel.app/"><img alt="Visit the website" src="https://img.shields.io/badge/Visit%20the-website-ff5a8a?style=for-the-badge&logo=vercel&logoColor=white" /></a>
+  &nbsp;
+  <a href="https://github.com/JustMarkDev/music-companion/releases/latest"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for-Windows-0078D4?style=for-the-badge&logo=windows11&logoColor=white" /></a>
+  &nbsp;
+  <a href="https://github.com/JustMarkDev/music-companion/releases/latest"><img alt="Download for macOS" src="https://img.shields.io/badge/Download%20for-macOS-57606a?style=for-the-badge&logo=apple&logoColor=white" /></a>
+</p>
+
+Grab the Windows NSIS `.exe` or the universal macOS `.dmg` from the
+[latest release](https://github.com/JustMarkDev/music-companion/releases/latest). End users do not need Bun,
+Node.js, Rust, or CMake. See [Installation and use](#installation-and-use) for first-launch notes.
+
+## See it in action
+
+<p align="center">
+  <img src="docs/assets/demo.webp" alt="Animated demo from the website: lyrics fill in word by word over a city skyline while the settings window cycles through its tabs" width="100%" />
+</p>
+
+<p align="center">
+  <a href="https://music-companion-orcin.vercel.app/"><img src="docs/assets/website.jpg" alt="The Music Companion website: headline, download buttons, and the live demo" width="100%" /></a>
+</p>
+
+## Website
+
+**[music-companion-orcin.vercel.app](https://music-companion-orcin.vercel.app/)** has a live demo: the real settings
+window, running in the page, next to a lyrics preview over a city photo. Change a slider and the lyrics follow. The
+screenshots in this README are captured from it.
+
+## Features
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>🎤 Word-by-word sync</h4>
+      Highlights each word as it is sung when lrc.red times individual words (many tracks), and line by line otherwise.
+    </td>
+    <td width="33%" valign="top">
+      <h4>🌏 Romanization</h4>
+      Japanese, Korean, Chinese, Arabic, and Devanagari lyrics, romanized with the transliteration lrc.red provides.
+    </td>
+    <td width="33%" valign="top">
+      <h4>🌐 Translation</h4>
+      Optionally shows lrc.red's translation under each line. Translations that only echo the line are hidden.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h4>👥 Duets &amp; backing vocals</h4>
+      The second singer of a duet sits on the right, and background vocals appear smaller under the line, filled word by word.
+    </td>
+    <td valign="top">
+      <h4>✨ AI word sync</h4>
+      Optionally asks lrc.red's alignment model to time every word of songs that are not word-timed. The result is saved.
+    </td>
+    <td valign="top">
+      <h4>🪟 Glass overlay</h4>
+      Transparent and always on top, with Acrylic on Windows and Liquid Glass on macOS. Click-through on demand.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h4>🎹 Global hotkeys</h4>
+      Configurable play/pause, next, previous, and click-through shortcuts that work in every app.
+    </td>
+    <td valign="top">
+      <h4>🎨 Make it yours</h4>
+      Opacity, blur, typography, and accent colour, including a fresh accent for every song.
+    </td>
+    <td valign="top">
+      <h4>💾 Instant repeats</h4>
+      Caches up to 10,000 successful lookups on the device and restores overlay position, size, and settings.
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary><b>Full feature list</b></summary>
+
+<br />
 
 - Follows the system media session on both platforms, including desktop players
   and browsers.
@@ -39,6 +159,67 @@ active system media session, retrieves lyrics from
   fallback for browser sessions that decline next or previous commands.
 - Supports a global click-through toggle and tray or menu bar recovery.
 - Checks for signed updates in release builds on Windows.
+
+</details>
+
+## Screenshots
+
+Captured from the [website](https://music-companion-orcin.vercel.app/)'s live demo, which runs the app's real settings window.
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/assets/settings-look.jpg" alt="Look settings: background, blur, text size, line spacing, accent colour, and overlay glass" /></td>
+    <td width="50%" align="center"><img src="docs/assets/settings-lyrics.jpg" alt="Lyrics settings: original or romanized, translation, and AI word sync" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Look</b><br />Opacity, blur, text size, spacing, accent, glass</sub></td>
+    <td align="center"><sub><b>Lyrics</b><br />Original or romanized, translation, AI word sync</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/assets/settings-shortcuts.jpg" alt="Shortcut settings: pin overlay, play or pause, next song, previous song" /></td>
+    <td align="center"><img src="docs/assets/settings-general.jpg" alt="General settings: open at login and saved lyrics" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Shortcuts</b><br />Global hotkeys you can rebind</sub></td>
+    <td align="center"><sub><b>General</b><br />Open at login, saved lyrics</sub></td>
+  </tr>
+</table>
+
+## How it works
+
+```mermaid
+flowchart TB
+  A["Any player<br/>browser, Spotify, Apple Music, VLC…"] -->|publishes now-playing| B["System media session<br/>WMTC on Windows, MediaRemote on macOS"]
+  B --> C["Rust core (Tauri 2)"]
+  C -->|track and position| D["Overlay UI (TypeScript)"]
+  D <-->|hit or save| E[("Local cache<br/>10,000 lookups")]
+  D -->|cache miss| C
+  C <-->|search, TTML lyrics| F["lrc.red<br/>words, singers, translation, romanization"]
+```
+
+## Project pulse
+
+Live numbers, straight from GitHub. They update on their own.
+
+<p align="center">
+  <img alt="Total downloads" src="https://img.shields.io/github/downloads/JustMarkDev/music-companion/total?style=flat-square&labelColor=1a1033&color=a770ff&label=downloads" />
+  <img alt="Latest release downloads" src="https://img.shields.io/github/downloads/JustMarkDev/music-companion/latest/total?style=flat-square&labelColor=1a1033&color=a770ff&label=latest%20release" />
+  <img alt="Release date" src="https://img.shields.io/github/release-date/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=ff5a8a&label=released" />
+</p>
+
+<p align="center">
+  <img alt="Commits per month" src="https://img.shields.io/github/commit-activity/m/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=7c9cff&label=commits%20%2F%20month" />
+  <img alt="Last commit" src="https://img.shields.io/github/last-commit/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=7c9cff" />
+  <img alt="Open issues" src="https://img.shields.io/github/issues/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=7c9cff" />
+  <img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=7c9cff" />
+  <img alt="Contributors" src="https://img.shields.io/github/contributors/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=7c9cff" />
+</p>
+
+<p align="center">
+  <img alt="Top language" src="https://img.shields.io/github/languages/top/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=24C8DB" />
+  <img alt="Code size" src="https://img.shields.io/github/languages/code-size/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=24C8DB" />
+  <img alt="Repository size" src="https://img.shields.io/github/repo-size/JustMarkDev/music-companion?style=flat-square&labelColor=1a1033&color=24C8DB" />
+</p>
 
 ## Platform support
 
@@ -77,6 +258,14 @@ break it. The AppleScript fallback exists so the overlay keeps working if that
 happens.
 
 ## Technology stack
+
+<p>
+  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" />
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-DEA584?style=flat-square&logo=rust&logoColor=black" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
+  <img alt="Vite+" src="https://img.shields.io/badge/Vite%2B-646CFF?style=flat-square&logo=vite&logoColor=white" />
+  <img alt="Bun" src="https://img.shields.io/badge/Bun-000000?style=flat-square&logo=bun&logoColor=white" />
+</p>
 
 - Tauri 2 and Rust provide platform integration, media-session monitoring, the
   tray and menu bar, networking, persistence, and updates.
@@ -155,6 +344,9 @@ provider requests in the Rust terminal and WebView console.
 On macOS, `build.rs` compiles the adapter framework into `src-tauri/resources/macos/`,
 which is generated output and is not committed.
 
+> **Tip:** run `bun run dev` and open `http://127.0.0.1:1421/` in a browser to see the overlay with a
+> sample song, with no Tauri or media session needed, or add `?view=settings` for the settings window.
+
 ## Quality checks
 
 ```bash
@@ -224,13 +416,16 @@ src-tauri/tauri.conf.json       Shared window and updater configuration
 src-tauri/tauri.windows.conf.json  NSIS packaging and Windows updater install mode
 src-tauri/tauri.macos.conf.json    App and DMG packaging, bundled adapter
 src-tauri/vendor/               Pinned MediaRemote adapter submodule
+docs/assets/                    README images, captured from the website
 .github/                        Dependabot, pull-request validation, and releases
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Discuss substantial features,
-architectural changes, and broad refactors before implementation.
+Issues and pull requests are welcome. Discuss substantial features,
+architectural changes, and broad refactors before implementation, and run the
+[quality checks](#quality-checks) before opening a pull request. Pull request
+titles follow Conventional Commits, because releases are generated from them.
 
 ## License
 
