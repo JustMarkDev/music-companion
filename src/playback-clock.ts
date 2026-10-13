@@ -7,6 +7,11 @@ export const RESUME_CONFIRMATION_PROGRESS_MS = 100;
 // not be believed.
 const DISCONTINUITY_CONFIRMATION_GAP_MS = 1_000;
 const DISCONTINUITY_CONFIRMATION_TOLERANCE_MS = 600;
+// Players republish their timeline with positions that lag by up to a second or so. A playing
+// sample this far behind the clock is held as suspect, whatever event announced it, until a
+// later one agrees. A further step back is a seek or a loop, and is believed at once.
+const BACKWARD_JITTER_MIN_MS = 250;
+const BACKWARD_JITTER_MAX_MS = 3_000;
 
 type PlaybackSample = {
   hasSession: boolean;
@@ -64,19 +69,27 @@ export class PlaybackClock {
 
     if (media.isPlaying || !sameSong) {
       this.pausedPositionAnchorMs = null;
-      const discontinuous =
+      const behindMs = livePositionMs === null ? 0 : livePositionMs - media.positionMs;
+      const lagging =
         media.isPlaying &&
-        sameSong &&
-        !allowPlayingDiscontinuity &&
-        livePositionMs !== null &&
-        Math.abs(media.positionMs - livePositionMs) > PLAYING_FALLBACK_TOLERANCE_MS;
+        wasPlaying &&
+        behindMs > BACKWARD_JITTER_MIN_MS &&
+        behindMs <= BACKWARD_JITTER_MAX_MS;
+      const discontinuous =
+        lagging ||
+        (media.isPlaying &&
+          sameSong &&
+          !allowPlayingDiscontinuity &&
+          livePositionMs !== null &&
+          Math.abs(media.positionMs - livePositionMs) > PLAYING_FALLBACK_TOLERANCE_MS);
       // One odd sample is stale data, but a song that restarted or was sought keeps
       // reporting positions that move on from the first, which settles it.
       const useLivePosition = discontinuous && !this.confirmsDiscontinuity(media, sampledAtMs);
       this.pendingDiscontinuity = useLivePosition
         ? { positionMs: media.positionMs, sampledAtMs }
         : null;
-      this.positionAnchorMs = useLivePosition ? livePositionMs : media.positionMs;
+      this.positionAnchorMs =
+        useLivePosition && livePositionMs !== null ? livePositionMs : media.positionMs;
       return {
         selectedPositionMs: this.positionAnchorMs,
         livePositionMs,

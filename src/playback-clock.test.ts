@@ -135,6 +135,73 @@ describe("PlaybackClock", () => {
     });
   });
 
+  describe("a playing sample that lags a little behind the clock", () => {
+    it("is held, even from a media event, so the lyrics do not step back", () => {
+      // 44.5 s on the clock, but a republished timeline reports 43.4 s.
+      const clock = new PlaybackClock(0, 43_500);
+      const update = clock.apply(
+        sample({ positionMs: 43_500 }),
+        sample({ positionMs: 43_400 }),
+        true,
+        1_000,
+      );
+      expect(update.selectedPositionMs).toBe(44_500);
+      expect(update.usedLivePosition).toBe(true);
+      expect(clock.syncedPosition(sample(), 1_500)).toBe(45_000);
+    });
+
+    it("is followed once a later sample agrees with it", () => {
+      const clock = new PlaybackClock(0, 43_500);
+      clock.apply(sample({ positionMs: 43_500 }), sample({ positionMs: 43_400 }), true, 1_000);
+
+      const second = clock.apply(
+        sample({ positionMs: 43_400 }),
+        sample({ positionMs: 44_500 }),
+        true,
+        2_100,
+        false,
+      );
+      expect(second.usedLivePosition).toBe(false);
+      expect(second.selectedPositionMs).toBe(44_500);
+    });
+
+    it("is dropped when the next sample is back in line with the clock", () => {
+      const clock = new PlaybackClock(0, 43_500);
+      clock.apply(sample({ positionMs: 43_500 }), sample({ positionMs: 43_400 }), true, 1_000);
+
+      const second = clock.apply(
+        sample({ positionMs: 43_400 }),
+        sample({ positionMs: 45_600 }),
+        true,
+        2_100,
+      );
+      expect(second.usedLivePosition).toBe(false);
+      expect(second.selectedPositionMs).toBe(45_600);
+    });
+
+    it("still follows a seek further back at once", () => {
+      const clock = new PlaybackClock(0, 60_000);
+      const update = clock.apply(
+        sample({ positionMs: 60_000 }),
+        sample({ positionMs: 50_000 }),
+        true,
+        1_000,
+      );
+      expect(update).toMatchObject({ selectedPositionMs: 50_000, usedLivePosition: false });
+    });
+
+    it("leaves a step back inside the jitter margin alone", () => {
+      const clock = new PlaybackClock(0, 60_000);
+      const update = clock.apply(
+        sample({ positionMs: 60_000 }),
+        sample({ positionMs: 60_800 }),
+        true,
+        1_000,
+      );
+      expect(update).toMatchObject({ selectedPositionMs: 60_800, usedLivePosition: false });
+    });
+  });
+
   it("accepts a five-second seek from a fallback sample", () => {
     const clock = new PlaybackClock(0, 10_000);
     const update = clock.apply(

@@ -1,5 +1,6 @@
-//! Lyrics lookup. lrc.red is the only provider: Apple Music lyrics, many with
-//! word timing, a transliteration and a translation, served as TTML.
+//! Lyrics lookup. lrc.red is the main provider: Apple Music lyrics, many with
+//! word timing, a transliteration and a translation, served as TTML. LRCLIB is
+//! asked only when lrc.red has nothing, for line-timed lyrics of the same recording.
 
 use crate::LATEST_LYRICS_REQUEST;
 use crate::ttml::{self, Line, LineText, Lyrics, Segment};
@@ -70,8 +71,8 @@ async fn first_found<K: Clone, T, Fetch: Future<Output = Result<Option<T>, Strin
     failure.map_or(Ok(None), Err)
 }
 
-/// Looks the song up on lrc.red. The lookup is dropped (cancelled) as soon as a
-/// newer request supersedes it.
+/// Looks the song up on lrc.red, then on LRCLIB when lrc.red has nothing. The
+/// lookup is dropped (cancelled) as soon as a newer request supersedes it.
 pub async fn fetch_lyrics(
     title: &str,
     artist: &str,
@@ -79,11 +80,24 @@ pub async fn fetch_lyrics(
     request_id: u64,
 ) -> Lookup {
     let client = http_client()?;
-    let mut lookup = std::pin::pin!(within_deadline(
-        "lrc.red",
-        PROVIDER_TIMEOUT,
-        fetch_lrc_red(client, title, artist, duration_ms)
-    ));
+    let mut lookup = std::pin::pin!(async {
+        let found = within_deadline(
+            "lrc.red",
+            PROVIDER_TIMEOUT,
+            fetch_lrc_red(client, title, artist, duration_ms),
+        )
+        .await;
+        // Only a clean miss moves on: an error is retried against lrc.red.
+        if !matches!(found, Ok(None)) {
+            return found;
+        }
+        within_deadline(
+            "LRCLIB",
+            PROVIDER_TIMEOUT,
+            fetch_lrclib(client, title, artist, duration_ms),
+        )
+        .await
+    });
     loop {
         tokio::select! {
             result = &mut lookup => return result,
@@ -186,6 +200,11 @@ fn duration_difference_ms(candidate_seconds: Option<f64>, expected_ms: Option<u6
     let candidate_ms = (candidate_seconds.max(0.0) * 1_000.0).round() as u64;
     candidate_ms.abs_diff(expected_ms)
 }
+
+/// How far a hit may be from the playing length when only its artist vouches
+/// for it, the title being written in another script. A title that says nothing
+/// needs a closer length than one that matches.
+const CROSS_SCRIPT_TOLERANCE_MS: u64 = 1_000;
 
 fn duration_matches(candidate_seconds: Option<f64>, expected_ms: Option<u64>) -> bool {
     const DURATION_TOLERANCE_MS: u64 = 3_000;
@@ -315,6 +334,13 @@ fn rank_matches<T>(
 ) -> Vec<(Candidate, T)> {
     let normalized_artist = normalize(artist);
     let normalized_title = canonical_title(title, &normalized_artist);
+    // A song listed under the playing title by the playing artist, whatever its
+    // length, is the song itself: another song of the artist in another script is
+    // not a transliteration of it, only a song of about the same length.
+    let listed_by_title = hits.iter().any(|(candidate, _)| {
+        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+            && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
+    });
     hits.retain(|(candidate, _)| {
         duration_matches(candidate.duration, duration_ms)
             && is_same_song(
@@ -322,7 +348,10 @@ fn rank_matches<T>(
                 title,
                 &normalized_title,
                 &normalized_artist,
-                duration_ms.is_some(),
+                duration_ms.is_some()
+                    && !listed_by_title
+                    && duration_difference_ms(candidate.duration, duration_ms)
+                        <= CROSS_SCRIPT_TOLERANCE_MS,
             )
     });
     hits.sort_by_key(|(candidate, _)| {
@@ -1100,6 +1129,240 @@ pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> 
     Ok(Some(build_result(candidate, synced)))
 }
 
+/// How far an LRCLIB recording may be from the playing length. Line times are
+/// only right for the recording they were made against, and lyrics that run
+/// off the audio are worse than none, so this is closer than lrc.red's.
+const LRCLIB_DURATION_TOLERANCE_MS: u64 = 2_000;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LrclibTrack {
+    track_name: Option<String>,
+    artist_name: Option<String>,
+    album_name: Option<String>,
+    /// Seconds.
+    duration: Option<f64>,
+    synced_lyrics: Option<String>,
+}
+
+/// One `/api/search` query: the tracks LRCLIB lists for a title and artist.
+async fn lrclib_search(
+    client: &reqwest::Client,
+    title: &str,
+    artist: &str,
+) -> Result<Vec<LrclibTrack>, String> {
+    let response = client
+        .get(format!(
+            "https://lrclib.net/api/search?track_name={}&artist_name={}",
+            urlencoding::encode(title),
+            urlencoding::encode(artist)
+        ))
+        .send()
+        .await
+        .map_err(|error| provider_error("LRCLIB search", error))?;
+    if !response.status().is_success() {
+        return Err(provider_error("LRCLIB search", response.status()));
+    }
+    response
+        .json::<Vec<LrclibTrack>>()
+        .await
+        .map_err(|error| provider_error("LRCLIB search", error))
+}
+
+/// The line-timed lyrics of the LRCLIB recording that is the playing song, or
+/// `None`. Strict on purpose: the title must be the playing one (or the playing
+/// one without its release labels), the artist must match and the length must
+/// be within `LRCLIB_DURATION_TOLERANCE_MS`, since the lines are timed against
+/// one recording and any other drifts. The closest in length wins.
+fn pick_lrclib_lyrics(
+    tracks: Vec<LrclibTrack>,
+    title: &str,
+    artist: &str,
+    duration_ms: u64,
+) -> Option<(Candidate, Lyrics)> {
+    let normalized_artist = normalize(artist);
+    let titles = [Some(title.to_string()), base_title(title)]
+        .into_iter()
+        .flatten()
+        .map(|title| canonical_title(&title, &normalized_artist))
+        .collect::<Vec<_>>();
+    let mut matching = tracks
+        .into_iter()
+        .map(|track| {
+            let candidate = Candidate {
+                track_name: track.track_name,
+                artist_name: track.artist_name,
+                album_name: track.album_name,
+                duration: track.duration,
+            };
+            (candidate, track.synced_lyrics)
+        })
+        .filter(|(candidate, synced)| {
+            synced.as_deref().is_some_and(|lrc| !lrc.trim().is_empty())
+                && duration_difference_ms(candidate.duration, Some(duration_ms))
+                    <= LRCLIB_DURATION_TOLERANCE_MS
+                && titles.iter().any(|title| {
+                    track_title_score(candidate, title, &normalized_artist) == 4
+                        && metadata_scores(candidate, title, &normalized_artist).1 > 0
+                })
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|(candidate, _)| {
+        duration_difference_ms(candidate.duration, Some(duration_ms))
+    });
+    matching.into_iter().find_map(|(candidate, synced)| {
+        let lyrics = parse_lrc(&synced?, candidate.duration)?;
+        Some((candidate, lyrics))
+    })
+}
+
+/// Line-timed lyrics from LRCLIB, for a song lrc.red does not have. Without the
+/// playing length there is nothing to tell the recording the lines were timed
+/// against from another, so such a song is not looked up.
+async fn fetch_lrclib(
+    client: &reqwest::Client,
+    title: &str,
+    artist: &str,
+    duration_ms: Option<u64>,
+) -> Lookup {
+    let Some(duration_ms) = duration_ms else {
+        return Ok(None);
+    };
+    let started_at = std::time::Instant::now();
+    let mut queries = vec![(title.to_string(), artist.to_string())];
+    if let Some(primary) = primary_artist(artist) {
+        queries.push((title.to_string(), primary.to_string()));
+    }
+    if let Some(base) = base_title(title) {
+        queries.push((base, artist.to_string()));
+    }
+    let mut failure = None;
+    for (query_title, query_artist) in queries {
+        match lrclib_search(client, &query_title, &query_artist).await {
+            Ok(tracks) => {
+                if let Some((candidate, lyrics)) =
+                    pick_lrclib_lyrics(tracks, title, artist, duration_ms)
+                {
+                    println!(
+                        "[latency] lrclib total={}ms track={:?}",
+                        started_at.elapsed().as_millis(),
+                        candidate.track_name
+                    );
+                    return Ok(Some(build_result(candidate, lyrics)));
+                }
+            }
+            Err(error) => failure = Some(error),
+        }
+    }
+    println!(
+        "[latency] lrclib total={}ms no match",
+        started_at.elapsed().as_millis()
+    );
+    failure.map_or(Ok(None), Err)
+}
+
+/// Parses LRC text: `[mm:ss.xx]` stamps (a line may carry several) before the
+/// text. Tags such as `[ar:Artist]` and word stamps such as `<00:10.50>` are
+/// dropped. Each line ends where the next stamped one starts, and an empty
+/// stamped line only ends the one before it. `None` when no line has text.
+fn parse_lrc(lrc: &str, duration_seconds: Option<f64>) -> Option<Lyrics> {
+    let mut entries: Vec<(u64, String)> = Vec::new();
+    for raw in lrc.lines() {
+        let mut rest = raw.trim_start();
+        let mut stamps = Vec::new();
+        while let Some(after) = rest.strip_prefix('[') {
+            let Some((tag, tail)) = after.split_once(']') else {
+                break;
+            };
+            let Some(stamp_ms) = parse_lrc_stamp(tag) else {
+                break;
+            };
+            stamps.push(stamp_ms);
+            rest = tail.trim_start();
+        }
+        let text = strip_lrc_word_stamps(rest);
+        entries.extend(stamps.into_iter().map(|stamp_ms| (stamp_ms, text.clone())));
+    }
+    entries.sort_by_key(|(start_ms, _)| *start_ms);
+
+    let last_end_ms = duration_seconds
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .map(|seconds| (seconds * 1_000.0).round() as u64);
+    let lines = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, text))| !text.is_empty())
+        .map(|(index, (start_ms, text))| {
+            let end_ms = entries
+                .get(index + 1)
+                .map(|(next_ms, _)| *next_ms)
+                .or(last_end_ms)
+                .unwrap_or(start_ms + 5_000)
+                .max(*start_ms);
+            Line {
+                start_ms: *start_ms,
+                end_ms,
+                voice: 0,
+                text: LineText {
+                    segments: vec![Segment {
+                        start_ms: *start_ms,
+                        end_ms,
+                        text: text.clone(),
+                    }],
+                    background: Vec::new(),
+                },
+                romanized: None,
+                translation: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then_some(Lyrics { lines })
+}
+
+/// The milliseconds of an LRC stamp's inside: "01:23.45", "01:23" or "1:23.456".
+/// `None` for a tag such as "ar:Artist".
+fn parse_lrc_stamp(tag: &str) -> Option<u64> {
+    let (minutes, seconds) = tag.split_once(':')?;
+    if minutes.is_empty() || !minutes.chars().all(|char| char.is_ascii_digit()) {
+        return None;
+    }
+    if seconds.is_empty()
+        || !seconds
+            .chars()
+            .all(|char| char.is_ascii_digit() || char == '.')
+    {
+        return None;
+    }
+    let minutes = minutes.parse::<u64>().ok()?;
+    let seconds = seconds.parse::<f64>().ok()?;
+    Some(minutes * 60_000 + (seconds * 1_000.0).round() as u64)
+}
+
+/// The text of an LRC line without the `<mm:ss.xx>` stamps of enhanced LRC.
+fn strip_lrc_word_stamps(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        let (before, from_open) = rest.split_at(open);
+        match from_open
+            .split_once('>')
+            .filter(|(tag, _)| parse_lrc_stamp(&tag[1..]).is_some())
+        {
+            Some((_, after)) => {
+                stripped.push_str(before);
+                rest = after;
+            }
+            None => {
+                stripped.push_str(before);
+                stripped.push('<');
+                rest = &from_open[1..];
+            }
+        }
+    }
+    stripped.push_str(rest);
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1351,6 +1614,134 @@ mod tests {
         assert_eq!(
             rank_matches(same, "IRIS OUT", "Kenshi Yonezu", None).len(),
             1
+        );
+    }
+
+    #[test]
+    fn a_song_listed_under_the_playing_title_is_not_replaced_by_another_in_another_script() {
+        // AIZO (237.8 s here) is on lrc.red at 215.9 s; ねっこ by the same artist is 239.7 s.
+        // The length rejects AIZO, and ねっこ must not pass off for it.
+        let hits = vec![
+            (candidate("AIZO", "King Gnu", 215.858), "aizo"),
+            (candidate("ねっこ", "King Gnu", 239.729), "nekko"),
+        ];
+
+        assert!(rank_matches(hits, "AIZO", "King Gnu", Some(237_761)).is_empty());
+    }
+
+    #[test]
+    fn a_title_in_another_script_needs_a_closer_length_than_a_matching_one() {
+        let hits = vec![(candidate("ねっこ", "King Gnu", 239.729), "nekko")];
+
+        // 2 s away: another song of about that length.
+        assert!(rank_matches(hits.clone(), "AIZO", "King Gnu", Some(237_761)).is_empty());
+        // Within a second: the same recording under its title in another script.
+        assert_eq!(
+            rank_matches(hits, "AIZO", "King Gnu", Some(239_200)).len(),
+            1
+        );
+    }
+
+    fn lrclib_track(
+        title: &str,
+        artist: &str,
+        duration: Option<f64>,
+        lrc: Option<&str>,
+    ) -> LrclibTrack {
+        LrclibTrack {
+            track_name: Some(title.to_string()),
+            artist_name: Some(artist.to_string()),
+            album_name: None,
+            duration,
+            synced_lyrics: lrc.map(str::to_string),
+        }
+    }
+
+    const LRC: &str = "[ar:King Gnu]\n[00:01.50] First line\n[00:04.00][00:10.50]Chorus <00:04.50>line\n[00:07.00]\n[00:09.10] Last line";
+
+    #[test]
+    fn lrc_lines_are_timed_to_where_the_next_one_starts() {
+        let lyrics = parse_lrc(LRC, Some(12.0)).unwrap();
+        let timed = lyrics
+            .lines
+            .iter()
+            .map(|line| {
+                (
+                    line.start_ms,
+                    line.end_ms,
+                    line.text.segments[0].text.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            timed,
+            [
+                (1_500, 4_000, "First line"),
+                // The empty line at 7 s only ends this one.
+                (4_000, 7_000, "Chorus line"),
+                (9_100, 10_500, "Last line"),
+                // The last line ends with the song.
+                (10_500, 12_000, "Chorus line"),
+            ]
+        );
+        // A line is timed as a whole, so the song is shown line by line.
+        assert!(!lyrics.is_word_timed());
+    }
+
+    #[test]
+    fn lrc_without_text_has_no_lyrics() {
+        assert!(parse_lrc("[ar:Someone]\n[00:01.00]\n", None).is_none());
+        assert!(parse_lrc("just words", None).is_none());
+    }
+
+    #[test]
+    fn lrclib_lyrics_are_taken_for_the_same_recording_only() {
+        let pick = |tracks: Vec<LrclibTrack>, duration_ms| {
+            pick_lrclib_lyrics(tracks, "AIZO", "King Gnu", duration_ms)
+                .map(|(candidate, _)| candidate.duration)
+        };
+        let synced = Some("[00:01.00] A line");
+        let tracks = || {
+            vec![
+                // Another recording of it.
+                lrclib_track("AIZO", "King Gnu", Some(215.8), synced),
+                // Another artist's version of the same length.
+                lrclib_track("AIZO", "Danie Green", Some(237.9), synced),
+                // Another song.
+                lrclib_track("ねっこ", "King Gnu", Some(237.9), synced),
+                // Plain lyrics only, and no length.
+                lrclib_track("AIZO", "King Gnu", Some(237.9), None),
+                lrclib_track("AIZO", "King Gnu", None, synced),
+            ]
+        };
+
+        assert_eq!(pick(tracks(), 237_761), None);
+
+        let mut with_match = tracks();
+        with_match.push(lrclib_track("AIZO", "King Gnu", Some(239.5), synced));
+        with_match.push(lrclib_track("aizo", "king gnu", Some(238.0), synced));
+        // Within 2 s, the closest in length.
+        assert_eq!(pick(with_match, 237_761), Some(Some(238.0)));
+    }
+
+    #[test]
+    fn a_release_label_does_not_stop_an_lrclib_match() {
+        let tracks = vec![lrclib_track(
+            "Hotel California",
+            "Eagles",
+            Some(391.0),
+            Some("[00:01.00] On a dark desert highway"),
+        )];
+
+        assert!(
+            pick_lrclib_lyrics(
+                tracks,
+                "Hotel California (2013 Remaster)",
+                "Eagles",
+                391_500
+            )
+            .is_some()
         );
     }
 
