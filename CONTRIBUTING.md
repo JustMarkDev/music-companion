@@ -83,19 +83,19 @@ A universal macOS build needs both Rust targets:
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
-Approved releases are published from version tags matching `v*`. The Windows job
-also creates signed Tauri updater artifacts.
+Approved releases are published from version tags matching `v*`. Both jobs create
+signed Tauri updater artifacts.
 
 ### macOS updates
 
-macOS automatic updates are deliberately disabled, and the macOS release job does
-not publish updater metadata, because replacing an installed app bundle in place
-requires a Developer ID signature that Gatekeeper accepts. To enable them, add
-`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` as repository secrets, then set
-`createUpdaterArtifacts` to `true` in `src-tauri/tauri.macos.conf.json`, remove the
-macOS guard in `start_automatic_update`, and enable `includeUpdaterJson` for the
-macOS release job.
+macOS auto-update turns on when the release workflow sees the `APPLE_CERTIFICATE`
+secret, because replacing an installed bundle in place needs a Developer ID
+signature that Gatekeeper accepts. Add `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
+`APPLE_PASSWORD`, and `APPLE_TEAM_ID` as repository secrets; the macOS job then
+signs, notarizes, and adds the universal `.app.tar.gz` to `latest.json` next to the
+Windows entry. Without them the DMG is unsigned and macOS stays on manual updates.
+Both jobs sign updater artifacts with `TAURI_SIGNING_PRIVATE_KEY`.
 
 ## Project structure
 

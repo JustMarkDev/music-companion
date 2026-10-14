@@ -568,13 +568,8 @@ fn start_automatic_update(app: tauri::AppHandle) {
         return;
     }
 
-    // Replacing the app bundle in place requires a Developer ID signature that
-    // Gatekeeper accepts. Until release signing is configured, macOS updates are
-    // installed manually. See the release notes in README.md.
-    if cfg!(target_os = "macos") {
-        return;
-    }
-
+    // macOS builds without Developer ID signing are absent from the updater
+    // manifest, so the check fails quietly there and updates stay manual.
     tauri::async_runtime::spawn(async move {
         if let Err(error) = update_and_restart(app).await {
             eprintln!("Automatic update failed: {error}");

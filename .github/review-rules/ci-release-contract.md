@@ -11,5 +11,6 @@ Dependabot stays separate from pull-request CI, and the `release` job in `ci.yml
 conventional commits and bumps `tauri.conf.json`, `Cargo.toml` and `Cargo.lock`
 together; a draft release gets a signed Windows x86-64 NSIS installer with updater
 metadata and a universal macOS DMG, and is published only after every build
-succeeds; without Apple Developer ID secrets the macOS DMG is unsigned and its
-updater stays disabled. Flag any change that breaks either contract.
+succeeds; the macOS build also creates updater artifacts, but it joins the updater manifest
+only when Apple Developer ID secrets are set; without them the DMG is unsigned and
+macOS updates stay manual. Flag any change that breaks either contract.
