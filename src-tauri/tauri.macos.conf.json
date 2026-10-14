@@ -5,7 +5,7 @@
   },
   "bundle": {
     "targets": ["app", "dmg"],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "resources": {
       "resources/macos/mediaremote-adapter.pl": "mediaremote-adapter.pl",
       "resources/macos/MediaRemoteAdapterTestClient": "MediaRemoteAdapterTestClient"

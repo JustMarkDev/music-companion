@@ -9,7 +9,7 @@
 | Click-through toggle         | `Ctrl+Shift+L`                          | `⇧⌘L`                                                                  |
 | Next / previous / play-pause | `Ctrl+→`, `Ctrl+←`, `Ctrl+Shift+Space`  | `⌃⌘→`, `⌃⌘←`, `⇧⌘Space`                                                |
 | Packaging                    | NSIS `.exe` installer                   | Universal `.dmg` (Apple Silicon and Intel)                             |
-| Automatic updates            | Yes, signed                             | Not yet; see [macOS updates](../CONTRIBUTING.md#macos-updates)         |
+| Automatic updates            | Yes, signed                             | Yes, signed                                                            |
 
 macOS transport shortcuts include Command because macOS reserves `Ctrl+→` and
 `Ctrl+←` for Mission Control.

@@ -151,12 +151,12 @@ jobs:
         uses: tauri-apps/tauri-action@dev
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: v${{ needs.release.outputs.version }}
           releaseDraft: true
-          # macOS auto-update stays off until release signing is configured, so
-          # this job must not overwrite the Windows updater manifest.
-          includeUpdaterJson: false
+          # Merges the macOS entry into the Windows updater manifest. Updates are
+          # verified by the Tauri minisign key, so Apple signing is not required.
           args: --target universal-apple-darwin
 
   publish:
