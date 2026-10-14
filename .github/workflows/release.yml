@@ -155,10 +155,8 @@ jobs:
         with:
           tagName: v${{ needs.release.outputs.version }}
           releaseDraft: true
-          # Replacing an installed bundle needs a Developer ID signature, so macOS
-          # joins the updater manifest (merged into the Windows one) only when
-          # the Apple certificate secret is set. Unsigned builds stay manual.
-          includeUpdaterJson: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          # Merges the macOS entry into the Windows updater manifest. Updates are
+          # verified by the Tauri minisign key, so Apple signing is not required.
           args: --target universal-apple-darwin
 
   publish:

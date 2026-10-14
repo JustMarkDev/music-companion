@@ -568,8 +568,6 @@ fn start_automatic_update(app: tauri::AppHandle) {
         return;
     }
 
-    // macOS builds without Developer ID signing are absent from the updater
-    // manifest, so the check fails quietly there and updates stay manual.
     tauri::async_runtime::spawn(async move {
         if let Err(error) = update_and_restart(app).await {
             eprintln!("Automatic update failed: {error}");

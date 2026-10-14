@@ -88,14 +88,13 @@ signed Tauri updater artifacts.
 
 ### macOS updates
 
-macOS auto-update turns on when the release workflow sees the `APPLE_CERTIFICATE`
-secret, because replacing an installed bundle in place needs a Developer ID
-signature that Gatekeeper accepts. Add `APPLE_CERTIFICATE`,
-`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-`APPLE_PASSWORD`, and `APPLE_TEAM_ID` as repository secrets; the macOS job then
-signs, notarizes, and adds the universal `.app.tar.gz` to `latest.json` next to the
-Windows entry. Without them the DMG is unsigned and macOS stays on manual updates.
-Both jobs sign updater artifacts with `TAURI_SIGNING_PRIVATE_KEY`.
+macOS auto-update works without an Apple Developer account: both jobs sign updater
+artifacts with `TAURI_SIGNING_PRIVATE_KEY`, and the macOS job adds the universal
+`.app.tar.gz` to `latest.json` next to the Windows entry. Unsigned builds still need
+the Control-click **Open** on first launch. To also sign and notarize, add
+`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` as repository secrets; no other
+change is needed.
 
 ## Project structure
 

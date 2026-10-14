@@ -36,4 +36,4 @@ transparent, always-on-top Tauri window.
 - Supports configurable global playback hotkeys, with a Windows media-key
   fallback for browser sessions that decline next or previous commands.
 - Supports a global click-through toggle and tray or menu bar recovery.
-- Checks for signed updates in release builds on Windows, and on macOS once releases are notarized.
+- Checks for signed updates in release builds.
