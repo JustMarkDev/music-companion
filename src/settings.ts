@@ -17,6 +17,8 @@ export type SettingsState = {
   /** Asks lrc.red to time every word of songs whose lyrics are not word-timed. */
   wordSync: boolean;
   startAtLogin: boolean;
+  /** Hides the overlay to the tray on launch instead of showing it. */
+  startMinimized: boolean;
   accentMode: AccentMode;
   accentColor: string;
   backdropMaterial: BackdropMaterial;
@@ -67,6 +69,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   showTranslation: false,
   wordSync: false,
   startAtLogin: false,
+  startMinimized: false,
   accentMode: "dynamic",
   accentColor: "#FF8A65",
   backdropMaterial: "acrylic",
@@ -97,6 +100,10 @@ export function decodeSettings(stored: string | null): SettingsState {
         typeof value.startAtLogin === "boolean"
           ? value.startAtLogin
           : DEFAULT_SETTINGS.startAtLogin,
+      startMinimized:
+        typeof value.startMinimized === "boolean"
+          ? value.startMinimized
+          : DEFAULT_SETTINGS.startMinimized,
       accentMode: value.accentMode === "manual" ? "manual" : "dynamic",
       accentColor: isHexColor(value.accentColor)
         ? normalizeHexColor(value.accentColor)
