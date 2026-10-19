@@ -462,7 +462,7 @@ if (isSettingsWindow) {
   applySettings();
   renderAll();
   // ponytail: the window is created visible, so it flashes briefly before hiding.
-  if (settings.startMinimized) void appWindow?.hide();
+  if (settings.startMinimized) void safeWindowAction(() => appWindow?.hide());
   void syncStartAtLogin();
   schedulePolling();
   startSyncLoop();

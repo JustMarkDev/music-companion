@@ -77,6 +77,13 @@ describe("decodeSettings", () => {
     expect(decodeSettings(JSON.stringify({ wordSync: "yes" })).wordSync).toBe(false);
   });
 
+  it("leaves start minimized off unless it was turned on", () => {
+    expect(DEFAULT_SETTINGS.startMinimized).toBe(false);
+    expect(decodeSettings(null).startMinimized).toBe(false);
+    expect(decodeSettings(JSON.stringify({ startMinimized: true })).startMinimized).toBe(true);
+    expect(decodeSettings(JSON.stringify({ startMinimized: "yes" })).startMinimized).toBe(false);
+  });
+
   it("migrates the old romanization flag and rejects unknown scripts", () => {
     expect(decodeSettings(JSON.stringify({ romanizedLyrics: true })).lyricsScript).toBe(
       "romanized",
