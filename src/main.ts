@@ -416,6 +416,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <span><strong>Open at login</strong><small>Start with ${osName}, so lyrics are there when music is</small></span>
                 <input id="start-login" class="switch" type="checkbox" role="switch" />
               </label>
+              <label class="setting-row" for="start-minimized">
+                <span><strong>Start minimized</strong><small>Launch hidden in the tray instead of showing the overlay</small></span>
+                <input id="start-minimized" class="switch" type="checkbox" role="switch" />
+              </label>
               <div class="setting-row">
                 <span><strong>Saved lyrics</strong><small>Kept on this device, so songs load instantly</small></span>
                 <button type="button" class="key button" id="clear-lyrics-cache">Clear</button>
@@ -457,6 +461,8 @@ if (isSettingsWindow) {
   wireWindowEvents();
   applySettings();
   renderAll();
+  // ponytail: the window is created visible, so it flashes briefly before hiding.
+  if (settings.startMinimized) void safeWindowAction(() => appWindow?.hide());
   void syncStartAtLogin();
   schedulePolling();
   startSyncLoop();
@@ -811,6 +817,13 @@ function wireUi() {
       if (tauriAvailable) {
         await invoke("set_start_at_login", { enabled: settings.startAtLogin });
       }
+    });
+
+  document
+    .querySelector<HTMLInputElement>("#start-minimized")
+    ?.addEventListener("change", (event) => {
+      settings.startMinimized = (event.currentTarget as HTMLInputElement).checked;
+      saveSettings();
     });
 
   document.querySelector("#clear-lyrics-cache")?.addEventListener("click", () => {
@@ -1838,6 +1851,7 @@ function renderSettings() {
     Math.round(settings.lineSpacing * 200),
   );
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
+  document.querySelector<HTMLInputElement>("#start-minimized")!.checked = settings.startMinimized;
   document.querySelector<HTMLInputElement>("#word-sync")!.checked = settings.wordSync;
   document.querySelectorAll<HTMLButtonElement>("[data-backdrop-material]").forEach((button) => {
     const selected = button.dataset.backdropMaterial === settings.backdropMaterial;
