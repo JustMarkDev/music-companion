@@ -86,6 +86,12 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 Approved releases are published from version tags matching `v*`. Both jobs create
 signed Tauri updater artifacts.
 
+Every action in `.github/workflows` is pinned to a commit SHA, and the release job holds the
+updater signing key, so keep it that way: Dependabot bumps the SHAs, and a moving ref such as
+`@main` would let upstream code read the key. If a build job fails after the tag exists, use
+**Re-run failed jobs** on the same run: the `release` job is not repeated, the builds upload to
+the draft release of that tag, and **Publish release** runs once every build has passed.
+
 ### macOS updates
 
 macOS auto-update works without an Apple Developer account: both jobs sign updater
@@ -102,13 +108,17 @@ change is needed.
 src/main.ts                     Overlay UI, settings, and lyric synchronization
 src/settings.ts                 Settings decoding and per-platform defaults
 src/lyrics-cache.ts             Lyrics cache in IndexedDB, with word-sync bookkeeping
+src/lyrics-loader.ts            Lyrics lookup, word-timing request, and retry budget (no DOM)
 src/styles.css                  Overlay and settings styles
-src-tauri/src/lib.rs            Shared commands, tray, updater, Windows backends
+src-tauri/src/lib.rs            Shared commands, tray, and updater
 src-tauri/src/lyrics.rs         lrc.red lookup, ranking of its matches, and word sync
 src-tauri/src/ttml.rs           Lyrics model and the parser for lrc.red's TTML files
 src-tauri/src/media_macos.rs    macOS now-playing reader and transport control
 src-tauri/src/backdrop_macos.rs macOS overlay backdrop
 src-tauri/src/z_order_macos.rs  macOS overlay stacking
+src-tauri/src/media_windows.rs  Windows now-playing events and transport control
+src-tauri/src/backdrop_windows.rs  Windows Acrylic backdrop
+src-tauri/src/z_order_windows.rs   Windows topmost monitor
 src-tauri/build.rs              Builds and stages the macOS MediaRemote adapter
 src-tauri/tauri.conf.json       Shared window and updater configuration
 src-tauri/tauri.windows.conf.json  NSIS packaging and Windows updater install mode

@@ -9,8 +9,8 @@ import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { icons, toastIcon } from "./icons";
 import { createLyricsCache } from "./lyrics-cache";
+import { LyricsRetryBudget, loadLyricsResult, requestWordTiming } from "./lyrics-loader";
 import {
-  carryOverTracks,
   getLocalLyricsNotice,
   hasRomanization,
   isSameSong,
@@ -148,7 +148,6 @@ const ARROW_KEYCAPS: Record<string, string> = {
 const SETTINGS_STORAGE_KEY = "music-companion-settings";
 const MAIN_WINDOW_GEOMETRY_STORAGE_KEY = "music-companion-main-window-geometry-v2";
 const POLLING_INTERVAL_MS = 2_000;
-const SYNC_OFFSET_MS = 0;
 const RESUME_CONFIRMATION_DELAY_MS = 250;
 // Just over the second the clock waits for before it believes a jump in position.
 const DISCONTINUITY_CONFIRMATION_DELAY_MS = 1_100;
@@ -215,6 +214,10 @@ const isSettingsWindow =
   appWindow?.label === "settings" ||
   new URLSearchParams(window.location.search).get("view") === "settings";
 const lyricCache = createLyricsCache(localStorage);
+const lyricsLoaderDeps = {
+  cache: lyricCache,
+  invoke: (command: string, args: Record<string, unknown>) => invoke(command, args),
+};
 // Songs already tried for word timing this session, so a failure is not retried on every play.
 const wordSyncTried = new Set<string>();
 // Word syncs run one at a time, so skipping through songs never floods lrc.red.
@@ -225,11 +228,6 @@ let wordSyncingTrackKey = "";
 let lyricsRequestId = Date.now();
 
 let settings = loadSettings();
-// Windows has a single backdrop, so a legacy stored Mica choice never applies.
-if (PLATFORM === "windows" && settings.backdropMaterial !== "acrylic") {
-  settings.backdropMaterial = "acrylic";
-  saveSettings();
-}
 let currentMedia: MediaState = demoState;
 let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
 let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
@@ -258,7 +256,6 @@ let pollQueued = false;
 // Each media hotkey press queues one pill, shown when the song or play state it changes arrives.
 let pendingHotkeyToasts: { action: string; until: number }[] = [];
 const HOTKEY_TOAST_WINDOW_MS = 5_000;
-let pollStartedAtMs = 0;
 let mediaEventSequence = 0;
 let resumeConfirmationTimer = 0;
 let discontinuityConfirmationTimer = 0;
@@ -266,9 +263,10 @@ let discontinuityConfirmationTimer = 0;
 // stalled lookup never sticks until the next track but also never polls the
 // provider forever. The "Try again" button resets the budget.
 let lyricsErrorRetryTimer = 0;
-let lyricsErrorRetryCount = 0;
-const LYRICS_ERROR_RETRY_DELAY_MS = 15_000;
-const MAX_LYRICS_ERROR_RETRIES = 2;
+const lyricsRetryBudget = new LyricsRetryBudget(15_000, 2);
+// What the native window was last given, so a drag of an unrelated slider skips the calls.
+// Declared up here because the settings are applied while the module loads.
+let appliedInteractivityKey = "";
 let renderedChromeKey = "";
 let renderedGradientKey = "";
 let mainWindowGeometry: { width: number; height: number; x: number; y: number } | null = null;
@@ -812,10 +810,18 @@ function wireUi() {
   document
     .querySelector<HTMLInputElement>("#start-login")
     ?.addEventListener("change", async (event) => {
-      settings.startAtLogin = (event.currentTarget as HTMLInputElement).checked;
+      const input = event.currentTarget as HTMLInputElement;
+      settings.startAtLogin = input.checked;
       saveSettings();
-      if (tauriAvailable) {
+      if (!tauriAvailable) return;
+      try {
         await invoke("set_start_at_login", { enabled: settings.startAtLogin });
+      } catch (error) {
+        console.error("Unable to change start at login", error);
+        settings.startAtLogin = !input.checked;
+        input.checked = settings.startAtLogin;
+        saveSettings();
+        showToast("Could not change start at login", undefined, "error");
       }
     });
 
@@ -1006,7 +1012,10 @@ function wireWindowEvents() {
       void syncSettingsAccent();
       void loadHotkeyStatuses();
     });
-    void listen("media-state-changed", () => void syncSettingsAccent());
+    void listen("media-state-changed", async () => {
+      // The hidden settings window hears every event too, and each would read the session.
+      if (await appWindow?.isVisible().catch(() => false)) void syncSettingsAccent();
+    });
     void listen("hotkey-statuses-changed", () => void loadHotkeyStatuses());
     return;
   }
@@ -1032,12 +1041,20 @@ function wireWindowEvents() {
     clearLyricsCache();
   });
   void listen<SettingsState>("settings-updated", () => {
+    // A slider drag sends one event per step; only what changes the lyrics themselves
+    // rebuilds them, and a rebuild restarts the highlight.
+    const previous = settings;
     settings = loadSettings();
     applySettings();
     renderSettings();
-    applyLyrics(currentLyricsResult);
-    renderLyrics();
-    syncCurrentSongWords();
+    if (
+      previous.lyricsScript !== settings.lyricsScript ||
+      previous.showTranslation !== settings.showTranslation
+    ) {
+      applyLyrics(currentLyricsResult);
+      renderLyrics();
+    }
+    if (previous.wordSync !== settings.wordSync) syncCurrentSongWords();
   });
 }
 
@@ -1134,13 +1151,10 @@ function schedulePolling() {
 async function pollMedia(reason = "manual") {
   if (pollInFlight) {
     pollQueued = true;
-    if (pollStartedAtMs && performance.now() - pollStartedAtMs > 3000) {
-    }
     return;
   }
 
   pollInFlight = true;
-  pollStartedAtMs = performance.now();
   const mediaSequenceAtRequestStart = mediaEventSequence;
   try {
     if (!tauriAvailable) {
@@ -1180,7 +1194,7 @@ async function pollMedia(reason = "manual") {
 
     if (nextVariant && startsNewVariant) {
       window.clearTimeout(lyricsErrorRetryTimer);
-      lyricsErrorRetryCount = 0;
+      lyricsRetryBudget.reset();
       currentPlaybackVariant = nextVariant;
       currentTrackKey = variantToken(nextVariant);
       wordPositionMs = 0;
@@ -1203,10 +1217,10 @@ async function pollMedia(reason = "manual") {
     if (currentMedia.isPlaying) {
       ensureSyncLoop();
     }
-  } catch {
+  } catch (error) {
+    console.warn("[media] unable to read the media session", error);
   } finally {
     pollInFlight = false;
-    pollStartedAtMs = 0;
     if (pollQueued) {
       pollQueued = false;
       void pollMedia("queued-media-event");
@@ -1239,56 +1253,49 @@ async function loadLyrics(media: MediaState, expectedVariant: PlaybackVariant) {
   lyricsNotice = "";
   renderWordSyncStatus();
   const lyricsMetadata = normalizeLyricsMetadata(media);
-  const cachedResult = await lyricCache.get(expectedVariant);
-  if (currentTrackKey !== expectedTrackKey) return;
-  if (cachedResult !== undefined) {
-    console.info("[latency] lyrics cache hit", { key: expectedTrackKey });
-    applyLyrics(cachedResult, localNotice);
-    scheduleWordSync(media, expectedVariant, cachedResult);
-    return;
-  }
-
-  if (currentTrackKey === expectedTrackKey) {
-    lyricsLines = [];
-    lyricsMode = "searching";
-    invalidateLyricsRender();
-    renderLyrics();
-  }
-
-  try {
-    const cacheGeneration = lyricCache.requestGeneration();
-    const startedAt = performance.now();
-    const requestId = lyricsRequestId;
-    const result = await invoke<LyricsResult | null>("fetch_lyrics", {
+  const startedAt = performance.now();
+  const loaded = await loadLyricsResult(
+    lyricsLoaderDeps,
+    {
+      variant: expectedVariant,
       title: lyricsMetadata.title,
       artist: lyricsMetadata.artist,
       durationMs: media.durationMs,
-      requestId,
-    });
-    const requestIsCurrent = requestId === lyricsRequestId && currentTrackKey === expectedTrackKey;
-    if (requestIsCurrent) {
-      void lyricCache.putIfCurrent(cacheGeneration, expectedVariant, result);
-    }
-    console.info("[latency] lyrics ready", {
-      key: expectedTrackKey,
-      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
-      found: Boolean(result),
-    });
-    if (requestIsCurrent) {
-      window.clearTimeout(lyricsErrorRetryTimer);
-      lyricsErrorRetryCount = 0;
-      applyLyrics(result, localNotice);
-      scheduleWordSync(media, expectedVariant, result);
-    }
-  } catch {
-    if (currentTrackKey === expectedTrackKey) {
+    },
+    { track: () => currentTrackKey === expectedTrackKey, request: () => lyricsRequestId },
+    () => {
       lyricsLines = [];
-      lyricsMode = "error";
+      lyricsMode = "searching";
       invalidateLyricsRender();
       renderLyrics();
-      scheduleLyricsErrorRetry(expectedTrackKey);
-    }
+    },
+  );
+  if (loaded.status === "stale") return;
+  if (loaded.status === "failed") {
+    lyricsLines = [];
+    lyricsMode = "error";
+    invalidateLyricsRender();
+    renderLyrics();
+    scheduleLyricsErrorRetry(expectedTrackKey);
+    return;
   }
+
+  console.info(
+    loaded.status === "cached" ? "[latency] lyrics cache hit" : "[latency] lyrics ready",
+    {
+      key: expectedTrackKey,
+      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      found: Boolean(loaded.result),
+    },
+  );
+  if (loaded.status === "fetched") {
+    window.clearTimeout(lyricsErrorRetryTimer);
+    lyricsRetryBudget.reset();
+  }
+  applyLyrics(loaded.result, localNotice);
+  // A paused song has no sync loop to draw them, so they would wait for the next poll.
+  renderLyrics();
+  scheduleWordSync(media, expectedVariant, loaded.result);
 }
 
 /**
@@ -1301,7 +1308,7 @@ async function retryLyricsForCurrentSong(resetBudget = true) {
   const trackKey = variantToken(variant);
   window.clearTimeout(lyricsErrorRetryTimer);
   // User-initiated retries get a fresh automatic budget; timer retries consume it.
-  if (resetBudget) lyricsErrorRetryCount = 0;
+  if (resetBudget) lyricsRetryBudget.reset();
   wordSyncTried.delete(trackKey);
   await lyricCache.forget(variant);
   if (currentPlaybackVariant !== variant || variantToken(variant) !== currentTrackKey) return;
@@ -1312,9 +1319,8 @@ async function retryLyricsForCurrentSong(resetBudget = true) {
 
 function scheduleLyricsErrorRetry(trackKey: string) {
   window.clearTimeout(lyricsErrorRetryTimer);
-  if (lyricsErrorRetryCount >= MAX_LYRICS_ERROR_RETRIES) return;
-  lyricsErrorRetryCount += 1;
-  const delayMs = LYRICS_ERROR_RETRY_DELAY_MS * lyricsErrorRetryCount;
+  const delayMs = lyricsRetryBudget.next();
+  if (delayMs === null) return;
   lyricsErrorRetryTimer = window.setTimeout(() => {
     if (currentTrackKey !== trackKey || lyricsMode !== "error") return;
     if (!currentPlaybackVariant || variantToken(currentPlaybackVariant) !== trackKey) return;
@@ -1359,28 +1365,19 @@ async function syncWords(media: MediaState, variant: PlaybackVariant, trackKey: 
   renderWordSyncStatus();
   try {
     const metadata = normalizeLyricsMetadata(media);
-    const cacheGeneration = lyricCache.requestGeneration();
     const startedAt = performance.now();
-    const timed = await invoke<LyricsResult | null>("sync_lyrics_words", {
+    const synced = await requestWordTiming(lyricsLoaderDeps, {
+      variant,
       title: metadata.title,
       artist: metadata.artist,
       durationMs: media.durationMs,
     });
-    // The sync may not return the romanization and translation the song already has.
-    const synced = timed && carryOverTracks(timed, await lyricCache.get(variant));
     console.info("[latency] word sync", {
       key: trackKey,
       durationMs: Math.round(performance.now() - startedAt),
       timed: Boolean(synced),
     });
-    if (!synced) {
-      // lrc.red has nothing to time for this song, and asking again will not change that.
-      await lyricCache.markWordSyncAttempted(variant);
-      return;
-    }
-    // Kept even if the song has changed since, so playing it again needs no wait.
-    await lyricCache.putIfCurrent(cacheGeneration, variant, synced, { wordSyncAttempted: true });
-    if (currentTrackKey === trackKey) {
+    if (synced && currentTrackKey === trackKey) {
       applyLyrics(synced, getLocalLyricsNotice(media.title));
       renderLyrics();
     }
@@ -1435,10 +1432,10 @@ function getSyncedPositionMs() {
   if (!tauriAvailable) {
     const duration = currentMedia.durationMs ?? 180_000;
     const elapsed = performance.now() - demoStartedAtMs;
-    return (demoState.positionMs + elapsed + SYNC_OFFSET_MS + duration) % duration;
+    return (demoState.positionMs + elapsed + duration) % duration;
   }
 
-  return playbackClock.syncedPosition(currentMedia, performance.now()) + SYNC_OFFSET_MS;
+  return playbackClock.syncedPosition(currentMedia, performance.now());
 }
 
 function syncMediaClock(
@@ -1693,7 +1690,6 @@ function updateSyncFrame() {
       isPlaying: currentMedia.isPlaying,
       mediaStatus: currentMedia.status,
       playbackRate: currentMedia.playbackRate,
-      line: activeLine?.text ?? null,
     });
   }
   if (activeLineIndex !== previousActiveLineIndex || lastScrolledLineIndex === -1) {
@@ -1913,7 +1909,10 @@ function usesAccentText() {
 async function syncSettingsAccent() {
   if (!tauriAvailable || !isSettingsWindow || settings.accentMode !== "dynamic") return;
   try {
-    currentMedia = await invoke<MediaState>("get_media_state");
+    const media = await invoke<MediaState>("get_media_state");
+    // While the reader is busy the backend answers with a placeholder, which has no song to tint for.
+    if (media.status === "Media session is starting") return;
+    currentMedia = media;
     renderedGradientKey = "";
     applyGradient();
   } catch {}
@@ -1923,16 +1922,22 @@ async function applyOverlayInteractivity() {
   if (!appWindow) {
     return;
   }
-  await safeInvoke("set_window_material", {
-    material: settings.backdropMaterial,
-    intensity: settings.blurIntensity,
-  });
-  if (isSettingsWindow) return;
+  const key = [settings.backdropMaterial, settings.blurIntensity, settings.clickThrough].join("|");
+  if (key === appliedInteractivityKey) return;
+  appliedInteractivityKey = key;
   try {
-    await appWindow.setAlwaysOnTop(true);
+    await invoke("set_window_material", {
+      material: settings.backdropMaterial,
+      intensity: settings.blurIntensity,
+    });
   } catch {
-    await safeInvoke("set_always_on_top", { enabled: true });
+    // Not applied, so the next call tries again.
+    appliedInteractivityKey = "";
   }
+  if (isSettingsWindow) return;
+  // Not the window API: on macOS it drops the overlay to the standard floating level,
+  // below full-screen windows. The backend command raises the level again.
+  await safeInvoke("set_always_on_top", { enabled: true });
 
   await safeWindowAction(() => appWindow.setIgnoreCursorEvents(settings.clickThrough));
 }
@@ -1994,7 +1999,7 @@ function saveSettings() {
 
 function clearLyricsCache() {
   window.clearTimeout(lyricsErrorRetryTimer);
-  lyricsErrorRetryCount = 0;
+  lyricsRetryBudget.reset();
   void lyricCache.clear();
   wordSyncTried.clear();
   console.info("[latency] lyrics cache cleared");

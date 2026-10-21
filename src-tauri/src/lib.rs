@@ -27,11 +27,20 @@ use lyrics::LyricsResult;
 #[cfg(target_os = "macos")]
 #[path = "media_macos.rs"]
 mod media;
+#[cfg(target_os = "windows")]
+#[path = "media_windows.rs"]
+mod media;
 #[cfg(target_os = "macos")]
 #[path = "z_order_macos.rs"]
 mod overlay_z_order;
+#[cfg(target_os = "windows")]
+#[path = "z_order_windows.rs"]
+mod overlay_z_order;
 #[cfg(target_os = "macos")]
 #[path = "backdrop_macos.rs"]
+mod persistent_backdrop;
+#[cfg(target_os = "windows")]
+#[path = "backdrop_windows.rs"]
 mod persistent_backdrop;
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,7 +96,11 @@ impl MediaState {
     }
 }
 
-static MEDIA_QUERY_RUNNING: AtomicBool = AtomicBool::new(false);
+/// When the media read in flight started. A read that never returns (a hung helper
+/// process, a WinRT call that never completes) is given up on after
+/// `MEDIA_QUERY_STUCK_AFTER`, or every later poll would get the cached state forever.
+static MEDIA_QUERY_STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+const MEDIA_QUERY_STUCK_AFTER: Duration = Duration::from_secs(10);
 static LATEST_LYRICS_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[tauri::command]
@@ -99,13 +112,10 @@ const MEDIA_QUERY_WAIT: Duration = Duration::from_millis(650);
 
 #[tauri::command]
 async fn get_media_state() -> Result<MediaState, String> {
-    if MEDIA_QUERY_RUNNING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    let Some(query_started_at) = begin_media_query(&MEDIA_QUERY_STARTED, Instant::now()) else {
         return Ok(cached_media_state()
             .unwrap_or_else(|| MediaState::no_session("Media session is starting")));
-    }
+    };
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
     tauri::async_runtime::spawn_blocking(move || {
@@ -115,7 +125,7 @@ async fn get_media_state() -> Result<MediaState, String> {
         if let Ok(state) = &result {
             store_media_state(state.clone());
         }
-        MEDIA_QUERY_RUNNING.store(false, Ordering::Release);
+        end_media_query(&MEDIA_QUERY_STARTED, query_started_at);
         let _ = sender.send(result);
     });
 
@@ -125,6 +135,25 @@ async fn get_media_state() -> Result<MediaState, String> {
             .unwrap_or_else(|| MediaState::no_session("Media session reader stopped"))),
         Err(_) => Ok(cached_media_state()
             .unwrap_or_else(|| MediaState::no_session("Media session is starting"))),
+    }
+}
+
+/// Claims the right to read the media session, or `None` while a read that began
+/// less than `MEDIA_QUERY_STUCK_AFTER` ago is still running.
+fn begin_media_query(slot: &Mutex<Option<Instant>>, now: Instant) -> Option<Instant> {
+    let mut started = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if started.is_some_and(|at| now.saturating_duration_since(at) < MEDIA_QUERY_STUCK_AFTER) {
+        return None;
+    }
+    *started = Some(now);
+    Some(now)
+}
+
+/// Releases the claim, unless a newer read took over from this one while it was stuck.
+fn end_media_query(slot: &Mutex<Option<Instant>>, claimed_at: Instant) {
+    let mut started = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *started == Some(claimed_at) {
+        *started = None;
     }
 }
 
@@ -174,7 +203,28 @@ fn retain_cached_media_when_session_disappears(
 
 #[cfg(test)]
 mod media_state_tests {
-    use super::{MediaState, retain_cached_media_when_session_disappears};
+    use super::{
+        MEDIA_QUERY_STUCK_AFTER, MediaState, begin_media_query, end_media_query,
+        retain_cached_media_when_session_disappears,
+    };
+    use std::{sync::Mutex, time::Instant};
+
+    #[test]
+    fn gives_up_on_a_media_read_that_never_returns() {
+        let slot = Mutex::new(None);
+        let start = Instant::now();
+
+        let first = begin_media_query(&slot, start).expect("nothing is running");
+        assert_eq!(begin_media_query(&slot, start), None);
+        assert!(begin_media_query(&slot, start + MEDIA_QUERY_STUCK_AFTER).is_some());
+
+        // The stuck read finishing late must not release its successor's claim.
+        end_media_query(&slot, first);
+        assert_eq!(
+            begin_media_query(&slot, start + MEDIA_QUERY_STUCK_AFTER),
+            None
+        );
+    }
 
     fn state(has_session: bool, is_playing: bool, position_ms: u64) -> MediaState {
         MediaState {
@@ -290,18 +340,17 @@ fn set_start_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String
 
 #[tauri::command]
 fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String> {
-    window
-        .set_always_on_top(enabled)
-        .map_err(|error| error.to_string())?;
-
-    // Tauri drops the overlay back to the standard floating level, which is below
-    // fullscreen windows. Restore the level the overlay needs.
+    // Tauri would drop the overlay back to the standard floating level, which is
+    // below fullscreen windows. Its change lands after any level set here, so on
+    // macOS the overlay level alone does the job.
     #[cfg(target_os = "macos")]
     if enabled && let Some(overlay) = window.get_webview_window("main") {
-        overlay_z_order::apply(&overlay)?;
+        return overlay_z_order::apply(&overlay);
     }
 
-    Ok(())
+    window
+        .set_always_on_top(enabled)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -636,784 +685,4 @@ fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.show();
     let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
-}
-
-#[cfg(target_os = "windows")]
-mod persistent_backdrop {
-    use std::{ffi::c_void, mem};
-    use tauri::WebviewWindow;
-    use windows::{
-        Win32::{
-            Foundation::HWND,
-            System::LibraryLoader::{GetProcAddress, LoadLibraryA},
-        },
-        core::{BOOL, PCSTR},
-    };
-
-    const WCA_ACCENT_POLICY: u32 = 0x13;
-    const ACCENT_DISABLED: u32 = 0;
-    const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: u32 = 4;
-    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
-    const DWMSBT_NONE: u32 = 1;
-
-    #[repr(C)]
-    struct AccentPolicy {
-        state: u32,
-        flags: u32,
-        gradient_color: u32,
-        animation_id: u32,
-    }
-
-    #[repr(C)]
-    struct WindowCompositionAttributeData {
-        attribute: u32,
-        data: *mut c_void,
-        size: usize,
-    }
-
-    type SetWindowCompositionAttribute =
-        unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
-    type DwmSetWindowAttribute = unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> i32;
-
-    pub fn apply(window: &WebviewWindow, intensity: u8, material: &str) -> Result<(), String> {
-        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
-        // Windows offers only Acrylic. A stored Mica choice from an older
-        // version is treated as Acrylic so legacy settings keep working.
-        // Mica (`DWMSBT_MAINWINDOW`) is intentionally no longer applied.
-        let _ = material;
-        let _ = set_dwm_backdrop(HWND(hwnd.0), DWMSBT_NONE);
-        set_acrylic(HWND(hwnd.0), intensity)
-    }
-
-    fn set_acrylic(hwnd: HWND, intensity: u8) -> Result<(), String> {
-        // The documented Windows 11 Acrylic backdrop is disabled for inactive windows.
-        // This composition attribute keeps the blur active, which is required for an overlay.
-        unsafe {
-            let user32 = LoadLibraryA(PCSTR(c"user32.dll".as_ptr().cast()))
-                .map_err(|error| error.to_string())?;
-            let procedure = GetProcAddress(
-                user32,
-                PCSTR(c"SetWindowCompositionAttribute".as_ptr().cast()),
-            )
-            .ok_or_else(|| "SetWindowCompositionAttribute is unavailable".to_string())?;
-            let set_window_composition_attribute: SetWindowCompositionAttribute =
-                mem::transmute(procedure);
-
-            let mut policy = AccentPolicy {
-                state: if intensity == 0 {
-                    ACCENT_DISABLED
-                } else {
-                    ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND
-                },
-                flags: 0,
-                // Acrylic requires non-zero alpha. Increasing it strengthens the perceived
-                // backdrop while the webview background independently controls opacity.
-                gradient_color: u32::from(intensity.max(1)) << 24,
-                animation_id: 0,
-            };
-            let mut data = WindowCompositionAttributeData {
-                attribute: WCA_ACCENT_POLICY,
-                data: &mut policy as *mut _ as *mut c_void,
-                size: mem::size_of::<AccentPolicy>(),
-            };
-
-            if !set_window_composition_attribute(hwnd, &mut data).as_bool() {
-                return Err("SetWindowCompositionAttribute rejected the backdrop".to_string());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn set_dwm_backdrop(hwnd: HWND, backdrop_type: u32) -> Result<(), String> {
-        unsafe {
-            let dwmapi = LoadLibraryA(PCSTR(c"dwmapi.dll".as_ptr().cast()))
-                .map_err(|error| error.to_string())?;
-            let procedure = GetProcAddress(dwmapi, PCSTR(c"DwmSetWindowAttribute".as_ptr().cast()))
-                .ok_or_else(|| "DwmSetWindowAttribute is unavailable".to_string())?;
-            let set_window_attribute: DwmSetWindowAttribute = mem::transmute(procedure);
-            let result = set_window_attribute(
-                hwnd,
-                DWMWA_SYSTEMBACKDROP_TYPE,
-                &backdrop_type as *const _ as *const c_void,
-                mem::size_of::<u32>() as u32,
-            );
-            if result < 0 {
-                return Err(format!(
-                    "DwmSetWindowAttribute failed with HRESULT {result:#x}"
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod overlay_z_order {
-    use std::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
-    use tauri::{Manager, WebviewWindow};
-    use windows::Win32::{
-        Foundation::HWND,
-        UI::WindowsAndMessaging::{
-            GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-            HWND_TOPMOST, IsWindowVisible, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, WS_EX_TOPMOST,
-        },
-    };
-
-    const MONITOR_INTERVAL: Duration = Duration::from_millis(500);
-    const REASSERT_FLAGS: SET_WINDOW_POS_FLAGS =
-        SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOACTIVATE.0 | SWP_ASYNCWINDOWPOS.0);
-
-    pub fn start_monitor(window: WebviewWindow) {
-        let settings = window.app_handle().get_webview_window("settings");
-        tauri::async_runtime::spawn(async move {
-            let mut reported_handle_error = false;
-            let reassert_error_reported = AtomicBool::new(false);
-
-            loop {
-                tokio::time::sleep(MONITOR_INTERVAL).await;
-
-                let overlay_hwnd = match window.hwnd() {
-                    Ok(hwnd) => {
-                        reported_handle_error = false;
-                        HWND(hwnd.0)
-                    }
-                    Err(error) => {
-                        if !reported_handle_error {
-                            eprintln!("Unable to inspect the overlay window handle: {error}");
-                            reported_handle_error = true;
-                        }
-                        continue;
-                    }
-                };
-                let settings_hwnd = settings
-                    .as_ref()
-                    .and_then(|window| window.hwnd().ok())
-                    .map(|hwnd| HWND(hwnd.0));
-
-                if let Err(error) = reassert_if_needed(overlay_hwnd, settings_hwnd)
-                    && !reassert_error_reported.swap(true, Ordering::Relaxed)
-                {
-                    eprintln!("Unable to restore the overlay Z-order: {error}");
-                }
-            }
-        });
-    }
-
-    fn reassert_if_needed(
-        overlay_hwnd: HWND,
-        settings_hwnd: Option<HWND>,
-    ) -> windows::core::Result<()> {
-        // SAFETY: The handles are obtained from Tauri and the Windows foreground-window API.
-        // Every operation is observational except SetWindowPos, which preserves position, size,
-        // and activation so the foreground application keeps receiving input.
-        unsafe {
-            let foreground_hwnd = GetForegroundWindow();
-            let foreground_exists = !foreground_hwnd.is_invalid();
-            let overlay_visible = IsWindowVisible(overlay_hwnd).as_bool();
-            let foreground_visible =
-                foreground_exists && IsWindowVisible(foreground_hwnd).as_bool();
-            let foreground_is_overlay = foreground_exists && foreground_hwnd == overlay_hwnd;
-            let foreground_is_settings = settings_hwnd.is_some_and(|hwnd| foreground_hwnd == hwnd);
-            let foreground_is_same_app =
-                foreground_exists && windows_share_process(overlay_hwnd, foreground_hwnd);
-            let foreground_is_topmost = foreground_exists
-                && GetWindowLongPtrW(foreground_hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
-
-            if should_reassert_overlay(
-                overlay_visible,
-                foreground_exists,
-                foreground_is_overlay,
-                foreground_is_same_app,
-                foreground_visible,
-                foreground_is_topmost,
-            ) {
-                SetWindowPos(overlay_hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, REASSERT_FLAGS)?;
-            }
-
-            // Keep the settings window above the lyrics overlay while it is open, without
-            // stealing focus when another app is active.
-            if let Some(settings_hwnd) = settings_hwnd
-                && IsWindowVisible(settings_hwnd).as_bool()
-                && (foreground_is_settings || !foreground_is_same_app)
-            {
-                SetWindowPos(
-                    settings_hwnd,
-                    Some(HWND_TOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    REASSERT_FLAGS,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn windows_share_process(left: HWND, right: HWND) -> bool {
-        unsafe {
-            let mut left_pid = 0u32;
-            let mut right_pid = 0u32;
-            GetWindowThreadProcessId(left, Some(&mut left_pid));
-            GetWindowThreadProcessId(right, Some(&mut right_pid));
-            left_pid != 0 && left_pid == right_pid
-        }
-    }
-
-    fn should_reassert_overlay(
-        overlay_visible: bool,
-        foreground_exists: bool,
-        foreground_is_overlay: bool,
-        foreground_is_same_app: bool,
-        foreground_visible: bool,
-        foreground_is_topmost: bool,
-    ) -> bool {
-        overlay_visible
-            && foreground_exists
-            && !foreground_is_overlay
-            // Settings is also always-on-top. Reasserting over it drops the settings UI
-            // behind the lyrics overlay whenever another topmost window (or media update
-            // timing) races the monitor loop.
-            && !foreground_is_same_app
-            && foreground_visible
-            && foreground_is_topmost
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::should_reassert_overlay;
-
-        #[test]
-        fn reasserts_over_visible_topmost_foreground_window() {
-            assert!(should_reassert_overlay(
-                true, true, false, false, true, true
-            ));
-        }
-
-        #[test]
-        fn ignores_normal_foreground_window() {
-            assert!(!should_reassert_overlay(
-                true, true, false, false, true, false
-            ));
-        }
-
-        #[test]
-        fn ignores_hidden_overlay() {
-            assert!(!should_reassert_overlay(
-                false, true, false, false, true, true
-            ));
-        }
-
-        #[test]
-        fn ignores_overlay_as_foreground_window() {
-            assert!(!should_reassert_overlay(true, true, true, true, true, true));
-        }
-
-        #[test]
-        fn ignores_missing_foreground_window() {
-            assert!(!should_reassert_overlay(
-                true, false, false, false, false, false
-            ));
-        }
-
-        #[test]
-        fn ignores_hidden_foreground_window() {
-            assert!(!should_reassert_overlay(
-                true, true, false, false, false, true
-            ));
-        }
-
-        #[test]
-        fn ignores_settings_or_other_app_owned_foreground_window() {
-            assert!(!should_reassert_overlay(
-                true, true, false, true, true, true
-            ));
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod media {
-    use super::MediaState;
-    use std::{
-        sync::{Arc, Mutex, OnceLock},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    use tauri::Emitter;
-    use windows::Foundation::TypedEventHandler;
-    use windows::Media::Control::{
-        CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
-        GlobalSystemMediaTransportControlsSessionManager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
-        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
-    };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-        VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK,
-    };
-
-    const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
-    static SELECTED_SESSION: OnceLock<Mutex<Option<GlobalSystemMediaTransportControlsSession>>> =
-        OnceLock::new();
-
-    struct SessionSubscription {
-        session: GlobalSystemMediaTransportControlsSession,
-        // windows 0.62 represents event registration tokens as plain i64.
-        _media_properties_token: i64,
-        _playback_info_token: i64,
-        _timeline_properties_token: i64,
-    }
-
-    pub fn start_event_monitor(app: tauri::AppHandle) {
-        std::thread::spawn(move || {
-            if let Err(error) = run_event_monitor(app) {
-                eprintln!("Unable to subscribe to Windows media events: {error}");
-            }
-        });
-    }
-
-    /// WMTC event subscriptions are released with the process, so there is nothing
-    /// to tear down here. macOS needs this hook to stop its helper process.
-    pub fn shutdown() {}
-
-    fn run_event_monitor(app: tauri::AppHandle) -> windows::core::Result<()> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
-        let subscriptions = Arc::new(Mutex::new(Vec::<SessionSubscription>::new()));
-        subscribe_to_sessions(&manager, &app, &subscriptions)?;
-
-        let current_app = app.clone();
-        let _current_session_token =
-            manager.CurrentSessionChanged(&TypedEventHandler::<
-                GlobalSystemMediaTransportControlsSessionManager,
-                CurrentSessionChangedEventArgs,
-            >::new(move |_, _| {
-                emit_media_change(&current_app, "current-session");
-                Ok(())
-            }))?;
-
-        let sessions_app = app.clone();
-        let sessions_state = subscriptions.clone();
-        let _sessions_token = manager.SessionsChanged(&TypedEventHandler::<
-            GlobalSystemMediaTransportControlsSessionManager,
-            SessionsChangedEventArgs,
-        >::new(move |manager, _| {
-            if let Some(manager) = &*manager
-                && let Err(error) = subscribe_to_sessions(manager, &sessions_app, &sessions_state)
-            {
-                eprintln!("Unable to refresh Windows media event subscriptions: {error}");
-            }
-            emit_media_change(&sessions_app, "sessions");
-            Ok(())
-        }))?;
-
-        println!("[latency] Windows media event monitor ready");
-        loop {
-            std::thread::park();
-        }
-    }
-
-    fn subscribe_to_sessions(
-        manager: &GlobalSystemMediaTransportControlsSessionManager,
-        app: &tauri::AppHandle,
-        subscriptions: &Arc<Mutex<Vec<SessionSubscription>>>,
-    ) -> windows::core::Result<()> {
-        let sessions = manager.GetSessions()?;
-        for index in 0..sessions.Size()? {
-            let session = sessions.GetAt(index)?;
-            if subscriptions
-                .lock()
-                .is_ok_and(|items| items.iter().any(|item| item.session == session))
-            {
-                continue;
-            }
-
-            let media_app = app.clone();
-            let media_properties_token =
-                session.MediaPropertiesChanged(&TypedEventHandler::<
-                    GlobalSystemMediaTransportControlsSession,
-                    MediaPropertiesChangedEventArgs,
-                >::new(move |_, _| {
-                    emit_media_change(&media_app, "media-properties");
-                    Ok(())
-                }))?;
-
-            let playback_app = app.clone();
-            let playback_info_token =
-                session.PlaybackInfoChanged(&TypedEventHandler::<
-                    GlobalSystemMediaTransportControlsSession,
-                    PlaybackInfoChangedEventArgs,
-                >::new(move |_, _| {
-                    emit_media_change(&playback_app, "playback-info");
-                    Ok(())
-                }))?;
-
-            // Players announce a jump in position (seeking, a restart) here, which
-            // no other event reports.
-            let timeline_app = app.clone();
-            let timeline_properties_token =
-                session.TimelinePropertiesChanged(&TypedEventHandler::<
-                    GlobalSystemMediaTransportControlsSession,
-                    TimelinePropertiesChangedEventArgs,
-                >::new(move |_, _| {
-                    emit_media_change(&timeline_app, "timeline-properties");
-                    Ok(())
-                }))?;
-
-            if let Ok(mut items) = subscriptions.lock() {
-                items.push(SessionSubscription {
-                    session,
-                    _media_properties_token: media_properties_token,
-                    _playback_info_token: playback_info_token,
-                    _timeline_properties_token: timeline_properties_token,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_media_change(app: &tauri::AppHandle, reason: &str) {
-        let _ = app.emit("media-state-changed", reason);
-    }
-
-    pub fn send_transport_control(
-        action: &str,
-        allow_media_key_fallback: bool,
-    ) -> windows::core::Result<bool> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
-        let session = selected_session().or_else(|| manager.GetCurrentSession().ok());
-        let Some(session) = session else {
-            println!(
-                "[media-control] {action} requested, but no Windows media session is available"
-            );
-            return Ok(false);
-        };
-        println!("[media-control] sending {action} to Windows media session");
-        let accepted = match action {
-            "next" => session.TrySkipNextAsync()?.join(),
-            "previous" => session.TrySkipPreviousAsync()?.join(),
-            "play/pause" => session.TryTogglePlayPauseAsync()?.join(),
-            _ => Ok(false),
-        }?;
-
-        if accepted {
-            return Ok(true);
-        }
-
-        let media_key = match (action, allow_media_key_fallback) {
-            ("next", true) => Some(VK_MEDIA_NEXT_TRACK),
-            ("previous", true) => Some(VK_MEDIA_PREV_TRACK),
-            _ => None,
-        };
-        let Some(media_key) = media_key else {
-            return Ok(false);
-        };
-
-        println!("[media-control] Windows session declined {action}; sending media key fallback");
-        send_media_key(media_key)?;
-        Ok(true)
-    }
-
-    fn send_media_key(
-        key: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY,
-    ) -> windows::core::Result<()> {
-        let inputs = [
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: key,
-                        ..Default::default()
-                    },
-                },
-            },
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: key,
-                        dwFlags: KEYEVENTF_KEYUP,
-                        ..Default::default()
-                    },
-                },
-            },
-        ];
-        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-        if sent == inputs.len() as u32 {
-            Ok(())
-        } else {
-            Err(windows::core::Error::from_hresult(
-                windows::core::HRESULT::from_win32(unsafe {
-                    windows::Win32::Foundation::GetLastError().0
-                }),
-            ))
-        }
-    }
-
-    pub fn current_media_state() -> windows::core::Result<MediaState> {
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.join()?;
-        let sessions = manager.GetSessions()?;
-        let mut playing_count = 0;
-        let mut available = Vec::new();
-
-        for index in 0..sessions.Size()? {
-            let session = sessions.GetAt(index)?;
-            let playback = session.GetPlaybackInfo()?;
-            if playback.PlaybackStatus()?
-                == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
-            {
-                playing_count += 1;
-            }
-            available.push(session);
-        }
-
-        // Keep a valid selected music session even when another application
-        // starts playing. Browser videos frequently become Windows' current
-        // session, but must not replace the paused song or its lyrics.
-        // Browsers rank below every other app, so a browser that was the only
-        // session at launch gives way once a music app registers one.
-        let retained = selected_session().filter(session_is_available);
-        let current = manager.GetCurrentSession().ok();
-        let playing = current
-            .clone()
-            .filter(session_is_playing)
-            .or_else(|| available.iter().find(|s| session_is_playing(s)).cloned());
-        let is_music = |session: &GlobalSystemMediaTransportControlsSession| !is_browser(session);
-        let selected = retained
-            .clone()
-            .filter(is_music)
-            .or_else(|| {
-                available
-                    .iter()
-                    .find(|s| is_music(s) && session_is_playing(s))
-                    .cloned()
-            })
-            .or_else(|| current.clone().filter(is_music))
-            .or_else(|| available.iter().find(|s| is_music(s)).cloned())
-            .or(retained)
-            .or(playing)
-            .or(current);
-
-        let Some(session) = selected else {
-            store_selected_session(None);
-            return Ok(MediaState::no_session("No session"));
-        };
-        store_selected_session(Some(session.clone()));
-
-        let playback = session.GetPlaybackInfo()?;
-        let status = playback.PlaybackStatus()?;
-        let properties = session.TryGetMediaPropertiesAsync()?.join()?;
-        let timeline = session.GetTimelineProperties()?;
-        let timeline_position_ms = timespan_to_ms(timeline.Position()?);
-        let end_ms = timespan_to_ms(timeline.EndTime()?);
-        let playback_rate = playback
-            .PlaybackRate()
-            .ok()
-            .and_then(|value| value.Value().ok());
-        let position_ms = current_timeline_position(
-            timeline_position_ms,
-            end_ms,
-            timeline.LastUpdatedTime()?.UniversalTime,
-            windows_now_ms(),
-            playback_rate.unwrap_or(1.0),
-            status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
-        );
-
-        Ok(MediaState {
-            has_session: true,
-            is_playing: status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
-            status: format!("{status:?}"),
-            title: properties.Title()?.to_string_lossy(),
-            artist: properties.Artist()?.to_string_lossy(),
-            album: properties.AlbumTitle()?.to_string_lossy(),
-            source_app: session.SourceAppUserModelId()?.to_string_lossy(),
-            position_ms,
-            duration_ms: (end_ms > 0).then_some(end_ms),
-            playback_rate,
-            playing_session_count: playing_count,
-        })
-    }
-
-    fn selected_session() -> Option<GlobalSystemMediaTransportControlsSession> {
-        SELECTED_SESSION
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .ok()?
-            .clone()
-    }
-
-    fn store_selected_session(session: Option<GlobalSystemMediaTransportControlsSession>) {
-        if let Ok(mut selected) = SELECTED_SESSION.get_or_init(|| Mutex::new(None)).lock() {
-            *selected = session;
-        }
-    }
-
-    fn session_is_playing(session: &GlobalSystemMediaTransportControlsSession) -> bool {
-        session
-            .GetPlaybackInfo()
-            .and_then(|playback| playback.PlaybackStatus())
-            .is_ok_and(|status| {
-                status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
-            })
-    }
-
-    fn is_browser(session: &GlobalSystemMediaTransportControlsSession) -> bool {
-        session
-            .SourceAppUserModelId()
-            .is_ok_and(|id| is_browser_app(&id.to_string_lossy()))
-    }
-
-    /// Matches the app ID WMTC reports for the common browsers.
-    // ponytail: substring list; Firefox installs report a path hash, so only its
-    // default install is known. Extend the list for other browsers as they surface.
-    fn is_browser_app(app_id: &str) -> bool {
-        let app_id = app_id.to_ascii_lowercase();
-        [
-            "chrome",
-            "chromium",
-            "msedge",
-            "microsoftedge",
-            "firefox",
-            "308046b0af4a39cb",
-            "brave",
-            "opera",
-            "vivaldi",
-            "zen",
-            "librewolf",
-        ]
-        .iter()
-        .any(|browser| app_id.contains(browser))
-    }
-
-    fn session_is_available(session: &GlobalSystemMediaTransportControlsSession) -> bool {
-        session.GetPlaybackInfo().is_ok()
-    }
-
-    fn timespan_to_ms(value: windows::Foundation::TimeSpan) -> u64 {
-        if value.Duration <= 0 {
-            return 0;
-        }
-        (value.Duration / 10_000) as u64
-    }
-
-    fn windows_now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(0)
-            .saturating_add(WINDOWS_EPOCH_OFFSET_MS)
-    }
-
-    fn current_timeline_position(
-        position_ms: u64,
-        _duration_ms: u64,
-        last_updated_ticks: i64,
-        now_ms: u64,
-        playback_rate: f64,
-        is_playing: bool,
-    ) -> u64 {
-        if !is_playing
-            || last_updated_ticks <= 0
-            || !playback_rate.is_finite()
-            || playback_rate <= 0.0
-        {
-            return position_ms;
-        }
-
-        let last_updated_ms = last_updated_ticks as u64 / 10_000;
-        let elapsed_ms = now_ms.saturating_sub(last_updated_ms);
-        let position_ms =
-            position_ms.saturating_add((elapsed_ms as f64 * playback_rate).round() as u64);
-
-        // A number of WMTC providers publish stale EndTime values during
-        // playback. The caller still receives that duration as metadata, but
-        // the live clock must remain monotonic instead of freezing at it.
-        position_ms
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::{current_timeline_position, is_browser_app};
-
-        #[test]
-        fn recognises_browsers_but_not_music_apps() {
-            for browser in [
-                "Chrome",
-                "MSEdge",
-                "firefox.exe",
-                "308046B0AF4A39CB",
-                "Brave",
-            ] {
-                assert!(is_browser_app(browser), "{browser}");
-            }
-            for music in [
-                "Spotify.exe",
-                "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",
-                "Cider",
-            ] {
-                assert!(!is_browser_app(music), "{music}");
-            }
-        }
-
-        #[test]
-        fn advances_the_position_while_playing() {
-            assert_eq!(
-                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, 1.0, true),
-                62_500
-            );
-        }
-
-        #[test]
-        fn keeps_the_reported_position_while_paused() {
-            assert_eq!(
-                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, 1.0, false),
-                60_000
-            );
-        }
-
-        #[test]
-        fn keeps_advancing_past_a_stale_track_duration() {
-            assert_eq!(
-                current_timeline_position(179_000, 180_000, 1_000_000_000, 105_000, 1.0, true),
-                184_000
-            );
-        }
-
-        #[test]
-        fn keeps_the_reported_position_for_invalid_timeline_metadata() {
-            assert_eq!(
-                current_timeline_position(60_000, 180_000, 0, 102_500, 1.0, true),
-                60_000
-            );
-            assert_eq!(
-                current_timeline_position(60_000, 180_000, 1_000_000_000, 102_500, f64::NAN, true,),
-                60_000
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod bench_support {
-    /// Prints the steady-state throughput of `work` for `bun run bench:rust`.
-    pub fn report_ops_per_sec(name: &str, mut work: impl FnMut()) {
-        for _ in 0..8 {
-            work();
-        }
-        let started = std::time::Instant::now();
-        let mut iterations = 0usize;
-        while started.elapsed() < std::time::Duration::from_millis(400) {
-            work();
-            iterations += 1;
-        }
-        let ops = iterations as f64 / started.elapsed().as_secs_f64();
-        println!("curriculum_metric name={name} unit=ops_per_sec value={ops:.2}");
-        assert!(iterations > 0, "{name} completed zero iterations");
-    }
 }

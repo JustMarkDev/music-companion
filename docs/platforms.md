@@ -28,7 +28,9 @@ If that adapter cannot reach `MediaRemote`, the overlay falls back to AppleScrip
 against Music and Spotify. The fallback asks for Automation permission on first
 use and cannot see browser sessions, so YouTube and other web players stop
 appearing until the adapter works again. The Rust log records which backend is
-active at startup.
+active at startup. With the adapter working, AppleScript is still asked about Music and
+Spotify, only while one of them is running, when a browser holds the system's now-playing
+slot or reports nothing, so a paused Music or Spotify is not hidden behind an old browser tab.
 
 Because the adapter depends on a private framework, a future macOS release could
 break it. The AppleScript fallback exists so the overlay keeps working if that

@@ -4,6 +4,7 @@
 
 use crate::LATEST_LYRICS_REQUEST;
 use crate::ttml::{self, Line, LineText, Lyrics, Segment};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -36,7 +37,10 @@ static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 
 /// Total time a lookup gets for all the requests it makes (not each one), so a
 /// stalled service ends in an error that is retried later instead of hanging.
-const PROVIDER_TIMEOUT: Duration = Duration::from_secs(6);
+/// A song lrc.red lacks walks through up to a dozen fallback queries one after
+/// another, and an error there never reaches LRCLIB, so lrc.red gets more time.
+const LRC_RED_TIMEOUT: Duration = Duration::from_secs(12);
+const LRCLIB_TIMEOUT: Duration = Duration::from_secs(6);
 
 type Lookup = Result<Option<LyricsResult>, String>;
 
@@ -83,7 +87,7 @@ pub async fn fetch_lyrics(
     let mut lookup = std::pin::pin!(async {
         let found = within_deadline(
             "lrc.red",
-            PROVIDER_TIMEOUT,
+            LRC_RED_TIMEOUT,
             fetch_lrc_red(client, title, artist, duration_ms),
         )
         .await;
@@ -93,7 +97,7 @@ pub async fn fetch_lyrics(
         }
         within_deadline(
             "LRCLIB",
-            PROVIDER_TIMEOUT,
+            LRCLIB_TIMEOUT,
             fetch_lrclib(client, title, artist, duration_ms),
         )
         .await
@@ -180,6 +184,10 @@ fn score(value: Option<&str>, expected: &str) -> u8 {
     };
 
     let value = normalize(value);
+    // Text that is all punctuation normalizes to "", which every string contains.
+    if value.is_empty() {
+        return 0;
+    }
     if value == expected || same_words(&value, expected) {
         4
     } else if value.contains(expected) || expected.contains(&value) {
@@ -531,6 +539,23 @@ fn provider_error(provider: &str, error: impl std::fmt::Display) -> String {
     format!("{provider}: {error}")
 }
 
+/// `base` with `params` as its query string, every value escaped.
+fn request_url(provider: &str, base: &str, params: &[(&str, &str)]) -> Result<Url, String> {
+    Url::parse_with_params(base, params).map_err(|error| provider_error(provider, error))
+}
+
+/// `https://lrc.red/s/<segments>`, each segment escaped so an odd ISRC from the
+/// service cannot reach another path.
+fn lrc_red_song_url(provider: &str, segments: &[&str]) -> Result<Url, String> {
+    let mut url =
+        Url::parse("https://lrc.red/s/").map_err(|error| provider_error(provider, error))?;
+    url.path_segments_mut()
+        .map_err(|()| provider_error(provider, "not a base URL"))?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(url)
+}
+
 fn build_result(candidate: Candidate, lyrics: Lyrics) -> LyricsResult {
     let word_timed = lyrics.is_word_timed();
     LyricsResult {
@@ -636,16 +661,17 @@ async fn lrc_red_hits(
     artist: &str,
     duration_seconds: Option<f64>,
 ) -> Result<Vec<LrcRedHit>, String> {
-    let mut url = format!(
-        "https://lrc.red/match.json?title={}&artist={}",
-        urlencoding::encode(title),
-        urlencoding::encode(artist)
-    );
+    let mut url = request_url(
+        "lrc.red match",
+        "https://lrc.red/match.json",
+        &[("title", title), ("artist", artist)],
+    )?;
     if let Some(duration_seconds) = duration_seconds {
-        url.push_str(&format!("&duration={duration_seconds}"));
+        url.query_pairs_mut()
+            .append_pair("duration", &duration_seconds.to_string());
     }
     let response = client
-        .get(&url)
+        .get(url)
         .send()
         .await
         .map_err(|error| provider_error("lrc.red match", error))?;
@@ -683,11 +709,13 @@ async fn lrc_red_text_hits(
     title: &str,
     artist: &str,
 ) -> Result<Vec<LrcRedHit>, String> {
+    let url = request_url(
+        "lrc.red search",
+        "https://lrc.red/search.json",
+        &[("q", &search_query(title, artist))],
+    )?;
     let response = client
-        .get(format!(
-            "https://lrc.red/search.json?q={}",
-            urlencoding::encode(&search_query(title, artist))
-        ))
+        .get(url)
         .send()
         .await
         .map_err(|error| provider_error("lrc.red search", error))?;
@@ -945,10 +973,10 @@ async fn fetch_lrc_red_ttml(
     isrc: &str,
 ) -> Result<Option<Lyrics>, String> {
     let response = client
-        .get(format!(
-            "https://lrc.red/s/{}.ttml",
-            urlencoding::encode(isrc)
-        ))
+        .get(lrc_red_song_url(
+            "lrc.red lyrics",
+            &[&format!("{isrc}.ttml")],
+        )?)
         .send()
         .await
         .map_err(|error| provider_error("lrc.red lyrics", error))?;
@@ -1003,7 +1031,7 @@ fn seconds_to_ms(seconds: f64) -> u64 {
 /// The synced lines of a song, one segment per word with its syllables joined.
 /// Untimed lines are left out.
 fn song_to_lyrics(song: &LrcRedSong) -> Option<Lyrics> {
-    let lines = song
+    let mut lines = song
         .lyrics
         .lines
         .iter()
@@ -1048,6 +1076,8 @@ fn song_to_lyrics(song: &LrcRedSong) -> Option<Lyrics> {
             })
         })
         .collect::<Vec<_>>();
+    // The active line is the last one that has started, which assumes time order.
+    lines.sort_by_key(|line| line.start_ms);
     (!lines.is_empty()).then_some(Lyrics { lines })
 }
 
@@ -1059,10 +1089,7 @@ async fn sync_lrc_red_words(
     isrc: &str,
 ) -> Result<Option<Lyrics>, String> {
     let response = client
-        .post(format!(
-            "https://lrc.red/s/{}/sync",
-            urlencoding::encode(isrc)
-        ))
+        .post(lrc_red_song_url("lrc.red sync", &[isrc, "sync"])?)
         .timeout(WORD_SYNC_TIMEOUT)
         .send()
         .await
@@ -1151,12 +1178,13 @@ async fn lrclib_search(
     title: &str,
     artist: &str,
 ) -> Result<Vec<LrclibTrack>, String> {
+    let url = request_url(
+        "LRCLIB search",
+        "https://lrclib.net/api/search",
+        &[("track_name", title), ("artist_name", artist)],
+    )?;
     let response = client
-        .get(format!(
-            "https://lrclib.net/api/search?track_name={}&artist_name={}",
-            urlencoding::encode(title),
-            urlencoding::encode(artist)
-        ))
+        .get(url)
         .send()
         .await
         .map_err(|error| provider_error("LRCLIB search", error))?;
@@ -1335,7 +1363,11 @@ fn parse_lrc_stamp(tag: &str) -> Option<u64> {
     }
     let minutes = minutes.parse::<u64>().ok()?;
     let seconds = seconds.parse::<f64>().ok()?;
-    Some(minutes * 60_000 + (seconds * 1_000.0).round() as u64)
+    Some(
+        minutes
+            .saturating_mul(60_000)
+            .saturating_add((seconds * 1_000.0).round() as u64),
+    )
 }
 
 /// The text of an LRC line without the `<mm:ss.xx>` stamps of enhanced LRC.
@@ -2165,6 +2197,25 @@ mod tests {
         {"words":[],"text":"An untimed line","timed":false}]}}"#;
 
     #[test]
+    fn synced_lines_come_out_in_time_order() {
+        let song = serde_json::from_str::<LrcRedSong>(
+            r#"{"lyrics":{"lines":[
+                {"words":[[{"text":"late","begin":30.0,"end":31.0}],[{"text":"line","begin":31.0,"end":32.0}]]},
+                {"words":[[{"text":"early","begin":2.0,"end":3.0}],[{"text":"line","begin":3.0,"end":4.0}]]}]}}"#,
+        )
+        .unwrap();
+
+        let starts = song_to_lyrics(&song)
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| line.start_ms)
+            .collect::<Vec<_>>();
+
+        assert_eq!(starts, [2_000, 30_000]);
+    }
+
+    #[test]
     fn a_synced_song_becomes_lines_of_timed_words() {
         let song = serde_json::from_str::<LrcRedSong>(SYNCED_SONG).unwrap();
 
@@ -2216,29 +2267,35 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "curriculum bench; run via bun run bench:rust"]
-    fn curriculum_metric_lrc_red_rank_candidates() {
-        let mut hits = (0..60)
-            .map(|index| {
-                (
-                    candidate(
-                        &format!("Different Song {index}"),
-                        &format!("Different Artist {index}"),
-                        181.0 + f64::from(index) * 0.01,
-                    ),
-                    index,
-                )
-            })
-            .collect::<Vec<_>>();
-        hits.push((candidate("Self Aware", "Temper City", 181.0), 60));
-        hits.push((
-            candidate("Temper City - Self Aware", "DanceHype", 181.0),
-            61,
-        ));
+    fn builds_escaped_request_urls() {
+        let url = request_url(
+            "test",
+            "https://lrc.red/match.json",
+            &[("title", "Rock & Roll #1"), ("artist", "AC/DC")],
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://lrc.red/match.json?title=Rock+%26+Roll+%231&artist=AC%2FDC"
+        );
+        assert_eq!(
+            lrc_red_song_url("test", &["../x?y", "sync"])
+                .unwrap()
+                .as_str(),
+            "https://lrc.red/s/..%2Fx%3Fy/sync"
+        );
+    }
 
-        crate::bench_support::report_ops_per_sec("lrc_red_rank_candidates", || {
-            let ranked = rank_matches(hits.clone(), "Self Aware", "Temper City", Some(181_000));
-            assert_eq!(ranked.len(), 2);
-        });
+    #[test]
+    fn text_that_normalizes_to_nothing_matches_no_title_or_artist() {
+        assert_eq!(score(Some("\u{266a}"), "clint eastwood"), 0);
+        assert_eq!(score(Some(""), "gorillaz"), 0);
+        assert_eq!(score(Some("Gorillaz"), "gorillaz"), 4);
+    }
+
+    #[test]
+    fn a_huge_lrc_minute_value_saturates_instead_of_overflowing() {
+        assert_eq!(parse_lrc_stamp("99999999999999999:00"), Some(u64::MAX));
+        assert_eq!(parse_lrc_stamp("01:23.45"), Some(83_450));
     }
 }

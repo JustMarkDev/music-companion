@@ -14,12 +14,12 @@
 use super::MediaState;
 use std::{
     collections::HashSet,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     sync::{Mutex, OnceLock},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Emitter;
 
@@ -27,6 +27,10 @@ use tauri::Emitter;
 const COMMAND_TOGGLE_PLAY_PAUSE: &str = "2";
 const COMMAND_NEXT_TRACK: &str = "4";
 const COMMAND_PREVIOUS_TRACK: &str = "5";
+
+/// How long a helper process (the adapter, `osascript`) may take. A read that hangs
+/// would otherwise hold its thread and process until the app quits.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Collapses bursts of `MediaRemote` notifications into a single overlay refresh.
 const STREAM_DEBOUNCE_MS: &str = "150";
@@ -127,10 +131,53 @@ impl AdapterPaths {
 fn adapter_is_entitled(paths: &AdapterPaths) -> bool {
     // Without a playing session to read, the probe wakes MediaRemote with the
     // test client, and fails when it is not told where that is.
-    adapter_command(paths, ["test"])
-        .env("MEDIAREMOTEADAPTER_TEST_CLIENT_PATH", &paths.test_client)
-        .status()
-        .is_ok_and(|status| status.success())
+    output_within(
+        adapter_command(paths, ["test"])
+            .env("MEDIAREMOTEADAPTER_TEST_CLIENT_PATH", &paths.test_client),
+        HELPER_TIMEOUT,
+    )
+    .is_ok_and(|output| output.status.success())
+}
+
+/// Runs `command` to completion, killing it when it outlasts `limit`. Std has no
+/// `output` with a timeout, and an unbounded wait on a hung helper never ends.
+fn output_within(command: &mut Command, limit: Duration) -> Result<Output, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // The drain threads end by themselves once the pipes close.
+                return Err(format!("timed out after {}s", limit.as_secs()));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 fn adapter_command<'a>(
@@ -161,9 +208,22 @@ pub fn shutdown() {
     if let Ok(mut child) = STREAM_CHILD.lock()
         && let Some(mut running) = child.take()
     {
-        let _ = running.kill();
-        let _ = running.wait();
+        stop_supervisor(&mut running);
     }
+}
+
+/// `Child::kill` sends SIGKILL, which a shell cannot trap, so the reader would
+/// outlive its supervisor. `TERM` lets the trap run; the supervisor sleeps with
+/// `wait` so the trap fires at once instead of after the sleep.
+fn stop_supervisor(supervisor: &mut Child) {
+    let terminated = Command::new("/bin/kill")
+        .arg(supervisor.id().to_string())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !terminated {
+        let _ = supervisor.kill();
+    }
+    let _ = supervisor.wait();
 }
 
 /// Wraps the reader in a shell supervisor so the helper process cannot outlive the
@@ -174,16 +234,18 @@ pub fn shutdown() {
 /// path, so the supervisor also polls for the overlay's process ID and reaps the
 /// reader once it disappears.
 fn supervised_stream_script(paths: &AdapterPaths) -> String {
-    let command = format!(
+    supervisor_script(&format!(
         "/usr/bin/perl {} {} stream --no-diff --no-artwork --micros --debounce={STREAM_DEBOUNCE_MS}",
         shell_quote(&paths.script.to_string_lossy()),
         shell_quote(&paths.framework.to_string_lossy()),
-    );
+    ))
+}
 
+fn supervisor_script(command: &str) -> String {
     format!(
         "{command} & reader=$!\n\
-         trap 'kill $reader 2>/dev/null' TERM INT\n\
-         while kill -0 {overlay} 2>/dev/null; do sleep {interval}; done\n\
+         trap 'kill $reader 2>/dev/null; exit' TERM INT\n\
+         while kill -0 {overlay} 2>/dev/null; do sleep {interval} & wait $!; done\n\
          kill $reader 2>/dev/null\n",
         overlay = std::process::id(),
         interval = STREAM_SUPERVISOR_INTERVAL_SECONDS,
@@ -321,9 +383,11 @@ fn is_browser(bundle_id: &str) -> bool {
 }
 
 fn adapter_media_state(paths: &AdapterPaths) -> Result<MediaState, String> {
-    let output = adapter_command(paths, ["get", "--micros", "--no-artwork"])
-        .output()
-        .map_err(|error| format!("unable to read the now playing session: {error}"))?;
+    let output = output_within(
+        &mut adapter_command(paths, ["get", "--micros", "--no-artwork"]),
+        HELPER_TIMEOUT,
+    )
+    .map_err(|error| format!("unable to read the now playing session: {error}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -453,10 +517,12 @@ pub fn send_transport_control(
                 }
             }
             println!("[media-control] sending {action} to the now playing application");
-            let status = adapter_command(paths, ["send", command])
-                .status()
-                .map_err(|error| format!("unable to send {action}: {error}"))?;
-            Ok(status.success())
+            let output = output_within(
+                &mut adapter_command(paths, ["send", command]),
+                HELPER_TIMEOUT,
+            )
+            .map_err(|error| format!("unable to send {action}: {error}"))?;
+            Ok(output.status.success())
         }
         Backend::AppleScript => applescript_transport_control(action, None),
     }
@@ -507,7 +573,19 @@ fn applescript_media_state() -> Result<MediaState, String> {
     Ok(paused.unwrap_or_else(|| MediaState::no_session("No session")))
 }
 
+/// A spawn of `pgrep` costs a fraction of one of `osascript`, and the overlay asks
+/// every couple of seconds whether Music or Spotify is playing, running or not.
+fn player_is_running(player: &ScriptedPlayer) -> bool {
+    Command::new("/usr/bin/pgrep")
+        .args(["-qx", player.name])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn scripted_player_state(player: &ScriptedPlayer) -> Option<MediaState> {
+    if !player_is_running(player) {
+        return None;
+    }
     let output = run_applescript(&now_playing_script(player.name))?;
     let fields: Vec<&str> = output.split(UNIT_SEPARATOR).collect();
     let [status, title, artist, album, duration, position] = fields.as_slice() else {
@@ -607,11 +685,11 @@ fn report_once(error: &str) -> bool {
 }
 
 fn run_applescript(script: &str) -> Option<String> {
-    let output = Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .ok()?;
+    let output = output_within(
+        Command::new("/usr/bin/osascript").arg("-e").arg(script),
+        HELPER_TIMEOUT,
+    )
+    .ok()?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         let error = error.trim();
@@ -632,6 +710,11 @@ mod tests {
     use super::{
         UNIT_SEPARATOR, current_timeline_position, is_browser, media_state_from_adapter,
         now_playing_script,
+    };
+    use std::{
+        process::Command,
+        thread,
+        time::{Duration, Instant},
     };
 
     #[test]
@@ -745,7 +828,7 @@ mod tests {
 
         // A TERM trap covers a clean quit and the process-ID poll covers a crash,
         // a force quit, or a `tauri dev` restart.
-        assert!(script.contains("trap 'kill $reader 2>/dev/null' TERM INT"));
+        assert!(script.contains("trap 'kill $reader 2>/dev/null; exit' TERM INT"));
         assert!(script.contains(&format!("while kill -0 {} ", std::process::id())));
         // Paths with spaces must survive the shell.
         assert!(script.contains("'/Apps/Music Companion.app/Resources/mediaremote-adapter.pl'"));
@@ -765,5 +848,60 @@ mod tests {
         assert!(script.contains(r#"if application "Music" is not running then return """#));
         assert!(script.contains("ASCII character 31"));
         assert_eq!(UNIT_SEPARATOR, '\u{1f}');
+    }
+
+    #[test]
+    fn collects_the_output_of_a_helper_that_finishes() {
+        let output =
+            super::output_within(Command::new("/bin/echo").arg("hi"), Duration::from_secs(5))
+                .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"hi\n");
+    }
+
+    #[test]
+    fn kills_a_helper_that_never_finishes() {
+        let started = Instant::now();
+        let result = super::output_within(
+            Command::new("/bin/sleep").arg("30"),
+            Duration::from_millis(200),
+        );
+
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_clean_shutdown_stops_the_reader_as_well_as_the_supervisor() {
+        // An argument no other process has, so the reader can be found by it.
+        let marker = format!("{}", 30_000 + std::process::id() % 10_000);
+        let mut supervisor = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(super::supervisor_script(&format!("/bin/sleep {marker}")))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let reader_running = || {
+            Command::new("/usr/bin/pgrep")
+                .args(["-qf", &format!("^/bin/sleep {marker}$")])
+                .status()
+                .unwrap()
+                .success()
+        };
+        let waited = Instant::now();
+        while !reader_running() && waited.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(reader_running());
+
+        super::stop_supervisor(&mut supervisor);
+
+        let waited = Instant::now();
+        while reader_running() && waited.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!reader_running(), "the reader outlived its supervisor");
     }
 }

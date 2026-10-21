@@ -575,46 +575,4 @@ mod tests {
         assert_eq!(parse_time("12s"), Some(12_000));
         assert_eq!(parse_time("soon"), None);
     }
-
-    /// A song of `count` word-timed lines with a transliteration and a translation.
-    fn sample_ttml(count: usize) -> String {
-        let words = ["Line", "with", "a", "few", "more", "words", "to", "sing"];
-        let spans = |offset: f64| {
-            words
-                .iter()
-                .enumerate()
-                .map(|(index, word)| {
-                    let begin = offset + index as f64 * 0.3;
-                    format!(
-                        r#"<span begin="{begin:.3}" end="{:.3}">{word}</span> "#,
-                        begin + 0.3
-                    )
-                })
-                .collect::<String>()
-        };
-        let mut metadata = String::new();
-        let mut body = String::new();
-        for index in 0..count {
-            let offset = index as f64 * 2.4;
-            metadata.push_str(&format!(r#"<text for="L{index}">{}</text>"#, spans(offset)));
-            body.push_str(&format!(
-                r#"<p begin="{offset:.3}" end="{:.3}" lrc:key="L{index}" ttm:agent="v{}">{}</p>"#,
-                offset + 2.4,
-                index % 2 + 1,
-                spans(offset)
-            ));
-        }
-        format!(
-            r#"{HEAD}<head><metadata><transliterations><transliteration xml:lang="ja-Latn">{metadata}</transliteration></transliterations></metadata></head><body><div>{body}</div></body></tt>"#
-        )
-    }
-
-    #[test]
-    #[ignore = "curriculum bench; run via bun run bench:rust"]
-    fn curriculum_metric_parse_ttml_full_song() {
-        let ttml = sample_ttml(80);
-        crate::bench_support::report_ops_per_sec("ttml_parse_full_song", || {
-            assert_eq!(parse(&ttml).unwrap().lines.len(), 80);
-        });
-    }
 }

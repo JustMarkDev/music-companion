@@ -196,6 +196,7 @@ export class LyricsCache {
     for (const entry of removed) this.drop(entry);
   }
 
+  /** Drops the songs stored longest ago; a play does not renew them. */
   private trimToLimit() {
     const overflow = this.entries.length - MAX_PERSISTED_LYRICS;
     if (overflow <= 0) return;

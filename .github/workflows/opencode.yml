@@ -24,13 +24,13 @@ jobs:
       checks: write
       actions: read
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install OpenCode v2
-        run: npm install --global @opencode/cli
+        run: npm install --global @opencode/cli@2.1.2
 
       - name: Review PR
         env:

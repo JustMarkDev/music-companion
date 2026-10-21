@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Shown when the AppleScript fallback first asks to control Music or Spotify,
-	     which only happens when the MediaRemote adapter is unavailable. -->
+	<!-- Shown the first time Music or Spotify is read or controlled through
+	     AppleScript: always when the MediaRemote adapter is unavailable, and
+	     otherwise when a browser holds the now-playing slot while one of them
+	     is running. -->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Music Companion needs to control Music and Spotify to read the current track and change playback.</string>
 </dict>
