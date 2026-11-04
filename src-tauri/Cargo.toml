@@ -45,3 +45,9 @@ windows = { version = "0.62", features = [
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSResponder", "NSWindow"] }
 tauri-plugin-liquid-glass = "0.1.6"
+
+# RUSTSEC-2024-0429: glib 0.18.5 (pulled in by tauri's Linux GTK3 stack) has an
+# unsound VariantStrIter; the fix only exists in glib >= 0.20, which gtk 0.18
+# cannot use. See patches/README.md. Remove once tauri drops gtk3-rs 0.18.
+[patch.crates-io]
+glib = { path = "patches/glib" }
