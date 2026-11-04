@@ -14,7 +14,7 @@ export default defineConfig({
   fmt: {
     // `src-tauri/vendor` is the pinned MediaRemote adapter submodule, which must
     // stay byte-identical to upstream.
-    ignorePatterns: ["src-tauri/gen/**", "src-tauri/patches/**", "src-tauri/vendor/**"],
+    ignorePatterns: ["src-tauri/gen/**", "src-tauri/vendor/**"],
   },
   server: {
     port: 1421,
