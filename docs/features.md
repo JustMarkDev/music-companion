@@ -9,8 +9,9 @@ transparent, always-on-top Tauri window.
 - Displays synchronized lyrics with smooth highlighting and scrolling.
 - Highlights word by word when lrc.red times individual words (many tracks), and line by
   line otherwise. Romanized lyrics keep their own word timing.
-- Reads each song as a TTML file from lrc.red, the only lyrics provider. Lyrics, romanization,
-  translation, singers, and background vocals all come from that one file.
+- Reads each song as a TTML file from lrc.red, the main lyrics provider. Lyrics, romanization,
+  translation, singers, and background vocals all come from that one file. When lrc.red has
+  nothing for a song, LRCLIB is asked for line-timed lyrics of the same recording.
 - Romanizes Japanese, Korean, Chinese, Arabic, and Devanagari lyrics with the transliteration
   lrc.red provides. Songs without one fall back to the original; nothing is romanized on the
   device. Romanized mode shows the romanization as the lyric line. Original + romanized keeps
