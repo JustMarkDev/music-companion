@@ -72,7 +72,7 @@ jobs:
 
       # Uploads to the draft release created above; the publish job releases it.
       - name: Build and upload installers
-        uses: tauri-apps/tauri-action@a6e90ddc4ba4721f294e52b856d3d50e645edc07 # dev branch head; pinned so the signing key never meets a moving ref
+        uses: tauri-apps/tauri-action@7d97e7aa6aec5a4df2a911b69d095ed405e92bf9 # dev branch head; pinned so the signing key never meets a moving ref
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -148,7 +148,7 @@ jobs:
           done
 
       - name: Build and upload disk image
-        uses: tauri-apps/tauri-action@a6e90ddc4ba4721f294e52b856d3d50e645edc07 # dev branch head; pinned so the signing key never meets a moving ref
+        uses: tauri-apps/tauri-action@7d97e7aa6aec5a4df2a911b69d095ed405e92bf9 # dev branch head; pinned so the signing key never meets a moving ref
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
