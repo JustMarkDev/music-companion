@@ -255,26 +255,34 @@ fn without_credit(normalized_title: &str) -> String {
     words[..end].join(" ")
 }
 
-/// 2 when the hit is a track of a single named like the playing song, else 0.
+/// 2 when the hit is the song's own track on a single named like it, else 0.
 /// lrc.red files "1% Battery Girl (feat. ChiliChill)" as "1% Low Battery Girl
 /// (feat. ChiliChill)" on the single "1% Battery Girl", so the track name alone
-/// does not match. The names are compared without feature credits, which a
-/// player and a single's name write differently. Only a single counts: every
-/// track of an album named like the song would tie with it. The score stays
-/// below an exact track name's.
+/// does not match.
+///
+/// A single holds other recordings too, each timed differently, so the track
+/// must be the song and nothing else: no qualifier of its own ("(Instrumental)",
+/// "- Remix", "(Live)"), and a feature credit when the playing title has one,
+/// or the version without the feature would pass. The names are compared without
+/// feature credits, which a player and a single's name write differently. Only a
+/// single counts: every track of an album named like the song would tie with it.
+/// The score stays below an exact track name's.
 fn single_title_score(candidate: &Candidate, normalized_title: &str) -> u8 {
-    let Some(single) = candidate.album_name.as_deref().and_then(single_name) else {
+    let (Some(track), Some(single)) = (
+        candidate.track_name.as_deref(),
+        candidate.album_name.as_deref().and_then(single_name),
+    ) else {
         return 0;
     };
     let single = without_credit(&normalize(single));
-    if single.is_empty() {
-        return 0;
-    }
-    if single == without_credit(normalized_title) {
-        2
-    } else {
-        0
-    }
+    let normalized_track = normalize(track);
+    let has_credit = |normalized: &str| without_credit(normalized) != normalized;
+    let bare_track = base_title(track).unwrap_or_else(|| track.to_string());
+    let is_the_song = !single.is_empty()
+        && single == without_credit(normalized_title)
+        && strip_trailing_label(&bare_track, |_| true).is_none()
+        && (has_credit(&normalized_track) || !has_credit(normalized_title));
+    if is_the_song { 2 } else { 0 }
 }
 
 /// How well a candidate's title and artist match what is playing, each 0-4.
@@ -1789,32 +1797,81 @@ mod tests {
 
     #[test]
     fn only_a_single_vouches_for_the_title_not_an_album() {
-        let hit = on_album(
-            candidate("Shoot to Thrill", "AC/DC", 317.0),
-            "Back In Black",
-        );
-        let normalized_title = canonical_title("Back In Black", &normalize("AC/DC"));
-        assert_eq!(single_title_score(&hit, &normalized_title), 0);
+        let on_single =
+            |track: &str, album: &str| on_album(candidate(track, "AC/DC", 317.0), album);
+        let title = canonical_title("Back In Black", &normalize("AC/DC"));
 
-        let single = on_album(
-            candidate("Other Mix", "AC/DC", 317.0),
-            "Back In Black - Single",
+        // Every track of an album named like the song is not the song.
+        assert_eq!(
+            single_title_score(&on_single("Shoot to Thrill", "Back In Black"), &title),
+            0
         );
-        assert_eq!(single_title_score(&single, &normalized_title), 2);
-        // A feature credit on either side is not part of the name, and a name
-        // that is only part of the title is not the song.
-        let credited = on_album(
-            candidate("Other Mix", "AC/DC", 317.0),
-            "Back In Black (feat. X) - Single",
+        assert_eq!(
+            single_title_score(&on_single("Other Mix", "Back In Black - Single"), &title),
+            2
         );
-        assert_eq!(single_title_score(&credited, &normalized_title), 2);
-        assert_eq!(single_title_score(&single, "back in black feat x"), 2);
-        assert_eq!(single_title_score(&single, "back in black part two"), 0);
-        let part = on_album(candidate("Other Mix", "AC/DC", 317.0), "Black - Single");
-        assert_eq!(single_title_score(&part, &normalized_title), 0);
+        // A name that is only part of the title is not the song.
+        assert_eq!(
+            single_title_score(&on_single("Other Mix", "Black - Single"), &title),
+            0
+        );
+        assert_eq!(
+            single_title_score(
+                &on_single("Other Mix", "Back In Black - SINGLE"),
+                "back in black part two"
+            ),
+            0
+        );
         assert_eq!(single_name("Back In Black - SINGLE"), Some("Back In Black"));
         assert_eq!(single_name("Single"), None);
         assert_eq!(single_name(" - Single"), Some(""));
+    }
+
+    #[test]
+    fn a_single_vouches_for_its_song_not_for_the_other_recordings_on_it() {
+        let on_single = |track: &str| {
+            on_album(
+                candidate(track, "Sān-Z & HOYO-MiX", 208.5),
+                "1% Battery Girl - Single",
+            )
+        };
+        let featured = "1 battery girl feat chilichill";
+        let plain = "1 battery girl";
+
+        // The song, with the feature credit on either side or none.
+        assert_eq!(
+            single_title_score(
+                &on_single("1% Low Battery Girl (feat. ChiliChill)"),
+                featured
+            ),
+            2
+        );
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl (feat. ChiliChill)"), plain),
+            2
+        );
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl"), plain),
+            2
+        );
+        // The version without the feature is not the featured song.
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl"), featured),
+            0
+        );
+        // Nor are its instrumental, remix or live recordings.
+        for other in [
+            "1% Low Battery Girl (Instrumental)",
+            "1% Low Battery Girl - Instrumental",
+            "1% Low Battery Girl (feat. ChiliChill) [Remix]",
+            "1% Low Battery Girl (Live)",
+        ] {
+            assert_eq!(
+                single_title_score(&on_single(other), featured),
+                0,
+                "{other}"
+            );
+        }
     }
 
     #[test]
