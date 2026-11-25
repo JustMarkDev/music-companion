@@ -303,10 +303,14 @@ fn has_non_latin_letters(value: &str) -> bool {
 
 /// True when exactly one of the two titles is written in a non-Latin script,
 /// so a differing spelling says nothing about whether they are the same song.
-/// A hit without a title tells nothing about its script.
+/// A hit without a title tells nothing about its script. Credits and release
+/// labels do not count: "As the sugar cube floats (feat. 阿兰·达瓦卓玛)" is a
+/// Latin title, not "1% Battery Girl" written in Chinese.
 fn titles_differ_in_script(candidate_title: Option<&str>, playing_title: &str) -> bool {
-    candidate_title
-        .is_some_and(|title| has_non_latin_letters(title) != has_non_latin_letters(playing_title))
+    fn non_latin(title: &str) -> bool {
+        has_non_latin_letters(&base_title(title).unwrap_or_else(|| title.to_string()))
+    }
+    candidate_title.is_some_and(|title| non_latin(title) != non_latin(playing_title))
 }
 
 /// True when a hit plausibly is the playing song: its title matches, or the
@@ -1244,6 +1248,26 @@ fn pick_lrclib_lyrics(
     })
 }
 
+/// The (title, artist) pairs LRCLIB is searched with, in order: as playing,
+/// with the primary artist, without the title's release labels, and both. LRCLIB
+/// files "1% Battery Girl (feat. ChiliChill)" by "Sān-Z & HOYO-MiX" with its
+/// lyrics only as "1% Battery Girl" by "Sān-Z".
+fn lrclib_queries(title: &str, artist: &str) -> Vec<(String, String)> {
+    let primary = primary_artist(artist);
+    let base = base_title(title);
+    let mut queries = vec![(title.to_string(), artist.to_string())];
+    if let Some(primary) = primary {
+        queries.push((title.to_string(), primary.to_string()));
+    }
+    if let Some(base) = &base {
+        queries.push((base.clone(), artist.to_string()));
+    }
+    if let (Some(base), Some(primary)) = (base, primary) {
+        queries.push((base, primary.to_string()));
+    }
+    queries
+}
+
 /// Line-timed lyrics from LRCLIB, for a song lrc.red does not have. Without the
 /// playing length there is nothing to tell the recording the lines were timed
 /// against from another, so such a song is not looked up.
@@ -1257,15 +1281,8 @@ async fn fetch_lrclib(
         return Ok(None);
     };
     let started_at = std::time::Instant::now();
-    let mut queries = vec![(title.to_string(), artist.to_string())];
-    if let Some(primary) = primary_artist(artist) {
-        queries.push((title.to_string(), primary.to_string()));
-    }
-    if let Some(base) = base_title(title) {
-        queries.push((base, artist.to_string()));
-    }
     let mut failure = None;
-    for (query_title, query_artist) in queries {
+    for (query_title, query_artist) in lrclib_queries(title, artist) {
         match lrclib_search(client, &query_title, &query_artist).await {
             Ok(tracks) => {
                 if let Some((candidate, lyrics)) =
@@ -1659,6 +1676,45 @@ mod tests {
         ];
 
         assert!(rank_matches(hits, "AIZO", "King Gnu", Some(237_761)).is_empty());
+    }
+
+    #[test]
+    fn lrclib_is_also_asked_for_the_bare_title_by_the_primary_artist() {
+        let pair = |title: &str, artist: &str| (title.to_string(), artist.to_string());
+        assert_eq!(
+            lrclib_queries("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX"),
+            [
+                pair("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX"),
+                pair("1% Battery Girl (feat. ChiliChill)", "Sān-Z"),
+                pair("1% Battery Girl", "Sān-Z & HOYO-MiX"),
+                pair("1% Battery Girl", "Sān-Z"),
+            ]
+        );
+        assert_eq!(lrclib_queries("Song", "Artist"), [pair("Song", "Artist")]);
+    }
+
+    #[test]
+    fn a_credit_in_another_script_does_not_make_another_song_a_transliteration() {
+        // "1% Battery Girl" is not on lrc.red; this other song of the artist is
+        // 1 s longer and only its featured singer is written in Chinese.
+        let hits = vec![(
+            candidate(
+                "As the sugar cube floats, fleeting in time (feat. 阿兰·达瓦卓玛)",
+                "Sān-Z, HOYO-MiX",
+                209.507,
+            ),
+            "sugar cube",
+        )];
+
+        assert!(
+            rank_matches(
+                hits,
+                "1% Battery Girl (feat. ChiliChill)",
+                "Sān-Z & HOYO-MiX",
+                Some(208_547)
+            )
+            .is_empty()
+        );
     }
 
     #[test]
