@@ -63,8 +63,9 @@ jobs:
           bun-version: 1.4.4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Install frontend dependencies
@@ -72,7 +73,7 @@ jobs:
 
       # Uploads to the draft release created above; the publish job releases it.
       - name: Build and upload installers
-        uses: tauri-apps/tauri-action@a6e90ddc4ba4721f294e52b856d3d50e645edc07 # dev branch head; pinned so the signing key never meets a moving ref
+        uses: tauri-apps/tauri-action@4092d6e7f198b7cb01ea63025c21e5c9159168c3 # dev branch head; pinned so the signing key never meets a moving ref
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -105,8 +106,9 @@ jobs:
           bun-version: 1.4.4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Verify CMake is available
@@ -148,7 +150,7 @@ jobs:
           done
 
       - name: Build and upload disk image
-        uses: tauri-apps/tauri-action@a6e90ddc4ba4721f294e52b856d3d50e645edc07 # dev branch head; pinned so the signing key never meets a moving ref
+        uses: tauri-apps/tauri-action@4092d6e7f198b7cb01ea63025c21e5c9159168c3 # dev branch head; pinned so the signing key never meets a moving ref
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
