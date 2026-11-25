@@ -33,7 +33,7 @@ In an existing clone, run `git submodule update --init --recursive`.
 
 ```bash
 bun install --frozen-lockfile
-bun run tauri:dev
+vp run tauri:dev
 ```
 
 The development server listens on `http://127.0.0.1:1421`. Development builds
@@ -67,9 +67,9 @@ apply formatting locally.
 ## Build and release
 
 ```bash
-bun run tauri:build           # host platform
-bun run tauri:build:windows   # Windows x86-64 NSIS installer
-bun run tauri:build:macos     # universal macOS .app and .dmg
+vp run tauri:build           # host platform
+vp run tauri:build:windows   # Windows x86-64 NSIS installer
+vp run tauri:build:macos     # universal macOS .app and .dmg
 ```
 
 Artifacts are written below:
