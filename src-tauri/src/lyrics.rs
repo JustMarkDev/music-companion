@@ -281,10 +281,13 @@ fn single_title_score(candidate: &Candidate, normalized_title: &str) -> u8 {
     let bare_track = base_title(track).unwrap_or_else(|| track.to_string());
     // Every word of the single's name is in the track's: "1% Low Battery Girl"
     // is the song "1% Battery Girl", a B-side with a title of its own is not.
-    let bare_words = normalize(&bare_track);
-    let names_the_song = single
-        .split_whitespace()
-        .all(|word| bare_words.split_whitespace().any(|other| other == word));
+    // The single's name keeps its release labels ("(Remastered)"), so the words
+    // are looked for in the whole track name, not in the one without labels.
+    let names_the_song = single.split_whitespace().all(|word| {
+        normalized_track
+            .split_whitespace()
+            .any(|other| other == word)
+    });
     let is_the_song = !single.is_empty()
         && single == without_credit(normalized_title)
         && names_the_song
@@ -1908,6 +1911,42 @@ mod tests {
                 Some(208_547)
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_remastered_single_still_stands_for_its_song() {
+        let hits = vec![
+            (
+                on_album(
+                    candidate("『暁の空に、輝ける誓い』", "Sān-Z, HOYO-MiX", 208.6),
+                    "『暁の空に、輝ける誓い』 - Single",
+                ),
+                "japanese",
+            ),
+            (
+                on_album(
+                    candidate(
+                        "1% Low Battery Girl (Remastered) (feat. ChiliChill)",
+                        "Sān-Z & HOYO-MiX",
+                        208.547,
+                    ),
+                    "1% Battery Girl (Remastered) - Single",
+                ),
+                "single",
+            ),
+        ];
+
+        let ranked = rank_matches(
+            hits,
+            "1% Battery Girl (Remastered) (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            Some(208_547),
+        );
+
+        assert_eq!(
+            ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+            ["single"]
         );
     }
 
