@@ -261,7 +261,8 @@ fn without_credit(normalized_title: &str) -> String {
 /// does not match.
 ///
 /// A single holds other recordings too, each timed differently, so the track
-/// must be the song and nothing else: no qualifier of its own ("(Instrumental)",
+/// must be the song and nothing else: its name holds the single's words, no
+/// qualifier of its own ("(Instrumental)",
 /// "- Remix", "(Live)"), and a feature credit when the playing title has one,
 /// or the version without the feature would pass. The names are compared without
 /// feature credits, which a player and a single's name write differently. Only a
@@ -278,8 +279,15 @@ fn single_title_score(candidate: &Candidate, normalized_title: &str) -> u8 {
     let normalized_track = normalize(track);
     let has_credit = |normalized: &str| without_credit(normalized) != normalized;
     let bare_track = base_title(track).unwrap_or_else(|| track.to_string());
+    // Every word of the single's name is in the track's: "1% Low Battery Girl"
+    // is the song "1% Battery Girl", a B-side with a title of its own is not.
+    let bare_words = normalize(&bare_track);
+    let names_the_song = single
+        .split_whitespace()
+        .all(|word| bare_words.split_whitespace().any(|other| other == word));
     let is_the_song = !single.is_empty()
         && single == without_credit(normalized_title)
+        && names_the_song
         && strip_trailing_label(&bare_track, |_| true).is_none()
         && (has_credit(&normalized_track) || !has_credit(normalized_title));
     if is_the_song { 2 } else { 0 }
@@ -1807,17 +1815,20 @@ mod tests {
             0
         );
         assert_eq!(
-            single_title_score(&on_single("Other Mix", "Back In Black - Single"), &title),
+            single_title_score(
+                &on_single("Back In Black", "Back In Black - Single"),
+                &title
+            ),
             2
         );
         // A name that is only part of the title is not the song.
         assert_eq!(
-            single_title_score(&on_single("Other Mix", "Black - Single"), &title),
+            single_title_score(&on_single("Back In Black", "Black - Single"), &title),
             0
         );
         assert_eq!(
             single_title_score(
-                &on_single("Other Mix", "Back In Black - SINGLE"),
+                &on_single("Back In Black", "Back In Black - SINGLE"),
                 "back in black part two"
             ),
             0
@@ -1859,6 +1870,9 @@ mod tests {
             single_title_score(&on_single("1% Low Battery Girl"), featured),
             0
         );
+        // A B-side with a title of its own is another song.
+        assert_eq!(single_title_score(&on_single("Dead Battery"), featured), 0);
+        assert_eq!(single_title_score(&on_single("Dead Battery"), plain), 0);
         // Nor are its instrumental, remix or live recordings.
         for other in [
             "1% Low Battery Girl (Instrumental)",
@@ -1872,6 +1886,29 @@ mod tests {
                 "{other}"
             );
         }
+    }
+
+    #[test]
+    fn a_b_side_on_the_single_is_not_the_song() {
+        // Same artist, same length, on the single of the playing song, but
+        // another song: it must neither pass nor hide the cross-script match.
+        let hits = vec![(
+            on_album(
+                candidate("Dead Battery", "Sān-Z & HOYO-MiX", 208.0),
+                "1% Battery Girl - Single",
+            ),
+            "b-side",
+        )];
+
+        assert!(
+            rank_matches(
+                hits,
+                "1% Battery Girl (feat. ChiliChill)",
+                "Sān-Z & HOYO-MiX",
+                Some(208_547)
+            )
+            .is_empty()
+        );
     }
 
     #[test]
