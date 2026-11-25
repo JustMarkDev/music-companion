@@ -232,6 +232,51 @@ fn track_title_score(candidate: &Candidate, normalized_title: &str, normalized_a
     score(track_title.as_deref(), normalized_title)
 }
 
+/// The name a single is released under: "1% Battery Girl - Single" is the
+/// single "1% Battery Girl".
+fn single_name(album: &str) -> Option<&str> {
+    const SUFFIX: &str = " - single";
+    let album = album.trim_end();
+    let name = album.get(..album.len().checked_sub(SUFFIX.len())?)?;
+    album
+        .get(name.len()..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(SUFFIX))
+        .map(|_| name.trim_end())
+}
+
+/// A normalized title without its feature credit: "song feat x" is "song".
+fn without_credit(normalized_title: &str) -> String {
+    let words = normalized_title.split_whitespace().collect::<Vec<_>>();
+    let end = words
+        .iter()
+        .skip(1)
+        .position(|word| matches!(*word, "feat" | "ft" | "featuring"))
+        .map_or(words.len(), |index| index + 1);
+    words[..end].join(" ")
+}
+
+/// 2 when the hit is a track of a single named like the playing song, else 0.
+/// lrc.red files "1% Battery Girl (feat. ChiliChill)" as "1% Low Battery Girl
+/// (feat. ChiliChill)" on the single "1% Battery Girl", so the track name alone
+/// does not match. The names are compared without feature credits, which a
+/// player and a single's name write differently. Only a single counts: every
+/// track of an album named like the song would tie with it. The score stays
+/// below an exact track name's.
+fn single_title_score(candidate: &Candidate, normalized_title: &str) -> u8 {
+    let Some(single) = candidate.album_name.as_deref().and_then(single_name) else {
+        return 0;
+    };
+    let single = without_credit(&normalize(single));
+    if single.is_empty() {
+        return 0;
+    }
+    if single == without_credit(normalized_title) {
+        2
+    } else {
+        0
+    }
+}
+
 /// How well a candidate's title and artist match what is playing, each 0-4.
 fn metadata_scores(
     candidate: &Candidate,
@@ -246,7 +291,8 @@ fn metadata_scores(
         .as_deref()
         .filter(|name| !name.is_empty())
     {
-        Some(_) => track_title_score(candidate, normalized_title, normalized_artist),
+        Some(_) => track_title_score(candidate, normalized_title, normalized_artist)
+            .max(single_title_score(candidate, normalized_title)),
         None => score(candidate.album_name.as_deref(), normalized_title),
     };
     // lrc.red credits some artists in another script ("Paolo Conte" is
@@ -350,7 +396,8 @@ fn rank_matches<T>(
     // length, is the song itself: another song of the artist in another script is
     // not a transliteration of it, only a song of about the same length.
     let listed_by_title = hits.iter().any(|(candidate, _)| {
-        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+        (track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+            || single_title_score(candidate, &normalized_title) > 0)
             && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
     });
     hits.retain(|(candidate, _)| {
@@ -1691,6 +1738,83 @@ mod tests {
             ]
         );
         assert_eq!(lrclib_queries("Song", "Artist"), [pair("Song", "Artist")]);
+    }
+
+    fn on_album(mut hit: Candidate, album: &str) -> Candidate {
+        hit.album_name = Some(album.to_string());
+        hit
+    }
+
+    #[test]
+    fn a_single_named_like_the_song_stands_for_a_title_lrc_red_spells_differently() {
+        // lrc.red files "1% Battery Girl" as "1% Low Battery Girl" on the single
+        // of that name. Another song of the artist, in Japanese, is 1 s off the
+        // playing length (210 s), which used to make it pass as a transliteration.
+        for playing_ms in [208_547, 209_507, 210_000, 210_596, 211_000] {
+            let hits = vec![
+                (
+                    on_album(
+                        candidate("『暁の空に、輝ける誓い』", "Sān-Z, HOYO-MiX", 210.596),
+                        "『暁の空に、輝ける誓い』 - Single",
+                    ),
+                    "japanese",
+                ),
+                (
+                    on_album(
+                        candidate(
+                            "1% Low Battery Girl (feat. ChiliChill)",
+                            "Sān-Z & HOYO-MiX",
+                            208.547,
+                        ),
+                        "1% Battery Girl - Single",
+                    ),
+                    "single",
+                ),
+            ];
+
+            let ranked = rank_matches(
+                hits,
+                "1% Battery Girl (feat. ChiliChill)",
+                "Sān-Z & HOYO-MiX",
+                Some(playing_ms),
+            );
+
+            assert_eq!(
+                ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+                ["single"],
+                "playing length {playing_ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_single_vouches_for_the_title_not_an_album() {
+        let hit = on_album(
+            candidate("Shoot to Thrill", "AC/DC", 317.0),
+            "Back In Black",
+        );
+        let normalized_title = canonical_title("Back In Black", &normalize("AC/DC"));
+        assert_eq!(single_title_score(&hit, &normalized_title), 0);
+
+        let single = on_album(
+            candidate("Other Mix", "AC/DC", 317.0),
+            "Back In Black - Single",
+        );
+        assert_eq!(single_title_score(&single, &normalized_title), 2);
+        // A feature credit on either side is not part of the name, and a name
+        // that is only part of the title is not the song.
+        let credited = on_album(
+            candidate("Other Mix", "AC/DC", 317.0),
+            "Back In Black (feat. X) - Single",
+        );
+        assert_eq!(single_title_score(&credited, &normalized_title), 2);
+        assert_eq!(single_title_score(&single, "back in black feat x"), 2);
+        assert_eq!(single_title_score(&single, "back in black part two"), 0);
+        let part = on_album(candidate("Other Mix", "AC/DC", 317.0), "Black - Single");
+        assert_eq!(single_title_score(&part, &normalized_title), 0);
+        assert_eq!(single_name("Back In Black - SINGLE"), Some("Back In Black"));
+        assert_eq!(single_name("Single"), None);
+        assert_eq!(single_name(" - Single"), Some(""));
     }
 
     #[test]
