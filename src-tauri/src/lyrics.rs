@@ -91,16 +91,28 @@ pub async fn fetch_lyrics(
             fetch_lrc_red(client, title, artist, duration_ms),
         )
         .await;
-        // Only a clean miss moves on: an error is retried against lrc.red.
-        if !matches!(found, Ok(None)) {
-            return found;
+        let lrclib = || {
+            within_deadline(
+                "LRCLIB",
+                LRCLIB_TIMEOUT,
+                fetch_lrclib(client, title, artist, duration_ms),
+            )
+        };
+        match found {
+            // Only a clean miss moves on: an error is retried against lrc.red.
+            Ok(None) => lrclib().await,
+            // lrc.red lists the song under an artist that cannot be told from the
+            // playing one (another script, another band's cover of a title).
+            // LRCLIB lists artists the way players do, so it is asked too.
+            Ok(Some(lyrics)) if !confirms_song(&lyrics, title, artist) => {
+                let other = lrclib().await.ok().flatten();
+                Ok(Some(match other {
+                    Some(other) if lrclib_beats(&lyrics, &other, title, artist) => other,
+                    _ => lyrics,
+                }))
+            }
+            found => found,
         }
-        within_deadline(
-            "LRCLIB",
-            LRCLIB_TIMEOUT,
-            fetch_lrclib(client, title, artist, duration_ms),
-        )
-        .await
     });
     loop {
         tokio::select! {
@@ -112,6 +124,85 @@ pub async fn fetch_lyrics(
             }
         }
     }
+}
+
+/// True when the lyrics' own title and artist credit are the playing song's, as
+/// it is named or as a channel put it into one title ("Artist - Song"), so it is
+/// known to be that song and not one that only has its length, or its title and
+/// another artist, or its artist and a title in another script.
+fn confirms_song(lyrics: &LyricsResult, title: &str, artist: &str) -> bool {
+    let candidate = Candidate {
+        track_name: Some(lyrics.track_name.clone()),
+        artist_name: Some(lyrics.artist_name.clone()),
+        album_name: None,
+        duration: None,
+    };
+    let mut asked = vec![(title.to_string(), artist.to_string())];
+    asked.extend(dash_title_queries(title));
+    asked.extend(
+        asked
+            .clone()
+            .into_iter()
+            .flat_map(|(title, artist)| {
+                [
+                    base_title(&title).map(|base| (base, artist.clone())),
+                    strip_edit_marker(&title).map(|full| (full, artist.clone())),
+                    primary_artist(&artist).map(|primary| (title.clone(), primary.to_string())),
+                ]
+            })
+            .flatten(),
+    );
+    asked.into_iter().any(|(title, artist)| {
+        let artist = normalize(&artist);
+        let title = canonical_title(&title, &artist);
+        !artist.is_empty()
+            && track_title_score(&candidate, &title, &artist) == 4
+            && !artist_unverified(&candidate, &artist)
+    })
+}
+
+/// The text of the lyrics as the singer says it, for comparing two providers'.
+fn lyrics_text(lyrics: &LyricsResult) -> String {
+    lyrics
+        .lines
+        .iter()
+        .map(|line| {
+            line.text
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// How much of two lyrics' character pairs they share, 0 to 1.
+fn text_overlap(left: &str, right: &str) -> f64 {
+    fn pairs(text: &str) -> HashSet<(char, char)> {
+        let chars = normalize(text).chars().collect::<Vec<_>>();
+        chars.windows(2).map(|pair| (pair[0], pair[1])).collect()
+    }
+    let (left, right) = (pairs(left), pairs(right));
+    let union = left.union(&right).count();
+    if union == 0 {
+        return 0.0;
+    }
+    left.intersection(&right).count() as f64 / union as f64
+}
+
+/// Below this, two lyrics in the same script are not of the same song.
+const SAME_SONG_OVERLAP: f64 = 0.25;
+
+/// Whether LRCLIB's lyrics are to be shown where lrc.red's credit does not
+/// confirm the playing song: when LRCLIB has the song under the playing artist
+/// and title with other words, lrc.red's is a song that only shares a name. Lyrics in
+/// different scripts (the Japanese and its romaji) cannot be compared.
+fn lrclib_beats(lrc_red: &LyricsResult, lrclib: &LyricsResult, title: &str, artist: &str) -> bool {
+    let (red_text, lib_text) = (lyrics_text(lrc_red), lyrics_text(lrclib));
+    confirms_song(lrclib, title, artist)
+        && has_non_latin_letters(&red_text) == has_non_latin_letters(&lib_text)
+        && text_overlap(&red_text, &lib_text) < SAME_SONG_OVERLAP
 }
 
 fn http_client() -> Result<&'static reqwest::Client, String> {
@@ -134,9 +225,106 @@ fn http_client() -> Result<&'static reqwest::Client, String> {
         .map_err(Clone::clone)
 }
 
+/// The base letter of an accented Latin letter, so a title typed with accents
+/// ("Più", "Felicità") equals the same one without or with the accent written as
+/// a letter plus a combining mark, as macOS files have it.
+fn unaccented(char: char) -> char {
+    match char {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'ç' | 'ć' | 'ĉ' | 'č' => 'c',
+        'ď' | 'đ' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ĝ' | 'ğ' => 'g',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' => 'i',
+        'ĺ' | 'ľ' | 'ł' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ŕ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' => 's',
+        'ţ' | 'ť' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ý' | 'ÿ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        other => other,
+    }
+}
+
+/// The kana a plain kana and a combining (semi-)voiced mark make together: か
+/// and U+3099 is が, は and U+309A is ぱ. macOS spells file names this way, and
+/// the mark is not a letter, so it would otherwise vanish and leave か.
+fn composed_kana(plain: char, mark: char) -> Option<char> {
+    // The hiragana that have a voiced form right after them (か→が), and the は
+    // row, which has a semi-voiced one after that (は→ば→ぱ).
+    const VOICEABLE: [u32; 20] = [
+        0x304B, 0x304D, 0x304F, 0x3051, 0x3053, 0x3055, 0x3057, 0x3059, 0x305B, 0x305D, 0x305F,
+        0x3061, 0x3064, 0x3066, 0x3068, 0x306F, 0x3072, 0x3075, 0x3078, 0x307B,
+    ];
+    const HA_ROW: [u32; 5] = [0x306F, 0x3072, 0x3075, 0x3078, 0x307B];
+    let code = plain as u32;
+    let katakana = (0x30A1..=0x30F6).contains(&code);
+    let base = if katakana { code - 0x60 } else { code };
+    let composed = match mark {
+        '\u{3099}' if base == 0x3046 => 0x3094,
+        '\u{3099}' if VOICEABLE.contains(&base) => base + 1,
+        '\u{309A}' if HA_ROW.contains(&base) => base + 2,
+        _ => return None,
+    };
+    char::from_u32(if katakana { composed + 0x60 } else { composed })
+}
+
+/// A tag as the providers write it: kana and their combining (semi-)voiced marks
+/// as the one kana they make (a player on macOS may report a title the decomposed
+/// way), and full-width Latin letters, digits and punctuation as plain ASCII,
+/// as Japanese tag editors type them. Neither provider matches the other forms.
+fn clean_tag(value: &str) -> String {
+    compose_kana(
+        &value
+            .chars()
+            .map(|char| match char {
+                '\u{3000}' => ' ',
+                '\u{FF01}'..='\u{FF5E}' => {
+                    char::from_u32(char as u32 - 0xFF01 + 0x21).unwrap_or(char)
+                }
+                other => other,
+            })
+            .collect::<String>(),
+    )
+}
+
+/// A player's artist without the " - Topic" of the channel YouTube Music files
+/// an artist's songs under.
+fn clean_artist(value: &str) -> String {
+    let artist = clean_tag(value);
+    artist
+        .strip_suffix(" - Topic")
+        .map_or(artist.clone(), |name| name.trim().to_string())
+}
+
+/// The kana of `value` with each combining (semi-)voiced mark joined to its kana.
+fn compose_kana(value: &str) -> String {
+    let mut composed = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(char) = chars.next() {
+        let char = match chars.peek().copied() {
+            Some(mark @ ('\u{3099}' | '\u{309A}')) => match composed_kana(char, mark) {
+                Some(joined) => {
+                    chars.next();
+                    joined
+                }
+                None => char,
+            },
+            _ => char,
+        };
+        composed.push(char);
+    }
+    composed
+}
+
 fn normalize(value: &str) -> String {
-    value
-        .to_lowercase()
+    clean_tag(value)
+        .chars()
+        .flat_map(|char| char.to_lowercase().map(unaccented))
+        .collect::<String>()
         .chars()
         .filter(|char| char.is_alphanumeric() || char.is_whitespace())
         .collect::<String>()
@@ -212,7 +400,7 @@ fn duration_difference_ms(candidate_seconds: Option<f64>, expected_ms: Option<u6
 /// How far a hit may be from the playing length when only its artist vouches
 /// for it, the title being written in another script. A title that says nothing
 /// needs a closer length than one that matches.
-const CROSS_SCRIPT_TOLERANCE_MS: u64 = 1_000;
+const CROSS_SCRIPT_TOLERANCE_MS: u64 = 300;
 
 fn duration_matches(candidate_seconds: Option<f64>, expected_ms: Option<u64>) -> bool {
     const DURATION_TOLERANCE_MS: u64 = 3_000;
@@ -315,26 +503,31 @@ fn metadata_scores(
         None => score(candidate.album_name.as_deref(), normalized_title),
     };
     // lrc.red credits some artists in another script ("Paolo Conte" is
-    // "帕羅康提"), which says nothing against the playing artist. It only
-    // counts for a hit whose title matches, or any song in that script would
-    // pass for the playing one.
-    let other_script = title_score > 0
+    // "帕羅康提"), and a player may credit one in another script than lrc.red
+    // ("米津玄師" for "Kenshi Yonezu"). That says nothing against the playing
+    // artist, but it only counts for a hit named exactly like the song: a title
+    // that merely contains it ("Lemon·柠檬气息" by 花僮 for "Lemon") is another song.
+    let other_script = title_score == 4
         && !normalized_artist.is_empty()
-        && candidate
-            .artist_name
-            .as_deref()
-            .is_some_and(has_non_latin_letters)
-        && !has_non_latin_letters(normalized_artist);
-    let artist_score = [
+        && candidate.artist_name.as_deref().is_some_and(|credit| {
+            has_non_latin_letters(credit) != has_non_latin_letters(normalized_artist)
+        });
+    let artist_score =
+        named_artist_score(candidate, normalized_artist).max(if other_script { 2 } else { 0 });
+    (title_score, artist_score)
+}
+
+/// How well the names a hit carries (its artist, and its title and album, where
+/// a "(feat. X)" may name the artist) match the playing artist, 0-4.
+fn named_artist_score(candidate: &Candidate, normalized_artist: &str) -> u8 {
+    [
         score(candidate.artist_name.as_deref(), normalized_artist),
         score(candidate.track_name.as_deref(), normalized_artist),
         score(candidate.album_name.as_deref(), normalized_artist),
-        if other_script { 2 } else { 0 },
     ]
     .into_iter()
     .max()
-    .unwrap_or_default();
-    (title_score, artist_score)
+    .unwrap_or_default()
 }
 
 fn ranking_key(
@@ -372,10 +565,20 @@ fn has_non_latin_letters(value: &str) -> bool {
 /// labels do not count: "As the sugar cube floats (feat. 阿兰·达瓦卓玛)" is a
 /// Latin title, not "1% Battery Girl" written in Chinese.
 fn titles_differ_in_script(candidate_title: Option<&str>, playing_title: &str) -> bool {
-    fn non_latin(title: &str) -> bool {
-        has_non_latin_letters(&base_title(title).unwrap_or_else(|| title.to_string()))
+    fn base(title: &str) -> String {
+        base_title(title).unwrap_or_else(|| title.to_string())
     }
-    candidate_title.is_some_and(|title| non_latin(title) != non_latin(playing_title))
+    fn non_latin(title: &str) -> bool {
+        has_non_latin_letters(&base(title))
+    }
+    // A title in both scripts ("Winner and Loser / 勝者と敗者") is its own song,
+    // not the playing one written in another script.
+    fn mixed(title: &str) -> bool {
+        let base = base(title);
+        has_non_latin_letters(&base) && base.chars().any(is_latin_letter)
+    }
+    candidate_title
+        .is_some_and(|title| !mixed(title) && non_latin(title) != non_latin(playing_title))
 }
 
 /// True when a hit plausibly is the playing song: its title matches, or the
@@ -388,13 +591,137 @@ fn is_same_song(
     normalized_title: &str,
     normalized_artist: &str,
     anchored: bool,
+    loose_title: bool,
 ) -> bool {
     let (title_score, artist_score) =
         metadata_scores(candidate, normalized_title, normalized_artist);
-    title_score > 0
+    // A title that only contains the playing one ("Lemon·柠檬气息" for "Lemon") is
+    // another song unless its artist vouches for it. One named exactly like it is
+    // the song unless it is credited to another artist in the same script, since
+    // artists are credited in other scripts. A shortened edit has no such leeway
+    // (`loose_title` false): its full version is named like it, or it is not it.
+    (title_score == 4 && !artist_conflicts(candidate, normalized_artist))
+        || (loose_title && title_score > 0 && artist_score > 0)
         || (anchored
-            && artist_score > 0
+            && credits_artist(candidate, normalized_artist)
             && titles_differ_in_script(candidate.track_name.as_deref(), title))
+}
+
+/// How an artist's name is written: only in Latin letters, with none, or both
+/// ("Official髭男dism").
+#[derive(PartialEq)]
+enum Script {
+    Latin,
+    Other,
+    Mixed,
+}
+
+fn script_of(name: &str) -> Script {
+    match (
+        name.chars().any(is_latin_letter),
+        has_non_latin_letters(name),
+    ) {
+        (true, true) => Script::Mixed,
+        (false, true) => Script::Other,
+        _ => Script::Latin,
+    }
+}
+
+/// True when the hit is credited to another artist than the playing one for
+/// certain: a different name in the same script. A name in another script ("米津玄師"
+/// for "Kenshi Yonezu", "イーグルス" for "Eagles") or one that mixes both proves
+/// nothing, since nothing here translates names.
+fn artist_conflicts(candidate: &Candidate, normalized_artist: &str) -> bool {
+    let Some(credit) = candidate
+        .artist_name
+        .as_deref()
+        .filter(|credit| !normalize(credit).is_empty())
+    else {
+        return false;
+    };
+    if normalized_artist.is_empty() {
+        return false;
+    }
+    if named_artist_score(candidate, normalized_artist) > 0 {
+        return false;
+    }
+    let (credit_script, artist_script) = (script_of(credit), script_of(normalized_artist));
+    match (credit_script, artist_script) {
+        (Script::Latin, Script::Latin) | (Script::Other, Script::Other) => true,
+        // "Official髭男dism" is "Official HIGE DANdism" in Latin letters: the
+        // Latin words one name has must be in the other.
+        (Script::Mixed, Script::Latin | Script::Mixed) | (Script::Latin, Script::Mixed) => {
+            let (credit, artist) = (normalize(credit), normalized_artist);
+            let words_of = |name: &str| latin_words(name);
+            let (credit_words, artist_words) = (words_of(&credit), words_of(artist));
+            let shares = |words: &[String], other: &str| words.iter().any(|w| other.contains(w));
+            !(shares(&credit_words, artist) || shares(&artist_words, &credit))
+                && !(credit_words.is_empty() && artist_words.is_empty())
+        }
+        _ => false,
+    }
+}
+
+/// The runs of Latin letters of at least three in a name ("official" and "dism"
+/// in "official髭男dism").
+fn latin_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut run = String::new();
+    for char in name.chars().chain(std::iter::once(' ')) {
+        if is_latin_letter(char) {
+            run.push(char);
+        } else {
+            if run.chars().count() >= 3 {
+                words.push(std::mem::take(&mut run));
+            }
+            run.clear();
+        }
+    }
+    words
+}
+
+/// True when the hit's own artist credit names the playing artist, as one of
+/// several or alone. Unlike the artist score, a name found inside the track
+/// title ("Perfume Genius" in "(feat. Perfume Genius)") or only contained in
+/// another name ("Perfume" in "Perfume Genius") does not count.
+fn credits_artist(candidate: &Candidate, normalized_artist: &str) -> bool {
+    const SEPARATORS: [&str; 10] = [
+        ",",
+        ";",
+        "&",
+        "/",
+        "\u{d7}",
+        "+",
+        " x ",
+        " feat. ",
+        " feat ",
+        " featuring ",
+    ];
+    fn names(value: &str) -> Vec<String> {
+        let mut parts = vec![value.to_lowercase()];
+        for separator in SEPARATORS {
+            parts = parts
+                .iter()
+                .flat_map(|part| {
+                    part.split(separator)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        }
+        parts
+            .iter()
+            .map(|part| normalize(part))
+            .filter(|part| !part.is_empty())
+            .collect()
+    }
+    let Some(credit) = candidate.artist_name.as_deref() else {
+        return false;
+    };
+    let wanted = names(normalized_artist);
+    !normalized_artist.is_empty()
+        && (normalize(credit) == normalized_artist
+            || names(credit).iter().any(|name| wanted.contains(name)))
 }
 
 /// Keeps the hits that plausibly are the playing song, best first. Search
@@ -430,8 +757,10 @@ fn rank_matches<T>(
                     && !listed_by_title
                     && duration_difference_ms(candidate.duration, duration_ms)
                         <= CROSS_SCRIPT_TOLERANCE_MS,
+                true,
             )
     });
+    drop_ambiguous(&mut hits, |(candidate, _)| candidate, &normalized_artist);
     hits.sort_by_key(|(candidate, _)| {
         ranking_key(
             candidate,
@@ -441,6 +770,77 @@ fn rank_matches<T>(
         )
     });
     hits
+}
+
+/// Whether nothing but its script says a hit is by the playing artist: its credit
+/// shares no name with it ("Eagles" for "イーグルス").
+fn artist_unverified(candidate: &Candidate, normalized_artist: &str) -> bool {
+    !normalized_artist.is_empty()
+        && named_artist_score(candidate, normalized_artist) == 0
+        && !credits_artist(candidate, normalized_artist)
+}
+
+/// How many single-letter edits turn one text into the other.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut row = (0..=right.len()).collect::<Vec<_>>();
+    for (i, l) in left.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, r) in right.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(l != *r))
+                .min(row[j] + 1)
+                .min(above + 1);
+            diagonal = above;
+        }
+    }
+    row[right.len()]
+}
+
+/// Removes the hits whose artist cannot be verified when they are credited to
+/// several unrelated artists: a title and a length that unrelated artists share
+/// do not say which of them is the playing song ("Albachiara" by "Vasco Rossi"
+/// and by "Mauro Martins" for "ヴァスコ・ロッシ"). A credit that most of those
+/// hits agree on, misspellings and "The" aside, is the song's: it is kept alone.
+fn drop_ambiguous<T>(
+    hits: &mut Vec<T>,
+    candidate: impl Fn(&T) -> &Candidate,
+    normalized_artist: &str,
+) {
+    let credit = |hit: &T| {
+        let name = normalize(candidate(hit).artist_name.as_deref().unwrap_or_default());
+        name.strip_prefix("the ")
+            .map(str::to_string)
+            .unwrap_or(name)
+    };
+    // Credits that are one name spelled two ways, grouped with how many hits hold them.
+    let mut groups: Vec<(String, usize)> = Vec::new();
+    for hit in hits
+        .iter()
+        .filter(|hit| artist_unverified(candidate(hit), normalized_artist))
+    {
+        let name = credit(hit);
+        match groups
+            .iter_mut()
+            .find(|(known, _)| edit_distance(known, &name) <= name.chars().count().max(8) / 8)
+        {
+            Some((_, count)) => *count += 1,
+            None => groups.push((name, 1)),
+        }
+    }
+    if groups.len() < 2 {
+        return;
+    }
+    groups.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    let others = groups[1..].iter().map(|(_, count)| count).sum::<usize>();
+    let dominant = (groups[0].1 >= 2 && groups[0].1 >= 3 * others).then(|| groups[0].0.clone());
+    hits.retain(|hit| {
+        !artist_unverified(candidate(hit), normalized_artist)
+            || dominant.as_deref().is_some_and(|name| {
+                edit_distance(name, &credit(hit)) <= name.chars().count().max(8) / 8
+            })
+    });
 }
 
 /// Like `rank_matches` for an edit of a song (a TV size or short version): the
@@ -468,12 +868,15 @@ fn rank_edit_matches<T>(
                 .duration
                 .filter(|seconds| seconds.is_finite())
                 .is_some_and(|seconds| (seconds * 1_000.0) as u64 + LENGTH_TOLERANCE_MS >= edit_ms)
+                // The edit's length cannot confirm the song, so its artist must.
+                && !artist_unverified(candidate, &normalized_artist)
                 && is_same_song(
                     candidate,
                     title,
                     &normalized_title,
                     &normalized_artist,
                     *index == 0,
+                    false,
                 )
         })
         .map(|(_, hit)| hit)
@@ -546,6 +949,28 @@ fn strip_trailing_label(title: &str, is_label: impl Fn(&str) -> bool) -> Option<
 fn is_release_label(label: &str) -> bool {
     let label = normalize(label);
     let mut words = label.split_whitespace();
+    // "(Official Video)", "[Lyric Video]": how a video site names a song, which
+    // is not part of its title.
+    if !label.is_empty()
+        && label.split_whitespace().all(|word| {
+            matches!(
+                word,
+                "official"
+                    | "music"
+                    | "lyric"
+                    | "lyrics"
+                    | "video"
+                    | "audio"
+                    | "visualizer"
+                    | "mv"
+                    | "hd"
+                    | "hq"
+                    | "4k"
+            )
+        })
+    {
+        return true;
+    }
     matches!(
         words.next(),
         Some("feat" | "ft" | "featuring" | "with" | "prod")
@@ -662,6 +1087,7 @@ async fn fetch_lrc_red(
     artist: &str,
     duration_ms: Option<u64>,
 ) -> Lookup {
+    let (title, artist) = (&clean_tag(title), &clean_artist(artist));
     let mut found = search_lrc_red(client, title, artist, duration_ms).await;
     if matches!(found, Ok(None))
         && let Some(primary) = primary_artist(artist)
@@ -703,7 +1129,8 @@ fn fallback_queries(title: &str, artist: &str, duration_ms: Option<u64>) -> Vec<
 /// names a single artist. Separators need surrounding spaces, so names such
 /// as "Simon&Garfunkel" are left whole.
 fn primary_artist(artist: &str) -> Option<&str> {
-    const SEPARATORS: [&str; 9] = [
+    const SEPARATORS: [&str; 10] = [
+        " (",
         " & ",
         ", ",
         "; ",
@@ -768,7 +1195,10 @@ fn merge_lrc_red_hits(by_title: Vec<LrcRedHit>, by_duration: Vec<LrcRedHit>) -> 
 /// The free text `/search.json` is asked. It finds nothing for a word with an
 /// apostrophe ("L'orchestrina") but does for the words around it.
 fn search_query(title: &str, artist: &str) -> String {
-    format!("{title} {artist}").replace(['\'', '’'], " ")
+    format!("{title} {artist}")
+        .replace(['\'', '’'], " ")
+        .trim()
+        .to_string()
 }
 
 /// One `/search.json` query: the hits for a title and artist written as free
@@ -835,6 +1265,16 @@ async fn lrc_red_matches(
     {
         matched = merge_text_hits(matched, hits);
     }
+    // An artist credited in a script the provider does not use ("イーグルス" for
+    // "Eagles") finds nothing with the artist in the query, while the title alone
+    // lists the recording; its length and its own artist credit pick it.
+    if !has_exact_title(&matched, title, artist, duration_ms)
+        && !normalize(artist).is_empty()
+        && has_non_latin_letters(artist)
+        && let Ok(hits) = lrc_red_text_hits(client, title, "").await
+    {
+        matched = merge_text_hits(matched, hits);
+    }
     Ok(rank_matches(matched, title, artist, duration_ms))
 }
 
@@ -886,7 +1326,7 @@ async fn merge_half_hits(
 fn title_halves(title: &str) -> Vec<String> {
     const DASHES: [&str; 3] = [" - ", " \u{2013} ", " \u{2014} "];
     // The rightmost dash, so a dash inside the title is kept whatever kind it is.
-    DASHES
+    let halves = DASHES
         .iter()
         .filter_map(|dash| title.rsplit_once(dash))
         .max_by_key(|(rest, _)| rest.len())
@@ -894,7 +1334,27 @@ fn title_halves(title: &str) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .filter(|half| !half.is_empty())
-        .collect()
+        .collect::<Vec<_>>();
+    if !halves.is_empty() {
+        return halves;
+    }
+    // "紅(KURENAI)": the second name in brackets, when it is in another script. A
+    // release label such as "(feat. X)" is in the same script and is not one.
+    let trimmed = title.trim_end();
+    let Some(open) = trimmed
+        .strip_suffix(')')
+        .and_then(|rest| rest.rfind('(').map(|open| (rest, open)))
+    else {
+        return Vec::new();
+    };
+    let (outer, inner) = (open.0[..open.1].trim(), open.0[open.1 + 1..].trim());
+    if outer.is_empty()
+        || inner.is_empty()
+        || has_non_latin_letters(outer) == has_non_latin_letters(inner)
+    {
+        return Vec::new();
+    }
+    vec![outer.to_string(), inner.to_string()]
 }
 
 /// True when some hit is named exactly like the playing song, is not
@@ -1013,16 +1473,44 @@ async fn search_lrc_red_edit(
         let hits = lrc_red_text_hits(client, title, artist).await?;
         ranked = rank_edit_matches(hit_candidates(hits), title, artist, edit_ms);
     }
+    if ranked.is_empty() && !normalize(artist).is_empty() && has_non_latin_letters(artist) {
+        // An artist credited in a script lrc.red does not use: the title alone.
+        let hits = lrc_red_text_hits(client, title, "").await?;
+        ranked = rank_edit_matches(hit_candidates(hits), title, artist, edit_ms);
+    }
     first_lyrics(client, ranked.into_iter().take(1).collect()).await
 }
 
 /// The lyrics of the first ranked recording that has any.
 async fn first_lyrics(client: &reqwest::Client, ranked: Vec<(Candidate, String)>) -> Lookup {
     let started_at = std::time::Instant::now();
-    let found = first_found(ranked, |isrc: String| async move {
+    let found = first_found(ranked.clone(), |isrc: String| async move {
         fetch_lrc_red_ttml(client, &isrc).await
     })
     .await?;
+    let found = match found {
+        // lrc.red lists a song more than once (single, album, compilation) and
+        // only some of its files carry the romanization: when the best one has
+        // none, a later one that has it is the better choice.
+        Some((candidate, isrc, lyrics)) if lacks_romanization(&lyrics) => {
+            let later = ranked
+                .iter()
+                .skip_while(|(_, other)| *other != isrc)
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>();
+            let romanized = first_found(later, |isrc: String| async move {
+                Ok(fetch_lrc_red_ttml(client, &isrc)
+                    .await?
+                    .filter(|lyrics| !lacks_romanization(lyrics)))
+            })
+            .await
+            .ok()
+            .flatten();
+            romanized.or(Some((candidate, isrc, lyrics)))
+        }
+        found => found,
+    };
     let Some((candidate, isrc, lyrics)) = found else {
         println!(
             "[latency] lrc.red total={}ms no match",
@@ -1035,6 +1523,11 @@ async fn first_lyrics(client: &reqwest::Client, ranked: Vec<(Candidate, String)>
         started_at.elapsed().as_millis()
     );
     Ok(Some(build_result(candidate, lyrics)))
+}
+
+/// True when some line is Japanese and none has a romanization.
+fn lacks_romanization(lyrics: &Lyrics) -> bool {
+    lyrics.lines.iter().all(|line| line.romanized.is_none()) && lyrics_have_japanese(lyrics)
 }
 
 /// The lyrics of one recording, or `None` when it has no usable file.
@@ -1191,6 +1684,7 @@ async fn sync_lrc_red_words(
 pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> Lookup {
     let started_at = std::time::Instant::now();
     let client = http_client()?;
+    let (title, artist) = (&clean_tag(title), &clean_artist(artist));
     let mut matches = lrc_red_matches(client, title, artist, duration_ms).await?;
     if matches.is_empty()
         && let Some(primary) = primary_artist(artist)
@@ -1246,13 +1740,11 @@ struct LrclibTrack {
 async fn lrclib_search(
     client: &reqwest::Client,
     title: &str,
-    artist: &str,
+    artist: Option<&str>,
 ) -> Result<Vec<LrclibTrack>, String> {
-    let url = request_url(
-        "LRCLIB search",
-        "https://lrclib.net/api/search",
-        &[("track_name", title), ("artist_name", artist)],
-    )?;
+    let mut params = vec![("track_name", title)];
+    params.extend(artist.map(|artist| ("artist_name", artist)));
+    let url = request_url("LRCLIB search", "https://lrclib.net/api/search", &params)?;
     let response = client
         .get(url)
         .send()
@@ -1276,7 +1768,7 @@ fn pick_lrclib_lyrics(
     tracks: Vec<LrclibTrack>,
     title: &str,
     artist: &str,
-    duration_ms: u64,
+    length: Length,
 ) -> Option<(Candidate, Lyrics)> {
     let normalized_artist = normalize(artist);
     let titles = [Some(title.to_string()), base_title(title)]
@@ -1284,7 +1776,7 @@ fn pick_lrclib_lyrics(
         .flatten()
         .map(|title| canonical_title(&title, &normalized_artist))
         .collect::<Vec<_>>();
-    let mut matching = tracks
+    let matching = tracks
         .into_iter()
         .map(|track| {
             let candidate = Candidate {
@@ -1297,39 +1789,171 @@ fn pick_lrclib_lyrics(
         })
         .filter(|(candidate, synced)| {
             synced.as_deref().is_some_and(|lrc| !lrc.trim().is_empty())
-                && duration_difference_ms(candidate.duration, Some(duration_ms))
-                    <= LRCLIB_DURATION_TOLERANCE_MS
+                && length.admits(candidate.duration)
                 && titles.iter().any(|title| {
                     track_title_score(candidate, title, &normalized_artist) == 4
                         && metadata_scores(candidate, title, &normalized_artist).1 > 0
                 })
+                // The length of an edit cannot confirm the song, so its artist must.
+                && (matches!(length, Length::Exactly(_))
+                    || !artist_unverified(candidate, &normalized_artist))
         })
         .collect::<Vec<_>>();
-    matching.sort_by_key(|(candidate, _)| {
-        duration_difference_ms(candidate.duration, Some(duration_ms))
+    let mut matching = matching;
+    drop_ambiguous(
+        &mut matching,
+        |(candidate, _)| candidate,
+        &normalized_artist,
+    );
+    // LRCLIB holds the same recording more than once, some with the lyrics in
+    // romaji or in English. For a song named in Japanese the ones in Japanese
+    // come first: they are the lyrics, and what a romanization is made from.
+    let japanese_song = has_japanese_script(title) || has_japanese_script(artist);
+    let mut parsed = matching
+        .into_iter()
+        .filter_map(|(candidate, synced)| {
+            let lyrics = parse_lrc(&synced?, candidate.duration)?;
+            Some((candidate, lyrics))
+        })
+        .collect::<Vec<_>>();
+    parsed.sort_by_key(|(candidate, lyrics)| {
+        (
+            japanese_song && !lyrics_have_japanese(lyrics),
+            // Some files hold only the first verse; a whole song is better.
+            !covers_song(lyrics, candidate.duration),
+            duration_difference_ms(candidate.duration, Some(length.target_ms())),
+        )
     });
-    matching.into_iter().find_map(|(candidate, synced)| {
-        let lyrics = parse_lrc(&synced?, candidate.duration)?;
-        Some((candidate, lyrics))
+    parsed.into_iter().next()
+}
+
+/// True when the last line starts in the last half of the song, or the song's
+/// length is not known.
+fn covers_song(lyrics: &Lyrics, duration_seconds: Option<f64>) -> bool {
+    let (Some(last), Some(seconds)) = (lyrics.lines.last(), duration_seconds) else {
+        return true;
+    };
+    last.start_ms as f64 * 2.0 >= seconds * 1_000.0
+}
+
+fn is_japanese_char(char: char) -> bool {
+    matches!(char,
+        '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{4E00}'..='\u{9FFF}'
+        | '\u{3400}'..='\u{4DBF}' | '\u{FF66}'..='\u{FF9F}')
+}
+
+fn has_japanese_script(text: &str) -> bool {
+    text.chars().any(is_japanese_char)
+}
+
+fn lyrics_have_japanese(lyrics: &Lyrics) -> bool {
+    lyrics.lines.iter().any(|line| {
+        line.text
+            .segments
+            .iter()
+            .any(|segment| has_japanese_script(&segment.text))
     })
 }
 
-/// The (title, artist) pairs LRCLIB is searched with, in order: as playing,
-/// with the primary artist, without the title's release labels, and both. LRCLIB
-/// files "1% Battery Girl (feat. ChiliChill)" by "Sān-Z & HOYO-MiX" with its
-/// lyrics only as "1% Battery Girl" by "Sān-Z".
-fn lrclib_queries(title: &str, artist: &str) -> Vec<(String, String)> {
-    let primary = primary_artist(artist);
-    let base = base_title(title);
-    let mut queries = vec![(title.to_string(), artist.to_string())];
-    if let Some(primary) = primary {
-        queries.push((title.to_string(), primary.to_string()));
+/// The length a recording must have to be the playing one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Length {
+    /// Within `LRCLIB_DURATION_TOLERANCE_MS` of this.
+    Exactly(u64),
+    /// This long or longer: the playing recording is a shortened edit and the
+    /// one with lyrics is its full version.
+    AtLeast(u64),
+}
+
+impl Length {
+    fn target_ms(self) -> u64 {
+        match self {
+            Length::Exactly(ms) | Length::AtLeast(ms) => ms,
+        }
     }
-    if let Some(base) = &base {
-        queries.push((base.clone(), artist.to_string()));
+
+    fn admits(self, candidate_seconds: Option<f64>) -> bool {
+        match self {
+            Length::Exactly(ms) => {
+                duration_difference_ms(candidate_seconds, Some(ms)) <= LRCLIB_DURATION_TOLERANCE_MS
+            }
+            // Room for the rounding of durations, as for lrc.red's.
+            Length::AtLeast(ms) => candidate_seconds
+                .filter(|seconds| seconds.is_finite())
+                .is_some_and(|seconds| (seconds * 1_000.0) as u64 + 1_000 >= ms),
+        }
     }
-    if let (Some(base), Some(primary)) = (base, primary) {
-        queries.push((base, primary.to_string()));
+}
+
+/// One LRCLIB search and the song its tracks must be to count.
+#[derive(Debug, Clone, PartialEq)]
+struct LrclibQuery {
+    /// The title and artist asked for; without an artist, the title alone.
+    search: (String, Option<String>),
+    /// The title and artist a track must carry.
+    title: String,
+    artist: String,
+    /// The playing recording is a shortened edit, and the track its full version.
+    edit: bool,
+}
+
+/// The searches LRCLIB is asked, in order: as playing, with the primary artist,
+/// without the title's release labels, and both. LRCLIB files "1% Battery Girl
+/// (feat. ChiliChill)" by "Sān-Z & HOYO-MiX" with its lyrics only as "1% Battery
+/// Girl" by "Sān-Z". Then the title and artist a channel put into one title
+/// ("Artist - Song"), and for an artist credited in a script LRCLIB does not
+/// list ("イーグルス" for "Eagles") the title alone. Last, the same for the full
+/// version of an edit ("Song (TV Size)").
+fn lrclib_queries(title: &str, artist: &str) -> Vec<LrclibQuery> {
+    fn searches(title: &str, artist: &str) -> Vec<(String, Option<String>)> {
+        let primary = primary_artist(artist);
+        let base = base_title(title);
+        let mut searches = vec![(title.to_string(), Some(artist.to_string()))];
+        if let Some(primary) = primary {
+            searches.push((title.to_string(), Some(primary.to_string())));
+        }
+        if let Some(base) = &base {
+            searches.push((base.clone(), Some(artist.to_string())));
+        }
+        if let (Some(base), Some(primary)) = (base.clone(), primary) {
+            searches.push((base, Some(primary.to_string())));
+        }
+        if !normalize(artist).is_empty() && has_non_latin_letters(artist) {
+            searches.push((title.to_string(), None));
+            searches.extend(base.map(|base| (base, None)));
+        }
+        searches
+    }
+
+    let mut queries = Vec::new();
+    let mut add = |search: (String, Option<String>), title: &str, artist: &str, edit: bool| {
+        let query = LrclibQuery {
+            search,
+            title: title.to_string(),
+            artist: artist.to_string(),
+            edit,
+        };
+        if !queries.contains(&query) {
+            queries.push(query);
+        }
+    };
+    for search in searches(title, artist) {
+        add(search, title, artist, false);
+    }
+    for (split_title, split_artist) in dash_title_queries(title) {
+        for search in searches(&split_title, &split_artist) {
+            add(search, &split_title, &split_artist, false);
+        }
+    }
+    for half in title_halves(title) {
+        for search in searches(&half, artist) {
+            add(search, &half, artist, false);
+        }
+    }
+    if let Some(full) = strip_edit_marker(title) {
+        for search in searches(&full, artist) {
+            add(search, &full, artist, true);
+        }
     }
     queries
 }
@@ -1346,13 +1970,20 @@ async fn fetch_lrclib(
     let Some(duration_ms) = duration_ms else {
         return Ok(None);
     };
+    let (title, artist) = (clean_tag(title), clean_artist(artist));
     let started_at = std::time::Instant::now();
     let mut failure = None;
-    for (query_title, query_artist) in lrclib_queries(title, artist) {
-        match lrclib_search(client, &query_title, &query_artist).await {
+    for query in lrclib_queries(&title, &artist) {
+        let (search_title, search_artist) = &query.search;
+        match lrclib_search(client, search_title, search_artist.as_deref()).await {
             Ok(tracks) => {
+                let length = if query.edit {
+                    Length::AtLeast(duration_ms)
+                } else {
+                    Length::Exactly(duration_ms)
+                };
                 if let Some((candidate, lyrics)) =
-                    pick_lrclib_lyrics(tracks, title, artist, duration_ms)
+                    pick_lrclib_lyrics(tracks, &query.title, &query.artist, length)
                 {
                     println!(
                         "[latency] lrclib total={}ms track={:?}",
@@ -1362,6 +1993,8 @@ async fn fetch_lrclib(
                     return Ok(Some(build_result(candidate, lyrics)));
                 }
             }
+            // Asking on only makes the limit last: retry the lookup later.
+            Err(error) if error.contains("429") => return Err(error),
             Err(error) => failure = Some(error),
         }
     }
@@ -1479,8 +2112,228 @@ fn strip_lrc_word_stamps(text: &str) -> String {
 }
 
 #[cfg(test)]
+mod live;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tags_are_cleaned_the_way_the_providers_write_them() {
+        // Full-width letters, as a Japanese tag editor types them.
+        assert_eq!(
+            clean_tag("\u{FF2C}\u{FF45}\u{FF4D}\u{FF4F}\u{FF4E}\u{3000}\u{FF01}"),
+            "Lemon !"
+        );
+        // A voiced kana as the plain kana and its combining mark.
+        assert_eq!(clean_tag("ゼ"), "ゼ");
+        assert_eq!(clean_tag("セ\u{3099}"), "ゼ");
+        // YouTube Music's channel for an artist.
+        assert_eq!(clean_artist("Kenshi Yonezu - Topic"), "Kenshi Yonezu");
+        assert_eq!(clean_artist("Topic"), "Topic");
+        assert_eq!(normalize("\u{FF2C}ＥＭＯＮ"), "lemon");
+    }
+
+    #[test]
+    fn a_video_label_is_not_part_of_the_title() {
+        assert_eq!(
+            base_title("Lemon (Official Video)").as_deref(),
+            Some("Lemon")
+        );
+        assert_eq!(base_title("Lemon [Lyric Video]").as_deref(), Some("Lemon"));
+        assert_eq!(
+            base_title("Lemon - Official Audio").as_deref(),
+            Some("Lemon")
+        );
+        assert_eq!(base_title("Video Killed the Radio Star"), None);
+        assert_eq!(base_title("Lemon (Live)"), None);
+    }
+
+    #[test]
+    fn lrclib_lyrics_in_japanese_come_before_romaji_for_a_japanese_song() {
+        let romaji = Some("[00:01.00] Yume nara ba dore hodo yokatta deshou");
+        let japanese = Some("[00:01.00] 夢ならばどれほどよかったでしょう");
+        let tracks = vec![
+            // The romaji is 0.3 s closer in length.
+            lrclib_track("Lemon", "米津玄師", Some(256.0), romaji),
+            lrclib_track("Lemon", "米津玄師", Some(256.3), japanese),
+        ];
+        let (_, lyrics) =
+            pick_lrclib_lyrics(tracks, "Lemon", "米津玄師", Length::Exactly(256_000)).unwrap();
+        assert!(lyrics_have_japanese(&lyrics));
+        // A song named in Latin only keeps the closest in length.
+        let tracks = vec![
+            lrclib_track("Lemon", "Kenshi Yonezu", Some(256.0), romaji),
+            lrclib_track("Lemon", "Kenshi Yonezu", Some(256.3), japanese),
+        ];
+        let (_, lyrics) =
+            pick_lrclib_lyrics(tracks, "Lemon", "Kenshi Yonezu", Length::Exactly(256_000)).unwrap();
+        assert!(!lyrics_have_japanese(&lyrics));
+    }
+
+    #[test]
+    fn japanese_lyrics_without_a_romanization_are_told_from_those_with_one() {
+        let lyrics = parse_lrc("[00:01.00] 夢ならば", Some(5.0)).unwrap();
+        assert!(lacks_romanization(&lyrics));
+        let latin = parse_lrc("[00:01.00] Yume nara ba", Some(5.0)).unwrap();
+        assert!(!lacks_romanization(&latin));
+    }
+
+    fn result_of(title: &str, artist: &str) -> LyricsResult {
+        LyricsResult {
+            track_name: title.to_string(),
+            artist_name: artist.to_string(),
+            album_name: String::new(),
+            duration: None,
+            word_timed: false,
+            lines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lyrics_are_confirmed_only_by_the_playing_title_and_artist() {
+        let confirms =
+            |title: &str, artist: &str, found: LyricsResult| confirms_song(&found, title, artist);
+        assert!(confirms(
+            "Lemon",
+            "Kenshi Yonezu",
+            result_of("Lemon", "Kenshi Yonezu")
+        ));
+        assert!(confirms(
+            "Lemon (TV Size)",
+            "Kenshi Yonezu",
+            result_of("Lemon", "Kenshi Yonezu")
+        ));
+        assert!(confirms(
+            "Lemon",
+            "Kenshi Yonezu & X",
+            result_of("Lemon", "Kenshi Yonezu")
+        ));
+        assert!(confirms(
+            "秦 基博 - ひまわりの約束",
+            "Unknown Channel",
+            result_of("ひまわりの約束", "秦 基博")
+        ));
+        // The same name by an artist whose name cannot be compared.
+        assert!(!confirms(
+            "Lemon",
+            "米津玄師",
+            result_of("Lemon", "Kenshi Yonezu")
+        ));
+        // The artist with a title in another script.
+        assert!(!confirms(
+            "うっせぇわ",
+            "Ado",
+            result_of("BINKUSUNO SAKE", "Ado")
+        ));
+        assert!(!confirms("うっせぇわ", "Ado", result_of("Usseewa", "Ado")));
+    }
+
+    #[test]
+    fn two_unrelated_artists_of_the_katakana_credited_song_make_it_ambiguous() {
+        // "Albachiara" as the Japanese storefront lists it: by "ヴァスコ・ロッシ".
+        let hits = || {
+            vec![
+                (
+                    candidate("Albachiara", "Mauro Martins, Rubinho", 246.0),
+                    "cover",
+                ),
+                (candidate("Albachiara", "Vasco Rossi", 245.0), "original"),
+            ]
+        };
+        assert!(rank_matches(hits(), "Albachiara", "ヴァスコ・ロッシ", Some(245_000)).is_empty());
+        // One artist alone, even in different spellings, is the song.
+        let one = vec![
+            (candidate("Albachiara", "The Vasco Rossi", 245.0), "a"),
+            (candidate("Albachiara", "Vasco Rossi", 244.0), "b"),
+        ];
+        assert_eq!(
+            rank_matches(one, "Albachiara", "ヴァスコ・ロッシ", Some(245_000)).len(),
+            2
+        );
+        // A hit that names the playing artist is never dropped, and comes first.
+        let named = vec![
+            (candidate("Albachiara", "Mauro Martins", 246.0), "cover"),
+            (candidate("Albachiara", "ヴァスコ・ロッシ", 245.0), "named"),
+        ];
+        let ranked = rank_matches(named, "Albachiara", "ヴァスコ・ロッシ", Some(245_000));
+        assert_eq!(ranked[0].1, "named");
+    }
+
+    #[test]
+    fn an_artist_mixing_scripts_is_told_from_one_that_shares_none_of_its_words() {
+        let credit = |artist: &str| candidate("Cry Baby", artist, 240.0);
+        let playing = normalize("Official髭男dism");
+        assert!(artist_conflicts(
+            &credit("Clean Bandit, Anne-Marie, David Guetta"),
+            &playing
+        ));
+        assert!(!artist_conflicts(
+            &credit("Official HIGE DANdism"),
+            &playing
+        ));
+        assert!(!artist_conflicts(&credit("Official胡子男dism"), &playing));
+        assert!(!artist_conflicts(
+            &credit("オフィシャル髭男ディズム"),
+            &playing
+        ));
+    }
+
+    #[test]
+    fn an_edit_is_the_full_version_only_when_its_artist_is_the_playing_one() {
+        // "Lemon (TV Size)" by "米津玄師": the length cannot tell the song from
+        // another "Lemon" that is longer than the edit.
+        let hits = vec![
+            (candidate("Lemon", "N.E.R.D, Rihanna", 220.0), "other"),
+            (candidate("Lemon", "Kenshi Yonezu", 256.0), "song"),
+        ];
+        assert!(rank_edit_matches(hits.clone(), "Lemon", "米津玄師", 102_000).is_empty());
+        let ranked = rank_edit_matches(hits, "Lemon", "Kenshi Yonezu", 102_000);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].1, "song");
+    }
+
+    #[test]
+    fn the_credit_most_hits_agree_on_is_the_katakana_credited_songs_even_misspelled() {
+        // Laura Pausini's "Strani amori" as LRCLIB lists it, once with a typo.
+        let hits = vec![
+            (candidate("Strani amori", "Laura Pausini", 256.0), 1),
+            (candidate("Strani amori", "Laura Pausini", 256.0), 2),
+            (candidate("Strani amori", "Laura Pausino", 255.0), 3),
+            (candidate("Strani amori", "Someone Else", 255.0), 4),
+        ];
+        let ranked = rank_matches(hits, "Strani Amori", "ラウラ・パウジーニ", Some(255_000));
+        assert_eq!(
+            ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>().len(),
+            3
+        );
+        assert!(
+            ranked
+                .iter()
+                .all(|(hit, _)| hit.artist_name.as_deref() != Some("Someone Else"))
+        );
+    }
+
+    #[test]
+    fn a_title_naming_the_song_twice_in_brackets_is_searched_by_each_name() {
+        assert_eq!(title_halves("紅(KURENAI)"), ["紅", "KURENAI"]);
+        assert_eq!(title_halves("Lemon (feat. X)"), Vec::<String>::new());
+        assert_eq!(title_halves("Song (Live)"), Vec::<String>::new());
+        assert_eq!(primary_artist("X JAPAN (X)"), Some("X JAPAN"));
+        assert_eq!(edit_distance("pausini", "pausino"), 1);
+    }
+
+    #[test]
+    fn a_title_in_both_scripts_is_not_the_playing_song_in_another_script() {
+        // Found by the live fuzzer: "Haruka Kanata" matched the same band's
+        // "Winner and Loser / 勝者と敗者" because both run 242s.
+        assert!(!titles_differ_in_script(
+            Some("Winner and Loser / 勝者と敗者"),
+            "Haruka Kanata"
+        ));
+        assert!(titles_differ_in_script(Some("遥か彼方"), "Haruka Kanata"));
+        assert!(titles_differ_in_script(Some("Haruka Kanata"), "遥か彼方"));
+    }
 
     #[test]
     fn the_studio_recording_credited_in_another_script_beats_a_live_one() {
@@ -1746,9 +2599,15 @@ mod tests {
 
     #[test]
     fn lrclib_is_also_asked_for_the_bare_title_by_the_primary_artist() {
-        let pair = |title: &str, artist: &str| (title.to_string(), artist.to_string());
+        let searches = |title: &str, artist: &str| {
+            lrclib_queries(title, artist)
+                .into_iter()
+                .map(|query| query.search)
+                .collect::<Vec<_>>()
+        };
+        let pair = |title: &str, artist: &str| (title.to_string(), Some(artist.to_string()));
         assert_eq!(
-            lrclib_queries("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX"),
+            searches("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX"),
             [
                 pair("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX"),
                 pair("1% Battery Girl (feat. ChiliChill)", "Sān-Z"),
@@ -1756,7 +2615,100 @@ mod tests {
                 pair("1% Battery Girl", "Sān-Z"),
             ]
         );
-        assert_eq!(lrclib_queries("Song", "Artist"), [pair("Song", "Artist")]);
+        assert_eq!(searches("Song", "Artist"), [pair("Song", "Artist")]);
+    }
+
+    #[test]
+    fn lrclib_is_asked_for_the_title_alone_when_the_artist_is_credited_in_katakana() {
+        // A Japanese storefront lists "Hotel California" by "イーグルス"; LRCLIB
+        // files it under "Eagles", so the artist cannot be part of the search.
+        let queries = lrclib_queries("Hotel California", "イーグルス");
+        assert!(
+            queries
+                .iter()
+                .any(|query| query.search == ("Hotel California".to_string(), None))
+        );
+        // A Latin artist is never dropped from the search.
+        assert!(
+            lrclib_queries("Hotel California", "Eagles")
+                .iter()
+                .all(|query| query.search.1.is_some())
+        );
+    }
+
+    #[test]
+    fn lrclib_is_asked_for_the_song_a_channel_put_into_a_title_with_its_artist() {
+        let queries = lrclib_queries("秦 基博 - ひまわりの約束", "Unknown Channel");
+        let asks = |title: &str, artist: &str| {
+            queries.iter().any(|query| {
+                query.search == (title.to_string(), Some(artist.to_string()))
+                    && query.title == title
+                    && query.artist == artist
+                    && !query.edit
+            })
+        };
+        assert!(asks("ひまわりの約束", "秦 基博"));
+    }
+
+    #[test]
+    fn lrclib_is_asked_for_the_full_version_of_an_edit() {
+        let queries = lrclib_queries("Pale Blue (TV Size)", "Kenshi Yonezu");
+        assert!(queries.iter().any(|query| query.edit
+            && query.title == "Pale Blue"
+            && query.search == ("Pale Blue".to_string(), Some("Kenshi Yonezu".to_string()))));
+        // The edit itself is asked for first, in case LRCLIB lists it.
+        assert!(!queries[0].edit);
+    }
+
+    #[test]
+    fn the_full_version_of_an_edit_is_any_exactly_named_track_at_least_as_long() {
+        let synced = Some("[00:01.00] A line");
+        let tracks = || {
+            vec![
+                // Another recording named like it, but shorter than the edit.
+                lrclib_track("Pale Blue", "Kenshi Yonezu", Some(60.0), synced),
+                // A live recording and a cover are other songs.
+                lrclib_track("Pale Blue (Live)", "Kenshi Yonezu", Some(300.0), synced),
+                lrclib_track("Pale Blue", "Someone Else", Some(300.0), synced),
+                lrclib_track("Pale Blue", "Kenshi Yonezu", Some(260.0), synced),
+                lrclib_track("Pale Blue", "Kenshi Yonezu", Some(290.0), synced),
+            ]
+        };
+        let picked = pick_lrclib_lyrics(
+            tracks(),
+            "Pale Blue",
+            "Kenshi Yonezu",
+            Length::AtLeast(118_000),
+        );
+        // The closest to the edit's length that is at least as long.
+        assert_eq!(
+            picked.map(|(candidate, _)| candidate.duration),
+            Some(Some(260.0))
+        );
+    }
+
+    #[test]
+    fn a_track_by_another_artist_in_the_same_script_is_not_the_katakana_credited_song() {
+        // イーグルス could be "Eagles"; "Hotel California" by Gipsy Kings is
+        // as unrelated as any other Latin name, and so is "Eagles of Death Metal"
+        // only because it is a different credit. A katakana credit proves nothing
+        // about a Latin one, so only the length and the exact title decide.
+        let candidate = |artist: &str| Candidate {
+            track_name: Some("Hotel California".to_string()),
+            artist_name: Some(artist.to_string()),
+            album_name: None,
+            duration: Some(391.0),
+        };
+        assert!(!artist_conflicts(&candidate("Eagles"), "イーグルス"));
+        // A different name in the same script is a different artist.
+        assert!(artist_conflicts(&candidate("Gipsy Kings"), "eagles"));
+        assert!(!artist_conflicts(&candidate("Eagles"), "eagles"));
+        assert!(artist_conflicts(&candidate("花僮"), "米津玄師"));
+        // A name that mixes both scripts cannot be told from the playing one.
+        assert!(!artist_conflicts(
+            &candidate("Official胡子男dism"),
+            "official髭男dism"
+        ));
     }
 
     fn on_album(mut hit: Candidate, album: &str) -> Candidate {
@@ -1980,11 +2932,91 @@ mod tests {
 
         // 2 s away: another song of about that length.
         assert!(rank_matches(hits.clone(), "AIZO", "King Gnu", Some(237_761)).is_empty());
-        // Within a second: the same recording under its title in another script.
+        // Half a second away is still a coincidence: the fuzzer found "Hello Song" passing
+        // for 恋 and "Girl A" for ワタリドリ at 0.5-0.7 s. One catalog's copy of a recording
+        // differs from another's by a few milliseconds, not by half a second.
+        assert!(rank_matches(hits.clone(), "AIZO", "King Gnu", Some(239_200)).is_empty());
+        // Within a fraction of that: the same recording under its title in another script.
         assert_eq!(
-            rank_matches(hits, "AIZO", "King Gnu", Some(239_200)).len(),
+            rank_matches(hits, "AIZO", "King Gnu", Some(239_650)).len(),
             1
         );
+    }
+
+    #[test]
+    fn a_title_that_only_contains_the_playing_one_is_not_vouched_for_by_an_artist_in_another_script()
+     {
+        // "Lemon" by 米津玄師 came back as a Chinese song "Lemon·柠檬气息" by 花僮, 1 s longer.
+        let hits = vec![(candidate("Lemon·柠檬气息", "花僮", 257.4), "chinese")];
+        assert!(rank_matches(hits, "Lemon", "米津玄師", Some(256_000)).is_empty());
+
+        // A hit named exactly like the song still is, whatever script its artist is in.
+        let hits = vec![(candidate("Lemon", "Kenshi Yonezu", 255.8), "song")];
+        assert_eq!(
+            rank_matches(hits, "Lemon", "米津玄師", Some(256_000)).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_name_inside_another_name_or_a_track_title_is_not_the_artists_credit() {
+        let spitting = candidate(
+            "Spitting Off the Edge of the World (feat. Perfume Genius)",
+            "Yeah Yeah Yeahs",
+            258.0,
+        );
+        let multiple = candidate("Palloncini", "ATARDE, ゆず", 131.0);
+        let both = candidate("打上花火", "DAOKO×米津玄師", 289.0);
+
+        assert!(!credits_artist(&spitting, "perfume"));
+        assert!(!credits_artist(
+            &candidate("Song", "Perfume Genius", 1.0),
+            "perfume"
+        ));
+        assert!(credits_artist(&multiple, "ゆず"));
+        assert!(credits_artist(&both, "米津玄師"));
+        assert!(credits_artist(
+            &candidate("Song", "Perfume", 1.0),
+            "perfume"
+        ));
+        assert!(!credits_artist(&candidate("Song", "Perfume", 1.0), ""));
+    }
+
+    #[test]
+    fn an_edit_is_not_passed_off_by_a_song_that_only_features_the_artist() {
+        let hits = vec![(
+            candidate(
+                "Spitting Off the Edge of the World (feat. Perfume Genius)",
+                "Yeah Yeah Yeahs",
+                258.0,
+            ),
+            "other",
+        )];
+
+        assert!(rank_edit_matches(hits, "ポリリズム", "Perfume", 100_000).is_empty());
+    }
+
+    #[test]
+    fn accents_and_combining_marks_do_not_change_a_title() {
+        // macOS files spell "ò" as "o" and U+0300, and lrc.red has "Partiro" without one.
+        assert_eq!(
+            normalize("Con te partiro\u{300}"),
+            normalize("Con te partirò")
+        );
+        assert_eq!(normalize("Con te partirò"), normalize("Con Te Partiro"));
+        assert_eq!(normalize("Più Bella Cosa"), normalize("Piu' bella cosa"));
+        assert_eq!(normalize("Felicita\u{300}"), "felicita");
+        // は and a combining U+309A is ぱ, か and U+3099 is が, and カ is ガ likewise.
+        assert_eq!(normalize("は\u{309A}"), "ぱ");
+        assert_eq!(
+            normalize("ドライフラワー"),
+            normalize("ト\u{3099}ライフラワー")
+        );
+        assert_eq!(normalize("ガ"), normalize("カ\u{3099}"));
+        assert_eq!(normalize("う\u{3099}"), "ゔ");
+        // A mark that makes no kana is dropped, as before, and plain kana are kept.
+        assert_eq!(normalize("あ\u{3099}"), "あ");
+        assert_ne!(normalize("かな"), normalize("がな"));
     }
 
     fn lrclib_track(
@@ -2043,7 +3075,7 @@ mod tests {
     #[test]
     fn lrclib_lyrics_are_taken_for_the_same_recording_only() {
         let pick = |tracks: Vec<LrclibTrack>, duration_ms| {
-            pick_lrclib_lyrics(tracks, "AIZO", "King Gnu", duration_ms)
+            pick_lrclib_lyrics(tracks, "AIZO", "King Gnu", Length::Exactly(duration_ms))
                 .map(|(candidate, _)| candidate.duration)
         };
         let synced = Some("[00:01.00] A line");
@@ -2084,7 +3116,7 @@ mod tests {
                 tracks,
                 "Hotel California (2013 Remaster)",
                 "Eagles",
-                391_500
+                Length::Exactly(391_500)
             )
             .is_some()
         );
@@ -2146,7 +3178,7 @@ mod tests {
     }
 
     #[test]
-    fn a_song_credited_to_the_artist_in_another_script_is_ranked_above_its_covers() {
+    fn a_song_credited_to_the_artist_in_another_script_is_kept_and_its_covers_are_not() {
         // What `/search.json?q=IRIS OUT Kenshi Yonezu` lists, with the song first.
         let hits = vec![
             (candidate("IRIS OUT", "米津玄师", 151.573), "official"),
@@ -2163,8 +3195,9 @@ mod tests {
 
         let ranked = rank_matches(hits, "IRIS OUT", "Kenshi Yonezu", Some(153_181));
 
+        // The cover only contains the title and is by another artist, so it is not offered at all.
         let order = ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>();
-        assert_eq!(order, ["official", "cover"]);
+        assert_eq!(order, ["official"]);
     }
 
     #[test]
@@ -2384,9 +3417,11 @@ mod tests {
             Some(236_000),
         );
 
+        // The cover is credited to another artist in the same script, so it is
+        // not offered at all, not even as a second choice.
         assert_eq!(
             ranked.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>(),
-            ["official", "cover"]
+            ["official"]
         );
     }
 
