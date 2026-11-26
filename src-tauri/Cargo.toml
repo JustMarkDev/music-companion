@@ -45,3 +45,7 @@ windows = { version = "0.62", features = [
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSResponder", "NSWindow"] }
 tauri-plugin-liquid-glass = "0.1.6"
+
+[dev-dependencies]
+# The live lyrics fuzzer (`lyrics/live.rs`) runs its lookups on a multi-thread runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

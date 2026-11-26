@@ -64,6 +64,30 @@ cargo audit
 Run `bun run format` and `cargo fmt --manifest-path src-tauri/Cargo.toml` to
 apply formatting locally.
 
+### Lyrics fuzzer
+
+`bun run fuzz:lyrics` looks up several hundred real songs (Japanese, Italian,
+featured artists, several credits) the way the app does, against lrc.red and
+LRCLIB, each under the spellings a player may report: shouted, joined, reversed
+or featured artists, "(TV Size)", "(Official Video)", "Artist - Topic", full-width
+letters, decomposed kana and accents, artist in the title, the title of one
+storefront with the artist of another, and a length off by a second or two. It
+checks that the lyrics belong to the song and measures how many are line-timed,
+word-timed and romanized, then writes `report.md` and `rows.json` to
+`src-tauri/target/lyrics-fuzz`.
+
+It uses the public services and takes a long while, so it is ignored by
+`cargo test`. Narrow it with `LYRICS_FUZZ_FILTER` (part of a title or artist),
+`LYRICS_FUZZ_CATEGORY` or `LYRICS_FUZZ_SAMPLE` (every n-th song), and set
+`LYRICS_FUZZ_MUTANTS`, `LYRICS_FUZZ_CONCURRENCY`, `LYRICS_FUZZ_OUT` or
+`LYRICS_FUZZ_STRICT=1` (fail when the app shows another song's lyrics). Add songs
+to `src-tauri/fixtures/lyrics-corpus.json` with the title and artist spellings
+a storefront lists.
+
+`LYRICS_PROBE='Title|Artist|durationMs' bun run probe:lyrics` looks one song up
+and prints what each provider finds and what the app would show, to find out why
+a song is missed or wrong.
+
 ## Build and release
 
 ```bash
@@ -112,6 +136,8 @@ src/lyrics-loader.ts            Lyrics lookup, word-timing request, and retry bu
 src/styles.css                  Overlay and settings styles
 src-tauri/src/lib.rs            Shared commands, tray, and updater
 src-tauri/src/lyrics.rs         lrc.red lookup, ranking of its matches, and word sync
+src-tauri/src/lyrics/live.rs    Live lyrics fuzzer (ignored test) and its offline checks
+src-tauri/fixtures/lyrics-corpus.json  Real songs and their spellings for the fuzzer
 src-tauri/src/ttml.rs           Lyrics model and the parser for lrc.red's TTML files
 src-tauri/src/media_macos.rs    macOS now-playing reader and transport control
 src-tauri/src/backdrop_macos.rs macOS overlay backdrop
