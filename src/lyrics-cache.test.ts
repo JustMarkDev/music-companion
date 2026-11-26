@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { LyricsCache, MAX_PERSISTED_LYRICS, MemoryLyricsStore } from "./lyrics-cache";
+import {
+  CACHE_APP_VERSION_STORAGE_KEY,
+  clearForNewVersion,
+  LyricsCache,
+  MAX_PERSISTED_LYRICS,
+  MemoryLyricsStore,
+} from "./lyrics-cache";
 import type { LyricsResult, PlaybackVariant } from "./lyrics";
 
 class MemoryStorage {
@@ -330,5 +336,36 @@ describe("LyricsCache", () => {
         expect(storage.getItem(obsoleteKey)).toBeNull();
       }
     });
+  });
+});
+
+describe("clearForNewVersion", () => {
+  it("empties the cache the first time a version runs, and only then", async () => {
+    const storage = new MemoryStorage();
+    const cache = new LyricsCache(new MemoryLyricsStore());
+    await put(cache, variant(180_000), lyrics("Old answer"));
+    await put(cache, song(2), null);
+
+    expect(await clearForNewVersion(cache, "2.6.0", storage)).toBe(true);
+    expect(await cache.get(variant(180_000))).toBeUndefined();
+    expect(await cache.get(song(2))).toBeUndefined();
+    expect(storage.getItem(CACHE_APP_VERSION_STORAGE_KEY)).toBe("2.6.0");
+
+    // The same version keeps what it has cached.
+    await put(cache, variant(180_000), lyrics("New answer"));
+    expect(await clearForNewVersion(cache, "2.6.0", storage)).toBe(false);
+    expect(text(await cache.get(variant(180_000)))).toBe("New answer");
+
+    // The next one starts over.
+    expect(await clearForNewVersion(cache, "2.6.1", storage)).toBe(true);
+    expect(await cache.get(variant(180_000))).toBeUndefined();
+  });
+
+  it("tries again at the next start when the cache could not be emptied", async () => {
+    const storage = new MemoryStorage();
+    const failing = { clear: () => Promise.reject(new Error("store is locked")) };
+
+    await expect(clearForNewVersion(failing, "2.6.0", storage)).rejects.toThrow("locked");
+    expect(storage.getItem(CACHE_APP_VERSION_STORAGE_KEY)).toBeNull();
   });
 });

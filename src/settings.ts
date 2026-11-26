@@ -1,6 +1,8 @@
 export type AccentMode = "dynamic" | "manual";
 export type BackdropMaterial = "mica" | "acrylic";
-export type HotkeyAction = "pinned" | "next" | "previous" | "playPause";
+export type HotkeyAction = "pinned" | "next" | "previous" | "playPause" | "volumeUp" | "volumeDown";
+/** The language of the interface; the lyrics are always in the song's own. */
+export type Language = "en" | "it";
 export type Platform = "windows" | "macos";
 /** Which script the lyrics are written in; "both" puts the romanization under the original. */
 export type LyricsScript = "original" | "romanized" | "both";
@@ -19,6 +21,7 @@ export type SettingsState = {
   startAtLogin: boolean;
   /** Hides the overlay to the tray on launch instead of showing it. */
   startMinimized: boolean;
+  language: Language;
   accentMode: AccentMode;
   accentColor: string;
   backdropMaterial: BackdropMaterial;
@@ -30,15 +33,19 @@ const WINDOWS_HOTKEYS: Record<HotkeyAction, string> = {
   next: "Ctrl+ArrowRight",
   previous: "Ctrl+ArrowLeft",
   playPause: "Ctrl+Shift+Space",
+  volumeUp: "Ctrl+ArrowUp",
+  volumeDown: "Ctrl+ArrowDown",
 };
 
-// macOS reserves Ctrl+Arrow for Mission Control, so the transport shortcuts add
+// macOS reserves Ctrl+Arrow for Mission Control, so the transport and volume shortcuts add
 // Command. Super is the accelerator name the global-shortcut plugin expects.
 const MACOS_HOTKEYS: Record<HotkeyAction, string> = {
   pinned: "Shift+Super+KeyL",
   next: "Ctrl+Super+ArrowRight",
   previous: "Ctrl+Super+ArrowLeft",
   playPause: "Shift+Super+Space",
+  volumeUp: "Ctrl+Super+ArrowUp",
+  volumeDown: "Ctrl+Super+ArrowDown",
 };
 
 export function defaultHotkeysFor(platform: Platform): Record<HotkeyAction, string> {
@@ -70,6 +77,7 @@ export const DEFAULT_SETTINGS: SettingsState = {
   wordSync: false,
   startAtLogin: false,
   startMinimized: false,
+  language: "en",
   accentMode: "dynamic",
   accentColor: "#FF8A65",
   backdropMaterial: "acrylic",
@@ -104,6 +112,7 @@ export function decodeSettings(stored: string | null): SettingsState {
         typeof value.startMinimized === "boolean"
           ? value.startMinimized
           : DEFAULT_SETTINGS.startMinimized,
+      language: value.language === "it" ? "it" : "en",
       accentMode: value.accentMode === "manual" ? "manual" : "dynamic",
       accentColor: isHexColor(value.accentColor)
         ? normalizeHexColor(value.accentColor)
@@ -117,6 +126,8 @@ export function decodeSettings(stored: string | null): SettingsState {
         next: stringOr(hotkeys.next, DEFAULT_HOTKEYS.next),
         previous: stringOr(hotkeys.previous, DEFAULT_HOTKEYS.previous),
         playPause: stringOr(hotkeys.playPause, DEFAULT_HOTKEYS.playPause),
+        volumeUp: stringOr(hotkeys.volumeUp, DEFAULT_HOTKEYS.volumeUp),
+        volumeDown: stringOr(hotkeys.volumeDown, DEFAULT_HOTKEYS.volumeDown),
       },
     };
   } catch {

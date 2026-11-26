@@ -905,11 +905,19 @@
   },
   {
     "category": "jp-feat",
-    "durationMs": 208547,
+    "durationMs": 210000,
     "variants": [
       {
         "title": "1% Low Battery Girl (feat. ChiliChill)",
         "artist": "Sān-Z & HOYO-MiX"
+      },
+      {
+        "title": "1% Battery Girl (feat. ChiliChill)",
+        "artist": "Sān-Z & HOYO-MiX"
+      },
+      {
+        "title": "1% Battery Girl",
+        "artist": "Sān-Z, HOYO-MiX"
       }
     ],
     "expectJapanese": false

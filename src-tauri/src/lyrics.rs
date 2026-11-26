@@ -1,6 +1,8 @@
 //! Lyrics lookup. lrc.red is the main provider: Apple Music lyrics, many with
-//! word timing, a transliteration and a translation, served as TTML. LRCLIB is
-//! asked only when lrc.red has nothing, for line-timed lyrics of the same recording.
+//! word timing, a transliteration and a translation, served as TTML. When lrc.red
+//! has nothing, or lists the song under a credit that does not confirm it, Unison
+//! (the Better Lyrics community's word-timed lyrics) is asked, then LRCLIB, for
+//! the lyrics of the same recording.
 
 use crate::LATEST_LYRICS_REQUEST;
 use crate::ttml::{self, Line, LineText, Lyrics, Segment};
@@ -19,6 +21,8 @@ pub struct LyricsResult {
     duration: Option<u64>,
     /// True when some line times its individual words.
     word_timed: bool,
+    /// The service the lyrics came from, named in a feedback report.
+    source: &'static str,
     lines: Vec<Line>,
 }
 
@@ -41,6 +45,7 @@ static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 /// another, and an error there never reaches LRCLIB, so lrc.red gets more time.
 const LRC_RED_TIMEOUT: Duration = Duration::from_secs(12);
 const LRCLIB_TIMEOUT: Duration = Duration::from_secs(6);
+const UNISON_TIMEOUT: Duration = Duration::from_secs(8);
 
 type Lookup = Result<Option<LyricsResult>, String>;
 
@@ -98,18 +103,37 @@ pub async fn fetch_lyrics(
                 fetch_lrclib(client, title, artist, duration_ms),
             )
         };
+        let unison = || {
+            within_deadline(
+                "Unison",
+                UNISON_TIMEOUT,
+                fetch_unison(client, title, artist, duration_ms),
+            )
+        };
         match found {
             // Only a clean miss moves on: an error is retried against lrc.red.
-            Ok(None) => lrclib().await,
+            Ok(None) => {
+                let (unison, lrclib) = tokio::join!(unison(), lrclib());
+                pick_alternative(unison, lrclib, title, artist)
+            }
             // lrc.red lists the song under an artist that cannot be told from the
             // playing one (another script, another band's cover of a title).
-            // LRCLIB lists artists the way players do, so it is asked too.
+            // Unison and LRCLIB list artists the way players do, so they are asked
+            // too, and theirs are shown when they are other lyrics than lrc.red's.
             Ok(Some(lyrics)) if !confirms_song(&lyrics, title, artist) => {
-                let other = lrclib().await.ok().flatten();
-                Ok(Some(match other {
-                    Some(other) if lrclib_beats(&lyrics, &other, title, artist) => other,
-                    _ => lyrics,
-                }))
+                let (unison, lrclib) = tokio::join!(unison(), lrclib());
+                let (unison, lrclib) = (unison.ok().flatten(), lrclib.ok().flatten());
+                let other =
+                    match better_alternative(unison.as_ref(), lrclib.as_ref(), title, artist) {
+                        Some(Alternative::Unison) => {
+                            unison.filter(|other| unison_beats(&lyrics, other, artist))
+                        }
+                        Some(Alternative::Lrclib) => {
+                            lrclib.filter(|other| lrclib_beats(&lyrics, other, title, artist))
+                        }
+                        None => None,
+                    };
+                Ok(Some(other.unwrap_or(lyrics)))
             }
             found => found,
         }
@@ -194,15 +218,82 @@ fn text_overlap(left: &str, right: &str) -> f64 {
 /// Below this, two lyrics in the same script are not of the same song.
 const SAME_SONG_OVERLAP: f64 = 0.25;
 
+/// The provider whose lyrics are shown when lrc.red has none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Alternative {
+    Unison,
+    Lrclib,
+}
+
+/// Unison's lyrics, which are word-timed, unless LRCLIB's differ from them and
+/// are known to be the playing song's: Unison is fuzzy and crowdsourced, and holds
+/// transliterations and translations next to the lyrics ("Unravel" in Hangul),
+/// where LRCLIB lists exactly the playing title and artist.
+fn better_alternative(
+    unison: Option<&LyricsResult>,
+    lrclib: Option<&LyricsResult>,
+    title: &str,
+    artist: &str,
+) -> Option<Alternative> {
+    match (unison, lrclib) {
+        (Some(unison), Some(lrclib))
+            if confirms_song(lrclib, title, artist) && lyrics_differ(unison, lrclib) =>
+        {
+            Some(Alternative::Lrclib)
+        }
+        (Some(_), _) => Some(Alternative::Unison),
+        (None, Some(_)) => Some(Alternative::Lrclib),
+        (None, None) => None,
+    }
+}
+
+/// What lrc.red's miss comes to when Unison and LRCLIB have been asked. A failure
+/// of one is kept only when the other has nothing, so the lookup is retried later
+/// instead of cached as a miss.
+fn pick_alternative(unison: Lookup, lrclib: Lookup, title: &str, artist: &str) -> Lookup {
+    let (found_unison, found_lrclib) = (
+        unison.as_ref().ok().cloned().flatten(),
+        lrclib.as_ref().ok().cloned().flatten(),
+    );
+    match better_alternative(found_unison.as_ref(), found_lrclib.as_ref(), title, artist) {
+        Some(Alternative::Unison) => Ok(found_unison),
+        Some(Alternative::Lrclib) => Ok(found_lrclib),
+        None => unison.and(lrclib),
+    }
+}
+
+/// True when two providers' lyrics cannot be the same song's: they are written
+/// in different scripts, or share too few of their words. Lyrics in another
+/// script cannot be the same words: a Japanese song is not the "1% Battery
+/// Girl" that is in English.
+fn lyrics_differ(left: &LyricsResult, right: &LyricsResult) -> bool {
+    let (left, right) = (lyrics_text(left), lyrics_text(right));
+    has_non_latin_letters(&left) != has_non_latin_letters(&right)
+        || text_overlap(&left, &right) < SAME_SONG_OVERLAP
+}
+
 /// Whether LRCLIB's lyrics are to be shown where lrc.red's credit does not
-/// confirm the playing song: when LRCLIB has the song under the playing artist
-/// and title with other words, lrc.red's is a song that only shares a name. Lyrics in
-/// different scripts (the Japanese and its romaji) cannot be compared.
+/// confirm the playing song. When LRCLIB has the song under the playing artist
+/// and title, lrc.red's is another song of that length unless its words are the
+/// same.
 fn lrclib_beats(lrc_red: &LyricsResult, lrclib: &LyricsResult, title: &str, artist: &str) -> bool {
-    let (red_text, lib_text) = (lyrics_text(lrc_red), lyrics_text(lrclib));
-    confirms_song(lrclib, title, artist)
-        && has_non_latin_letters(&red_text) == has_non_latin_letters(&lib_text)
-        && text_overlap(&red_text, &lib_text) < SAME_SONG_OVERLAP
+    confirms_song(lrclib, title, artist) && lyrics_differ(lrc_red, lrclib)
+}
+
+/// Whether Unison's lyrics are to be shown where lrc.red's credit does not
+/// confirm the playing song. Unison's hit already matched the title and length;
+/// it must also credit the playing artist (Unison titles singles by their album's
+/// name, so its title may carry a word the playing one lacks) and not be the same
+/// words as lrc.red's.
+fn unison_beats(lrc_red: &LyricsResult, unison: &LyricsResult, artist: &str) -> bool {
+    let candidate = Candidate {
+        track_name: Some(unison.track_name.clone()),
+        artist_name: Some(unison.artist_name.clone()),
+        album_name: Some(unison.album_name.clone()),
+        duration: None,
+    };
+    !artist_unverified(&candidate, &normalize(&clean_artist(artist)))
+        && lyrics_differ(lrc_red, unison)
 }
 
 fn http_client() -> Result<&'static reqwest::Client, String> {
@@ -378,11 +469,26 @@ fn score(value: Option<&str>, expected: &str) -> u8 {
     }
     if value == expected || same_words(&value, expected) {
         4
-    } else if value.contains(expected) || expected.contains(&value) {
+    } else if value.contains(expected)
+        || expected.contains(&value)
+        || has_words_in_order(&value, expected)
+    {
         2
     } else {
         0
     }
+}
+
+/// True when `value` is `expected` with a word or two added in the middle: a
+/// long enough title is not another song for it ("1% Low Battery Girl" is how
+/// lrc.red files "1% Battery Girl").
+fn has_words_in_order(value: &str, expected: &str) -> bool {
+    let wanted = expected.split_whitespace().collect::<Vec<_>>();
+    let mut words = value.split_whitespace();
+    let found = wanted
+        .iter()
+        .all(|wanted| words.by_ref().any(|word| word == *wanted));
+    found && wanted.len() >= 3 && value.split_whitespace().count() <= wanted.len() + 2
 }
 
 fn duration_difference_ms(candidate_seconds: Option<f64>, expected_ms: Option<u64>) -> u64 {
@@ -409,15 +515,35 @@ fn duration_matches(candidate_seconds: Option<f64>, expected_ms: Option<u64>) ->
         || duration_difference_ms(candidate_seconds, expected_ms) <= DURATION_TOLERANCE_MS
 }
 
+/// The title without its trailing "(feat. X)" credit, or `None` when it has none.
+fn without_feature_credit(title: &str) -> Option<String> {
+    strip_trailing_label(title, |label| {
+        matches!(
+            normalize(label).split_whitespace().next(),
+            Some("feat" | "ft" | "featuring")
+        )
+    })
+}
+
 /// How well a candidate's track name alone matches the playing title, 0-4.
 /// Unlike the title score in `metadata_scores`, an album with that name does
-/// not count.
+/// not count. A track that credits a guest ("1% Low Battery Girl (feat.
+/// ChiliChill)") is the song a player names without the credit.
 fn track_title_score(candidate: &Candidate, normalized_title: &str, normalized_artist: &str) -> u8 {
-    let track_title = candidate
+    let score_of = |title: &str| {
+        score(
+            Some(&canonical_title(title, normalized_artist)),
+            normalized_title,
+        )
+    };
+    candidate
         .track_name
         .as_deref()
-        .map(|title| canonical_title(title, normalized_artist));
-    score(track_title.as_deref(), normalized_title)
+        .map(|title| {
+            let credited = without_feature_credit(title).map_or(0, |plain| score_of(&plain));
+            score_of(title).max(credited)
+        })
+        .unwrap_or_default()
 }
 
 /// The name a single is released under: "1% Battery Girl - Single" is the
@@ -1051,7 +1177,7 @@ fn lrc_red_song_url(provider: &str, segments: &[&str]) -> Result<Url, String> {
     Ok(url)
 }
 
-fn build_result(candidate: Candidate, lyrics: Lyrics) -> LyricsResult {
+fn build_result(candidate: Candidate, lyrics: Lyrics, source: &'static str) -> LyricsResult {
     let word_timed = lyrics.is_word_timed();
     LyricsResult {
         track_name: candidate.track_name.unwrap_or_default(),
@@ -1059,6 +1185,7 @@ fn build_result(candidate: Candidate, lyrics: Lyrics) -> LyricsResult {
         album_name: candidate.album_name.unwrap_or_default(),
         duration: candidate.duration.map(|value| value.round() as u64),
         word_timed,
+        source,
         lines: lyrics.lines,
     }
 }
@@ -1522,7 +1649,7 @@ async fn first_lyrics(client: &reqwest::Client, ranked: Vec<(Candidate, String)>
         "[latency] lrc.red total={}ms isrc={isrc}",
         started_at.elapsed().as_millis()
     );
-    Ok(Some(build_result(candidate, lyrics)))
+    Ok(Some(build_result(candidate, lyrics, "lrc.red")))
 }
 
 /// True when some line is Japanese and none has a romanization.
@@ -1717,7 +1844,7 @@ pub async fn sync_words(title: &str, artist: &str, duration_ms: Option<u64>) -> 
         "[latency] lrc.red sync total={}ms isrc={isrc}",
         started_at.elapsed().as_millis()
     );
-    Ok(Some(build_result(candidate, synced)))
+    Ok(Some(build_result(candidate, synced, "lrc.red")))
 }
 
 /// How far an LRCLIB recording may be from the playing length. Line times are
@@ -1990,7 +2117,7 @@ async fn fetch_lrclib(
                         started_at.elapsed().as_millis(),
                         candidate.track_name
                     );
-                    return Ok(Some(build_result(candidate, lyrics)));
+                    return Ok(Some(build_result(candidate, lyrics, "LRCLIB")));
                 }
             }
             // Asking on only makes the limit last: retry the lookup later.
@@ -2000,6 +2127,254 @@ async fn fetch_lrclib(
     }
     println!(
         "[latency] lrclib total={}ms no match",
+        started_at.elapsed().as_millis()
+    );
+    failure.map_or(Ok(None), Err)
+}
+
+/// Unison's lookups: the Better Lyrics community's lyrics, crowdsourced and
+/// word-timed, filed under the YouTube Music video of a recording.
+const UNISON_URL: &str = "https://unison.betterlyrics.org/lyrics";
+
+/// Hits asked of one Unison search.
+const UNISON_RESULTS: &str = "20";
+
+#[derive(Deserialize)]
+struct UnisonReply<T> {
+    data: Option<T>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnisonEntry {
+    id: u64,
+    song: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    /// Seconds.
+    duration: Option<f64>,
+    /// `ttml`, `lrc` or `plain`.
+    format: Option<String>,
+    /// `richsync` (words), `linesync` or `plain`.
+    sync_type: Option<String>,
+    /// Only in the entry itself, not in a search hit.
+    lyrics: Option<String>,
+}
+
+impl UnisonEntry {
+    /// Plain lyrics have no times to show.
+    fn is_timed(&self) -> bool {
+        matches!(self.sync_type.as_deref(), Some("richsync" | "linesync"))
+            && matches!(self.format.as_deref(), Some("ttml" | "lrc"))
+    }
+}
+
+/// One fuzzy search: the entries Unison lists for some words of a title and artist.
+async fn unison_search(client: &reqwest::Client, query: &str) -> Result<Vec<UnisonEntry>, String> {
+    let url = request_url(
+        "Unison search",
+        &format!("{UNISON_URL}/search"),
+        &[("q", query), ("limit", UNISON_RESULTS)],
+    )?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| provider_error("Unison search", error))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    if !response.status().is_success() {
+        return Err(provider_error("Unison search", response.status()));
+    }
+    let reply = response
+        .json::<UnisonReply<Vec<UnisonEntry>>>()
+        .await
+        .map_err(|error| provider_error("Unison search", error))?;
+    Ok(reply.data.unwrap_or_default())
+}
+
+/// The lyrics of one Unison entry, or `None` when it has no usable text.
+async fn unison_lyrics(
+    client: &reqwest::Client,
+    id: u64,
+    duration_seconds: Option<f64>,
+) -> Result<Option<Lyrics>, String> {
+    let url = Url::parse(&format!("{UNISON_URL}/{id}"))
+        .map_err(|error| provider_error("Unison lyrics", error))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| provider_error("Unison lyrics", error))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(provider_error("Unison lyrics", response.status()));
+    }
+    let entry = response
+        .json::<UnisonReply<UnisonEntry>>()
+        .await
+        .map_err(|error| provider_error("Unison lyrics", error))?
+        .data;
+    Ok(entry.and_then(|entry| {
+        let text = entry.lyrics.filter(|text| !text.trim().is_empty())?;
+        match entry.format.as_deref() {
+            Some("ttml") => ttml::parse(&text),
+            Some("lrc") => parse_lrc(&text, duration_seconds),
+            _ => None,
+        }
+    }))
+}
+
+/// Unison gives a recording's length in whole seconds.
+const UNISON_ROUNDING_MS: u64 = 500;
+
+/// The timed Unison entries that are the playing song, best first. As for LRCLIB,
+/// the length must be the playing one's, since the lines are timed against one
+/// recording, and for an edit of a song (a TV size) the full version's.
+///
+/// The title must match: lrc.red's search puts the song first, so a hit whose
+/// title is in another script may be taken for it when its artist and length fit,
+/// but Unison's search is fuzzy and lists any song of the artist.
+fn pick_unison_entries(
+    entries: Vec<UnisonEntry>,
+    title: &str,
+    artist: &str,
+    length: Length,
+) -> Vec<(Candidate, UnisonEntry)> {
+    let normalized_artist = normalize(artist);
+    let hits = entries
+        .into_iter()
+        .filter(UnisonEntry::is_timed)
+        .map(|entry| {
+            let candidate = Candidate {
+                track_name: entry.song.clone(),
+                artist_name: entry.artist.clone(),
+                album_name: entry.album.clone(),
+                duration: entry.duration,
+            };
+            (candidate, entry)
+        })
+        .filter(|(candidate, _)| match length {
+            Length::Exactly(ms) => {
+                duration_difference_ms(candidate.duration, Some(ms))
+                    <= LRCLIB_DURATION_TOLERANCE_MS + UNISON_ROUNDING_MS
+            }
+            Length::AtLeast(_) => length.admits(candidate.duration),
+        })
+        .collect::<Vec<_>>();
+    let mut ranked = match length {
+        Length::Exactly(ms) => rank_matches(hits, title, artist, Some(ms)),
+        Length::AtLeast(ms) => rank_edit_matches(hits, title, artist, ms),
+    };
+    let wanted = [Some(title.to_string()), without_feature_credit(title)]
+        .into_iter()
+        .flatten()
+        .map(|title| canonical_title(&title, &normalized_artist))
+        .collect::<Vec<_>>();
+    ranked.retain(|(candidate, _)| unison_title_matches(candidate, &wanted, &normalized_artist));
+    ranked
+}
+
+/// True when a Unison hit is named like the playing song, or like it with a word
+/// or two added ("1% Low Battery Girl" for "1% Battery Girl"), with or without a
+/// guest credit. A title that only contains the playing one ("Despacito 緩緩
+/// (Mandarin Version)") is another recording, and Unison lists those among the
+/// hits of its fuzzy search.
+fn unison_title_matches(candidate: &Candidate, wanted: &[String], normalized_artist: &str) -> bool {
+    // A hit without a track name is known by its album, as in `metadata_scores`.
+    let Some(name) = candidate
+        .track_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .or(candidate.album_name.as_deref())
+    else {
+        return false;
+    };
+    [Some(name.to_string()), without_feature_credit(name)]
+        .into_iter()
+        .flatten()
+        .map(|name| canonical_title(&name, normalized_artist))
+        .any(|name| {
+            wanted.iter().any(|wanted| {
+                !name.is_empty()
+                    && !wanted.is_empty()
+                    && (name == *wanted
+                        || same_words(&name, wanted)
+                        || has_words_in_order(&name, wanted))
+            })
+        })
+}
+
+/// Word-timed lyrics from Unison, for a song lrc.red does not have. Asked with the
+/// same searches as LRCLIB; a hit must match the playing title, artist and length.
+async fn fetch_unison(
+    client: &reqwest::Client,
+    title: &str,
+    artist: &str,
+    duration_ms: Option<u64>,
+) -> Lookup {
+    let Some(duration_ms) = duration_ms else {
+        return Ok(None);
+    };
+    /// Entries tried for one search, best first.
+    const ENTRIES_PER_SEARCH: usize = 3;
+    let (title, artist) = (clean_tag(title), clean_artist(artist));
+    let started_at = std::time::Instant::now();
+    let mut asked = HashSet::new();
+    let mut tried = HashSet::new();
+    let mut failure = None;
+    for query in lrclib_queries(&title, &artist) {
+        let (search_title, search_artist) = &query.search;
+        let words = match search_artist {
+            Some(artist) => format!("{search_title} {artist}"),
+            None => search_title.clone(),
+        };
+        if !asked.insert(words.clone()) {
+            continue;
+        }
+        let entries = match unison_search(client, &words).await {
+            Ok(entries) => entries,
+            Err(error) if error.contains("429") => return Err(error),
+            Err(error) => {
+                failure = Some(error);
+                continue;
+            }
+        };
+        let length = if query.edit {
+            Length::AtLeast(duration_ms)
+        } else {
+            Length::Exactly(duration_ms)
+        };
+        let ranked = pick_unison_entries(entries, &query.title, &query.artist, length)
+            .into_iter()
+            .filter(|(_, entry)| tried.insert(entry.id))
+            .take(ENTRIES_PER_SEARCH)
+            .map(|(candidate, entry)| (candidate, entry.id))
+            .collect::<Vec<_>>();
+        match first_found(ranked, |id| async move {
+            let duration = None;
+            unison_lyrics(client, id, duration).await
+        })
+        .await
+        {
+            Ok(Some((candidate, _, lyrics))) => {
+                println!(
+                    "[latency] unison total={}ms track={:?}",
+                    started_at.elapsed().as_millis(),
+                    candidate.track_name
+                );
+                return Ok(Some(build_result(candidate, lyrics, "Unison")));
+            }
+            Ok(None) => {}
+            Err(error) if error.contains("429") => return Err(error),
+            Err(error) => failure = Some(error),
+        }
+    }
+    println!(
+        "[latency] unison total={}ms no match",
         started_at.elapsed().as_millis()
     );
     failure.map_or(Ok(None), Err)
@@ -2186,6 +2561,7 @@ mod tests {
             album_name: String::new(),
             duration: None,
             word_timed: false,
+            source: "lrc.red",
             lines: Vec::new(),
         }
     }
@@ -2321,6 +2697,87 @@ mod tests {
         assert_eq!(title_halves("Song (Live)"), Vec::<String>::new());
         assert_eq!(primary_artist("X JAPAN (X)"), Some("X JAPAN"));
         assert_eq!(edit_distance("pausini", "pausino"), 1);
+    }
+
+    #[test]
+    fn a_word_added_to_a_long_title_is_still_the_song() {
+        assert_eq!(
+            score(
+                Some("1% Low Battery Girl (feat. ChiliChill)"),
+                "1 battery girl feat chilichill"
+            ),
+            2
+        );
+        // A short title is not stretched, and unrelated words are not in order.
+        assert_eq!(score(Some("Love Story Of Mine"), "love story"), 2);
+        assert_eq!(score(Some("My Big Love"), "my love"), 0);
+        assert_eq!(
+            score(
+                Some("The Great Big Battery Of Girls Today"),
+                "the battery girl"
+            ),
+            0
+        );
+    }
+
+    fn lyrics_of(title: &str, artist: &str, text: &str) -> LyricsResult {
+        let mut found = result_of(title, artist);
+        found.lines = parse_lrc(&format!("[00:01.00] {text}"), Some(10.0))
+            .map(|lyrics| lyrics.lines)
+            .unwrap_or_default();
+        found
+    }
+
+    #[test]
+    fn lrclib_replaces_a_hit_that_only_shares_the_artist_and_the_length() {
+        // The player says "1% Battery Girl" (210.4 s); lrc.red's song of that length
+        // by the artist is the Japanese "暁の空に、輝ける誓い".
+        let japanese = lyrics_of(
+            "『暁の空に、輝ける誓い』",
+            "Sān-Z, HOYO-MiX",
+            "空の果て 燃える星よ",
+        );
+        let english = lyrics_of("1% Battery Girl", "Sān-Z", "Three, two, one, wake up");
+        let (title, artist) = ("1% Battery Girl (feat. ChiliChill)", "Sān-Z & HOYO-MiX");
+        assert!(!confirms_song(&japanese, title, artist));
+        assert!(confirms_song(&english, title, artist));
+        assert!(lrclib_beats(&japanese, &english, title, artist));
+        // The same words in both are the song, whoever lists it.
+        let same = lyrics_of("1% Battery Girl", "Sān-Z", "Three, two, one, wake up");
+        let red = lyrics_of(
+            "1% Low Battery Girl (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            "Three, two, one, wake up",
+        );
+        assert!(!lrclib_beats(&red, &same, title, artist));
+    }
+
+    #[test]
+    fn a_song_with_a_word_added_beats_another_song_of_the_artist_in_japanese() {
+        // The player says "1% Battery Girl" at 210.4 s. lrc.red files it as
+        // "1% Low Battery Girl" (208.5 s) and has the artist's Japanese song of
+        // 210.6 s, which is not it.
+        let hits = vec![
+            (
+                candidate("『暁の空に、輝ける誓い』", "Sān-Z, HOYO-MiX", 210.596),
+                "japanese",
+            ),
+            (
+                candidate(
+                    "1% Low Battery Girl (feat. ChiliChill)",
+                    "Sān-Z & HOYO-MiX",
+                    208.547,
+                ),
+                "english",
+            ),
+        ];
+        let ranked = rank_matches(
+            hits,
+            "1% Battery Girl (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            Some(210_400),
+        );
+        assert_eq!(ranked.first().map(|(_, id)| *id), Some("english"));
     }
 
     #[test]
@@ -3607,9 +4064,11 @@ mod tests {
         let result = build_result(
             candidate("Song", "Artist", 200.4),
             ttml::parse(ttml).unwrap(),
+            "lrc.red",
         );
 
         assert!(!result.word_timed);
+        assert_eq!(result.source, "lrc.red");
         assert_eq!(result.duration, Some(200));
         assert_eq!(result.track_name, "Song");
     }
@@ -3645,5 +4104,287 @@ mod tests {
     fn a_huge_lrc_minute_value_saturates_instead_of_overflowing() {
         assert_eq!(parse_lrc_stamp("99999999999999999:00"), Some(u64::MAX));
         assert_eq!(parse_lrc_stamp("01:23.45"), Some(83_450));
+    }
+
+    fn unison_entry(
+        id: u64,
+        song: &str,
+        artist: &str,
+        album: &str,
+        duration: f64,
+        sync_type: &str,
+    ) -> UnisonEntry {
+        UnisonEntry {
+            id,
+            song: Some(song.to_string()),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            duration: Some(duration),
+            format: Some(
+                if sync_type == "plain" {
+                    "plain"
+                } else {
+                    "ttml"
+                }
+                .to_string(),
+            ),
+            sync_type: Some(sync_type.to_string()),
+            lyrics: None,
+        }
+    }
+
+    #[test]
+    fn unison_lists_the_song_under_its_recordings_title_and_the_albums() {
+        // What Unison answers for "1% Battery Girl Sān-Z": the recording the player
+        // plays (209 s, "Low" in its title), another recording of 199 s, a song
+        // that merely sounds alike and a text without times.
+        let entries = vec![
+            unison_entry(
+                15592,
+                "1% Low Battery Girl",
+                "Sān-Z",
+                "1% Low Battery Girl",
+                199.0,
+                "richsync",
+            ),
+            unison_entry(
+                14117,
+                "1% Low Battery Girl (feat. ChiliChill)",
+                "Sān-Z, HOYO-MiX",
+                "1% Battery Girl",
+                209.0,
+                "richsync",
+            ),
+            unison_entry(1, "LEMONADE", "aespa", "LEMONADE", 209.0, "richsync"),
+            unison_entry(
+                2,
+                "1% Battery Girl",
+                "Sān-Z, HOYO-MiX",
+                "1% Battery Girl",
+                209.0,
+                "plain",
+            ),
+        ];
+        let picked = pick_unison_entries(
+            entries,
+            "1% Battery Girl (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            Length::Exactly(210_400),
+        );
+        assert_eq!(
+            picked.iter().map(|(_, entry)| entry.id).collect::<Vec<_>>(),
+            [14117]
+        );
+    }
+
+    #[test]
+    fn unison_hits_of_another_artist_or_length_are_not_the_song() {
+        let song = |id, artist: &str, duration| {
+            unison_entry(id, "Albachiara", artist, "Albachiara", duration, "richsync")
+        };
+        let picked = pick_unison_entries(
+            vec![
+                song(1, "Vasco Rossi", 210.0),
+                song(2, "Mauro Martins", 210.0),
+                song(3, "Vasco Rossi", 240.0),
+            ],
+            "Albachiara",
+            "Vasco Rossi",
+            Length::Exactly(210_300),
+        );
+        assert_eq!(
+            picked.iter().map(|(_, entry)| entry.id).collect::<Vec<_>>(),
+            [1]
+        );
+        // The length is the recording's: a second off is as good as the player's.
+        assert!(
+            pick_unison_entries(
+                vec![song(1, "Vasco Rossi", 213.0)],
+                "Albachiara",
+                "Vasco Rossi",
+                Length::Exactly(210_300),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_unison_full_version_stands_in_for_a_tv_size() {
+        let entries = vec![unison_entry(
+            7, "Gurenge", "LiSA", "Gurenge", 239.0, "linesync",
+        )];
+        let picked = pick_unison_entries(entries, "Gurenge", "LiSA", Length::AtLeast(90_000));
+        assert_eq!(picked.len(), 1);
+    }
+
+    #[test]
+    fn unison_lyrics_in_other_words_replace_a_hit_that_only_shares_the_length() {
+        let japanese = lyrics_of(
+            "『暁の空に、輝ける誓い』",
+            "Sān-Z, HOYO-MiX",
+            "空の果て 燃える星よ",
+        );
+        let english = lyrics_of(
+            "1% Low Battery Girl (feat. ChiliChill)",
+            "Sān-Z, HOYO-MiX",
+            "Three, two, one, wake up",
+        );
+        assert!(unison_beats(&japanese, &english, "Sān-Z & HOYO-MiX"));
+        // The same words are the same song, and lrc.red's stays.
+        let red = lyrics_of(
+            "1% Low Battery Girl (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            "Three, two, one, wake up",
+        );
+        assert!(!unison_beats(&red, &english, "Sān-Z & HOYO-MiX"));
+        // A credit that shares no name with the playing artist does not vouch.
+        let stranger = lyrics_of("1% Battery Girl", "Mauro Martins", "Another song");
+        assert!(!unison_beats(&japanese, &stranger, "Sān-Z & HOYO-MiX"));
+    }
+
+    #[test]
+    fn unison_words_are_shown_unless_lrclib_has_other_lyrics_of_the_song() {
+        let (title, artist) = ("Unravel", "TK from Ling tosite sigure");
+        let japanese = lyrics_of("Unravel", artist, "教えて 教えてよ その仕組みを");
+        let hangul = lyrics_of("Unravel", artist, "오시에테 오시에테요 소노 시쿠미오");
+        let same = lyrics_of("Unravel", artist, "教えて 教えてよ その仕組みを");
+        // Unison holds a transliteration in Hangul; LRCLIB has the song itself.
+        assert_eq!(
+            better_alternative(Some(&hangul), Some(&japanese), title, artist),
+            Some(Alternative::Lrclib)
+        );
+        // The same words, whoever has them: Unison's are timed by word.
+        assert_eq!(
+            better_alternative(Some(&same), Some(&japanese), title, artist),
+            Some(Alternative::Unison)
+        );
+        // LRCLIB's lyrics must be known to be the song's to outweigh Unison's.
+        let stranger = lyrics_of("Other", "Someone", "Another song entirely");
+        assert_eq!(
+            better_alternative(Some(&hangul), Some(&stranger), title, artist),
+            Some(Alternative::Unison)
+        );
+        assert_eq!(
+            better_alternative(None, Some(&japanese), title, artist),
+            Some(Alternative::Lrclib)
+        );
+        assert_eq!(better_alternative(None, None, title, artist), None);
+    }
+
+    #[test]
+    fn a_failed_provider_is_retried_unless_the_other_found_the_song() {
+        let song = || Ok(Some(result_of("Song", "Artist")));
+        let down = || Err("Unison: down".to_string());
+        assert!(matches!(
+            pick_alternative(down(), song(), "Song", "Artist"),
+            Ok(Some(_))
+        ));
+        assert!(matches!(
+            pick_alternative(song(), down(), "Song", "Artist"),
+            Ok(Some(_))
+        ));
+        assert!(pick_alternative(down(), Ok(None), "Song", "Artist").is_err());
+        assert!(pick_alternative(Ok(None), down(), "Song", "Artist").is_err());
+        assert!(matches!(
+            pick_alternative(Ok(None), Ok(None), "Song", "Artist"),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn unison_word_timed_ttml_parses_with_minute_stamps() {
+        let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><head/><body dur="3:28.547"><div>
+          <p begin="0:10.568" end="0:17.305" itunes:key="L1"><span begin="0:10.568" end="0:12.692">(Oh-oh,</span> <span begin="0:13.201" end="0:15.428">oh-oh,</span> <span begin="0:15.821" end="0:17.305">oh-oh)</span></p>
+          <p begin="1:18.316" end="1:20.733" itunes:key="L2"><span begin="1:18.316" end="1:19.253">Three,</span> <span begin="1:19.584" end="1:20.733">two</span></p>
+        </div></body></tt>"#;
+        let lyrics = ttml::parse(ttml).expect("lyrics");
+        assert_eq!(lyrics.lines.len(), 2);
+        assert!(lyrics.is_word_timed());
+        assert_eq!(lyrics.lines[0].start_ms, 10_568);
+        assert_eq!(lyrics.lines[1].start_ms, 78_316);
+    }
+
+    #[test]
+    fn a_unison_reply_is_read_with_or_without_lyrics() {
+        let hit = r#"{"success":true,"data":[{"id":14117,"videoId":"x","song":"S","artist":"A","album":null,"duration":209,"format":"ttml","language":"en","syncType":"richsync","score":6}]}"#;
+        let reply = serde_json::from_str::<UnisonReply<Vec<UnisonEntry>>>(hit).unwrap();
+        let entries = reply.data.unwrap();
+        assert!(entries[0].is_timed() && entries[0].lyrics.is_none());
+        let plain = r#"{"success":true,"data":{"id":1,"format":"plain","syncType":"plain","lyrics":"words"}}"#;
+        let entry = serde_json::from_str::<UnisonReply<UnisonEntry>>(plain)
+            .unwrap()
+            .data
+            .unwrap();
+        assert!(!entry.is_timed());
+    }
+
+    #[test]
+    fn a_track_that_credits_a_guest_is_the_song_a_player_names_without_the_credit() {
+        let entry = unison_entry(
+            14117,
+            "1% Low Battery Girl (feat. ChiliChill)",
+            "Sān-Z, HOYO-MiX",
+            "1% Battery Girl",
+            209.0,
+            "richsync",
+        );
+        let picked = pick_unison_entries(
+            vec![entry],
+            "1% Battery Girl",
+            "Sān-Z, HOYO-MiX",
+            Length::Exactly(209_000),
+        );
+        assert_eq!(picked.len(), 1);
+        // Another song with that credit is still another song.
+        let other = Candidate {
+            track_name: Some("Moonlight (feat. Someone)".to_string()),
+            artist_name: Some("Sān-Z".to_string()),
+            album_name: None,
+            duration: Some(209.0),
+        };
+        assert_eq!(track_title_score(&other, "1 battery girl", "san z"), 0);
+        assert_eq!(track_title_score(&other, "moonlight", "san z"), 4);
+    }
+
+    #[test]
+    fn unison_takes_no_other_song_of_the_artist_for_a_title_in_another_script() {
+        // Fuzzy search lists the artist's songs; one of the same length is not the
+        // song the player names in katakana.
+        let entries = || {
+            vec![unison_entry(
+                9,
+                "Las de la Intuición",
+                "Shakira",
+                "Las de la Intuición",
+                220.0,
+                "richsync",
+            )]
+        };
+        let (title, artist) = ("ヒップス・ドント・ライ", "Shakira");
+        assert!(pick_unison_entries(entries(), title, artist, Length::Exactly(220_000)).is_empty());
+        assert!(pick_unison_entries(entries(), title, artist, Length::AtLeast(100_000)).is_empty());
+    }
+
+    #[test]
+    fn unison_takes_no_other_recording_whose_title_only_contains_the_songs() {
+        let entries = || {
+            vec![unison_entry(
+                5,
+                "Despacito 緩緩 (Mandarin Version) (feat. JJ Lin)",
+                "Luis Fonsi",
+                "Despacito",
+                229.0,
+                "richsync",
+            )]
+        };
+        assert!(
+            pick_unison_entries(
+                entries(),
+                "Despacito",
+                "Luis Fonsi & Daddy Yankee",
+                Length::Exactly(229_387),
+            )
+            .is_empty()
+        );
     }
 }

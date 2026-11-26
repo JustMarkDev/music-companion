@@ -411,6 +411,36 @@ fn release_hotkeys_and_exit(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Where a feedback report may be sent: the new-issue page of this project's repository.
+const FEEDBACK_ISSUES_URL: &str = "https://github.com/JustMarkDev/music-companion/issues/new?";
+
+fn is_feedback_address(url: &str) -> bool {
+    url.starts_with(FEEDBACK_ISSUES_URL)
+        && !url.chars().any(|char| char.is_control() || char == ' ')
+}
+
+/// Opens a new GitHub issue, already filled in by the app, in the default browser.
+/// Only this repository's new-issue page is opened, whatever the page asks for.
+#[tauri::command]
+fn open_feedback_issue(url: String) -> Result<(), String> {
+    if !is_feedback_address(&url) {
+        return Err("not a feedback address".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    };
+    command
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("unable to open the browser: {error}"))
+}
+
 #[tauri::command]
 fn retry_failed_hotkeys(app: tauri::AppHandle) {
     hotkeys::retry_failed(app);
@@ -429,6 +459,19 @@ pub fn run() {
             if action.as_deref() == Some("pinned") {
                 println!("[hotkey] pinned-mode hotkey used");
                 let _ = app.emit("toggle-overlay-lock", ());
+                return;
+            }
+            if let Some(up) = match action.as_deref() {
+                Some("volumeUp") => Some(true),
+                Some("volumeDown") => Some(false),
+                _ => None,
+            } {
+                // Off the shortcut handler, which must not wait on a script or a key press.
+                std::thread::spawn(move || {
+                    if let Err(error) = media::change_volume(up) {
+                        eprintln!("[volume] unable to change the volume: {error}");
+                    }
+                });
                 return;
             }
             let control = match action.as_deref() {
@@ -487,6 +530,7 @@ pub fn run() {
             get_hotkey_statuses,
             set_hotkey_recording,
             register_hotkey,
+            open_feedback_issue,
             retry_failed_hotkeys,
             log_sync_diagnostic,
             fetch_lyrics,
@@ -685,4 +729,25 @@ fn unlock_overlay(window: &WebviewWindow) {
     let _ = window.show();
     let _ = focus_without_cursor_warp(window);
     let _ = window.emit("overlay-unlocked", ());
+}
+
+#[cfg(test)]
+mod feedback_address_tests {
+    use super::is_feedback_address;
+
+    #[test]
+    fn only_this_projects_new_issue_page_is_opened() {
+        let issue = "https://github.com/JustMarkDev/music-companion/issues/new?title=Lyrics";
+        assert!(is_feedback_address(issue));
+        for other in [
+            "https://github.com/JustMarkDev/music-companion/issues/new",
+            "https://github.com/JustMarkDev/other/issues/new?title=x",
+            "https://github.com.evil.example/JustMarkDev/music-companion/issues/new?",
+            "file:///etc/passwd",
+            "https://github.com/JustMarkDev/music-companion/issues/new?title=a b",
+            "https://github.com/JustMarkDev/music-companion/issues/new?title=a\nb",
+        ] {
+            assert!(!is_feedback_address(other), "{other}");
+        }
+    }
 }

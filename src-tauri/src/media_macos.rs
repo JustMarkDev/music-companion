@@ -528,6 +528,29 @@ pub fn send_transport_control(
     }
 }
 
+/// How far one press of a volume shortcut moves the system volume, out of 100.
+const VOLUME_STEP: i32 = 6;
+
+/// The AppleScript that moves the system output volume `step` points, kept
+/// between 0 and 100. A device without a software volume reports none, and the
+/// script then fails.
+fn volume_script(step: i32) -> String {
+    format!(
+        "set level to (output volume of (get volume settings)) + ({step})\n\
+         if level > 100 then set level to 100\n\
+         if level < 0 then set level to 0\n\
+         set volume output volume level"
+    )
+}
+
+/// Raises (`up`) or lowers the system volume by one step.
+pub fn change_volume(up: bool) -> Result<(), String> {
+    let step = if up { VOLUME_STEP } else { -VOLUME_STEP };
+    run_applescript(&volume_script(step))
+        .map(|_| ())
+        .ok_or_else(|| "unable to change the system volume".to_string())
+}
+
 fn adapter_transport_command(action: &str) -> Option<&'static str> {
     match action {
         "next" => Some(COMMAND_NEXT_TRACK),
@@ -709,13 +732,29 @@ fn run_applescript(script: &str) -> Option<String> {
 mod tests {
     use super::{
         UNIT_SEPARATOR, current_timeline_position, is_browser, media_state_from_adapter,
-        now_playing_script,
+        now_playing_script, volume_script,
     };
     use std::{
         process::Command,
         thread,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn the_volume_script_steps_the_output_volume_within_0_to_100() {
+        let up = volume_script(6);
+        assert!(up.contains("+ (6)"), "{up}");
+        assert!(up.contains("if level > 100 then set level to 100"));
+        assert!(up.contains("if level < 0 then set level to 0"));
+        assert!(volume_script(-6).contains("+ (-6)"));
+        // The script must compile; it is only compiled here, never run.
+        let compiled = Command::new("/usr/bin/osacompile")
+            .args(["-e", &up, "-o", "/dev/null"])
+            .output();
+        if let Ok(output) = compiled {
+            assert!(output.status.success() || cfg!(not(target_os = "macos")));
+        }
+    }
 
     #[test]
     fn tells_browsers_from_music_players() {

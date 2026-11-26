@@ -1,5 +1,5 @@
 //! A live fuzzer for the lyrics lookup. It sends real songs, as a player would
-//! name them and as it would mangle them, through the same lrc.red and LRCLIB
+//! name them and as it would mangle them, through the same lrc.red, Unison and LRCLIB
 //! code the app runs, and reports every answer that is wrong, missing, not
 //! synced or not romanized.
 //!
@@ -767,10 +767,12 @@ fn agreement(left: &str, right: &str) -> f64 {
 struct Row {
     query: Query,
     lrc_red: Outcome,
+    unison: Outcome,
     lrclib: Outcome,
-    /// What the app shows, chosen between the two as `fetch_lyrics` does.
+    /// What the app shows, chosen between the providers as `fetch_lyrics` does.
     app: Outcome,
-    /// How much the two providers' lyrics overlap, when both answered.
+    /// How much the providers' lyrics overlap, the least of any two that answered
+    /// in the same script.
     agreement: Option<f64>,
 }
 
@@ -779,18 +781,46 @@ impl Row {
         &self.app
     }
 
-    /// lrc.red, or LRCLIB when lrc.red has nothing, or when its artist credit does
-    /// not name the playing one and LRCLIB's lyrics for the song are others.
-    fn choose(query: &Query, lrc_red: &Outcome, lrclib: &Outcome) -> Outcome {
-        match (lrc_red, lrclib) {
-            (Outcome::Miss, lrclib) => lrclib.clone(),
-            (Outcome::Found(red), Outcome::Found(lib))
-                if !confirms_song(&red.raw, &query.title, &query.artist)
-                    && lrclib_beats(&red.raw, &lib.raw, &query.title, &query.artist) =>
-            {
-                lrclib.clone()
+    /// lrc.red; or, when lrc.red has nothing or its artist credit does not name the
+    /// playing one, Unison's or LRCLIB's lyrics, chosen as `fetch_lyrics` does.
+    fn choose(query: &Query, lrc_red: &Outcome, unison: &Outcome, lrclib: &Outcome) -> Outcome {
+        let raw = |outcome: &Outcome| match outcome {
+            Outcome::Found(found) => Some((*found.raw).clone()),
+            _ => None,
+        };
+        let (title, artist) = (&query.title, &query.artist);
+        let (unison_raw, lrclib_raw) = (raw(unison), raw(lrclib));
+        let alternative =
+            better_alternative(unison_raw.as_ref(), lrclib_raw.as_ref(), title, artist);
+        let chosen = match alternative {
+            Some(Alternative::Unison) => unison,
+            Some(Alternative::Lrclib) => lrclib,
+            None => &Outcome::Miss,
+        };
+        match lrc_red {
+            Outcome::Miss => match (chosen, unison, lrclib) {
+                (Outcome::Found(_), ..) => chosen.clone(),
+                // A failure of one is shown when the other has nothing.
+                (_, Outcome::Error(_), _) => unison.clone(),
+                _ => lrclib.clone(),
+            },
+            Outcome::Found(red) if !confirms_song(&red.raw, title, artist) => {
+                let beats = match (alternative, &unison_raw, &lrclib_raw) {
+                    (Some(Alternative::Unison), Some(other), _) => {
+                        unison_beats(&red.raw, other, artist)
+                    }
+                    (Some(Alternative::Lrclib), _, Some(other)) => {
+                        lrclib_beats(&red.raw, other, title, artist)
+                    }
+                    _ => false,
+                };
+                if beats {
+                    chosen.clone()
+                } else {
+                    lrc_red.clone()
+                }
             }
-            (found, _) => found.clone(),
+            found => found.clone(),
         }
     }
 }
@@ -821,6 +851,8 @@ async fn lookup(
 
 /// LRCLIB limits how fast it is asked, and a lookup there makes several requests.
 static LRCLIB_SLOTS: Semaphore = Semaphore::const_new(3);
+/// Unison is a small community service, so it is asked gently too.
+static UNISON_SLOTS: Semaphore = Semaphore::const_new(4);
 
 async fn run_query(client: &'static reqwest::Client, mut song: Song, query: Query) -> Row {
     let (title, artist, duration_ms) =
@@ -834,7 +866,7 @@ async fn run_query(client: &'static reqwest::Client, mut song: Song, query: Quer
         | Mutation::ShorterBy2s => song.duration_ms = duration_ms,
         _ => {}
     }
-    let (lrc_red, lrclib) = tokio::join!(
+    let (lrc_red, unison, lrclib) = tokio::join!(
         lookup(&song, "lrc.red", || {
             let (title, artist) = (title.clone(), artist.clone());
             Box::pin(async move {
@@ -842,6 +874,18 @@ async fn run_query(client: &'static reqwest::Client, mut song: Song, query: Quer
                     "lrc.red",
                     LRC_RED_TIMEOUT,
                     fetch_lrc_red(client, &title, &artist, Some(duration_ms)),
+                )
+                .await
+            })
+        }),
+        lookup(&song, "Unison", || {
+            let (title, artist) = (title.clone(), artist.clone());
+            Box::pin(async move {
+                let _slot = UNISON_SLOTS.acquire().await.expect("semaphore");
+                within_deadline(
+                    "Unison",
+                    UNISON_TIMEOUT,
+                    fetch_unison(client, &title, &artist, Some(duration_ms)),
                 )
                 .await
             })
@@ -859,31 +903,45 @@ async fn run_query(client: &'static reqwest::Client, mut song: Song, query: Quer
             })
         }),
     );
-    let app = Row::choose(&query, &lrc_red, &lrclib);
+    let app = Row::choose(&query, &lrc_red, &unison, &lrclib);
     let mut row = Row {
         query,
         lrc_red,
+        unison,
         lrclib,
         app,
         agreement: None,
     };
-    if let (Outcome::Found(a), Outcome::Found(b)) = (&row.lrc_red, &row.lrclib) {
-        // Lyrics in different scripts (one provider has the romaji) cannot be compared.
-        let japanese = |found: &Found| found.japanese_lines * 10 >= found.lines;
-        let overlap = agreement(&a.text, &b.text);
-        if japanese(a) == japanese(b) {
-            row.agreement = Some(overlap);
+    // Two providers with the same song in the same script (one may have only the
+    // romaji) have the same words; if not, one of them is another song.
+    let japanese = |found: &Found| found.japanese_lines * 10 >= found.lines;
+    let mut disagreeing = [false; 3];
+    let mut least: Option<f64> = None;
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let outcomes = [&row.lrc_red, &row.unison, &row.lrclib];
+        if let (Outcome::Found(x), Outcome::Found(y)) = (outcomes[a], outcomes[b])
+            && japanese(x) == japanese(y)
+        {
+            let overlap = agreement(&x.text, &y.text);
+            least = Some(least.map_or(overlap, |known| known.min(overlap)));
+            if overlap < MIN_AGREEMENT {
+                disagreeing[a] = true;
+                disagreeing[b] = true;
+            }
         }
-        if row.agreement.is_some_and(|overlap| overlap < MIN_AGREEMENT) {
-            let problem = Problem {
-                kind: Kind::Disagrees,
-                detail: format!("{:.0}% of their lyrics overlap", overlap * 100.0),
-            };
-            // The same song on both with different words means one is another song.
-            for outcome in [&mut row.lrc_red, &mut row.lrclib] {
-                if let Outcome::Found(found) = outcome {
-                    found.problems.push(problem.clone());
-                }
+    }
+    row.agreement = least;
+    if let Some(overlap) = least.filter(|overlap| *overlap < MIN_AGREEMENT) {
+        let problem = Problem {
+            kind: Kind::Disagrees,
+            detail: format!("{:.0}% of their lyrics overlap", overlap * 100.0),
+        };
+        for (outcome, disagrees) in [&mut row.lrc_red, &mut row.unison, &mut row.lrclib]
+            .into_iter()
+            .zip(disagreeing)
+        {
+            if let (Outcome::Found(found), true) = (outcome, disagrees) {
+                found.problems.push(problem.clone());
             }
         }
     }
@@ -1012,6 +1070,7 @@ fn row_json(songs: &[Song], row: &Row) -> Value {
         "durationMs": row.query.duration_ms,
         "agreement": row.agreement,
         "lrcRed": provider(&row.lrc_red),
+        "unison": provider(&row.unison),
         "lrclib": provider(&row.lrclib),
     })
 }
@@ -1044,6 +1103,7 @@ fn report(songs: &[Song], rows: &[Row]) -> String {
         let japanese = song.expects_japanese() == Some(true);
         for (provider, outcome) in [
             ("lrc.red", &row.lrc_red),
+            ("Unison", &row.unison),
             ("LRCLIB", &row.lrclib),
             ("app", row.app()),
         ] {
@@ -1167,9 +1227,10 @@ fn report(songs: &[Song], rows: &[Row]) -> String {
         "App finds no lyrics",
         app_rows(&|_, outcome| matches!(outcome, Outcome::Miss), &|row, _| {
             format!(
-                "{} (lrc.red: {}; LRCLIB: {})",
+                "{} (lrc.red: {}; Unison: {}; LRCLIB: {})",
                 query_label(&songs[row.query.song], &row.query),
                 describe(&row.lrc_red),
+                describe(&row.unison),
                 describe(&row.lrclib)
             )
         }),
@@ -1217,16 +1278,20 @@ fn report(songs: &[Song], rows: &[Row]) -> String {
         "Lookups that errored (after a retry)",
         rows.iter()
             .flat_map(|row| {
-                [("lrc.red", &row.lrc_red), ("LRCLIB", &row.lrclib)]
-                    .into_iter()
-                    .filter(|(_, outcome)| matches!(outcome, Outcome::Error(_)))
-                    .map(move |(_, outcome)| {
-                        format!(
-                            "{} -> {}",
-                            query_label(&songs[row.query.song], &row.query),
-                            describe(outcome)
-                        )
-                    })
+                [
+                    ("lrc.red", &row.lrc_red),
+                    ("Unison", &row.unison),
+                    ("LRCLIB", &row.lrclib),
+                ]
+                .into_iter()
+                .filter(|(_, outcome)| matches!(outcome, Outcome::Error(_)))
+                .map(move |(_, outcome)| {
+                    format!(
+                        "{} -> {}",
+                        query_label(&songs[row.query.song], &row.query),
+                        describe(outcome)
+                    )
+                })
             })
             .collect(),
     );
@@ -1249,23 +1314,27 @@ fn report(songs: &[Song], rows: &[Row]) -> String {
         rows.iter()
             .filter(|row| row.query.mutation == Mutation::AsIs)
             .flat_map(|row| {
-                [("lrc.red", &row.lrc_red), ("LRCLIB", &row.lrclib)]
-                    .into_iter()
-                    .filter(|(_, outcome)| {
-                        matches!(outcome, Outcome::Found(found)
+                [
+                    ("lrc.red", &row.lrc_red),
+                    ("Unison", &row.unison),
+                    ("LRCLIB", &row.lrclib),
+                ]
+                .into_iter()
+                .filter(|(_, outcome)| {
+                    matches!(outcome, Outcome::Found(found)
                         if found.has(Kind::LooseTitle)
                             || found.has(Kind::Disagrees)
                             || found.has(Kind::OddArtist)
                             || found.has(Kind::UnverifiedTitle)
                             || found.has(Kind::LatinLyrics))
-                    })
-                    .map(move |(provider, outcome)| {
-                        format!(
-                            "{provider}: {} -> {}",
-                            query_label(&songs[row.query.song], &row.query),
-                            describe(outcome)
-                        )
-                    })
+                })
+                .map(move |(provider, outcome)| {
+                    format!(
+                        "{provider}: {} -> {}",
+                        query_label(&songs[row.query.song], &row.query),
+                        describe(outcome)
+                    )
+                })
             })
             .collect(),
     );
@@ -1273,7 +1342,7 @@ fn report(songs: &[Song], rows: &[Row]) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "queries lrc.red and LRCLIB for hundreds of songs; run with `bun run fuzz:lyrics`"]
+#[ignore = "queries lrc.red, Unison and LRCLIB for hundreds of songs; run with `bun run fuzz:lyrics`"]
 async fn live_fuzz() {
     let songs = corpus();
     let filter = std::env::var("LYRICS_FUZZ_FILTER").ok();
@@ -1338,7 +1407,7 @@ async fn live_fuzz() {
 /// Looks one song up and prints what each provider's search finds and what the
 /// app would pick: `LYRICS_PROBE='Title|Artist|256000' bun run probe:lyrics`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "queries lrc.red and LRCLIB for one song; run with `bun run probe:lyrics`"]
+#[ignore = "queries lrc.red, Unison and LRCLIB for one song; run with `bun run probe:lyrics`"]
 async fn probe() {
     let Ok(spec) = std::env::var("LYRICS_PROBE") else {
         eprintln!("set LYRICS_PROBE='Title|Artist|durationMs'");
@@ -1351,7 +1420,7 @@ async fn probe() {
     let client = http_client().expect("http client");
     let describe = |found: &Lookup| match found {
         Ok(Some(lyrics)) => format!(
-            "{} - {} ({} lines, {} romanized, word-timed: {})",
+            "{} - {} ({} lines, {} romanized, word-timed: {}) first lines: {:?}",
             lyrics.track_name,
             lyrics.artist_name,
             lyrics.lines.len(),
@@ -1361,6 +1430,12 @@ async fn probe() {
                 .filter(|line| line.romanized.is_some())
                 .count(),
             lyrics.word_timed,
+            lyrics
+                .lines
+                .iter()
+                .take(4)
+                .map(line_original)
+                .collect::<Vec<_>>(),
         ),
         Ok(None) => "nothing".to_string(),
         Err(error) => format!("error: {error}"),
@@ -1380,6 +1455,10 @@ async fn probe() {
     println!(
         "lrc.red answer: {}",
         describe(&fetch_lrc_red(client, title, artist, duration_ms).await)
+    );
+    println!(
+        "Unison answer: {}",
+        describe(&fetch_unison(client, title, artist, duration_ms).await)
     );
     println!(
         "LRCLIB answer: {}",
@@ -1439,6 +1518,7 @@ mod offline {
             album_name: String::new(),
             duration: Some(duration),
             word_timed: false,
+            source: "lrc.red",
             lines,
         }
     }
