@@ -420,6 +420,70 @@ fn track_title_score(candidate: &Candidate, normalized_title: &str, normalized_a
     score(track_title.as_deref(), normalized_title)
 }
 
+/// The name a single is released under: "1% Battery Girl - Single" is the
+/// single "1% Battery Girl".
+fn single_name(album: &str) -> Option<&str> {
+    const SUFFIX: &str = " - single";
+    let album = album.trim_end();
+    let name = album.get(..album.len().checked_sub(SUFFIX.len())?)?;
+    album
+        .get(name.len()..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(SUFFIX))
+        .map(|_| name.trim_end())
+}
+
+/// A normalized title without its feature credit: "song feat x" is "song".
+fn without_credit(normalized_title: &str) -> String {
+    let words = normalized_title.split_whitespace().collect::<Vec<_>>();
+    let end = words
+        .iter()
+        .skip(1)
+        .position(|word| matches!(*word, "feat" | "ft" | "featuring"))
+        .map_or(words.len(), |index| index + 1);
+    words[..end].join(" ")
+}
+
+/// 2 when the hit is the song's own track on a single named like it, else 0.
+/// lrc.red files "1% Battery Girl (feat. ChiliChill)" as "1% Low Battery Girl
+/// (feat. ChiliChill)" on the single "1% Battery Girl", so the track name alone
+/// does not match.
+///
+/// A single holds other recordings too, each timed differently, so the track
+/// must be the song and nothing else: its name holds the single's words, no
+/// qualifier of its own ("(Instrumental)",
+/// "- Remix", "(Live)"), and a feature credit when the playing title has one,
+/// or the version without the feature would pass. The names are compared without
+/// feature credits, which a player and a single's name write differently. Only a
+/// single counts: every track of an album named like the song would tie with it.
+/// The score stays below an exact track name's.
+fn single_title_score(candidate: &Candidate, normalized_title: &str) -> u8 {
+    let (Some(track), Some(single)) = (
+        candidate.track_name.as_deref(),
+        candidate.album_name.as_deref().and_then(single_name),
+    ) else {
+        return 0;
+    };
+    let single = without_credit(&normalize(single));
+    let normalized_track = normalize(track);
+    let has_credit = |normalized: &str| without_credit(normalized) != normalized;
+    let bare_track = base_title(track).unwrap_or_else(|| track.to_string());
+    // Every word of the single's name is in the track's: "1% Low Battery Girl"
+    // is the song "1% Battery Girl", a B-side with a title of its own is not.
+    // The single's name keeps its release labels ("(Remastered)"), so the words
+    // are looked for in the whole track name, not in the one without labels.
+    let names_the_song = single.split_whitespace().all(|word| {
+        normalized_track
+            .split_whitespace()
+            .any(|other| other == word)
+    });
+    let is_the_song = !single.is_empty()
+        && single == without_credit(normalized_title)
+        && names_the_song
+        && strip_trailing_label(&bare_track, |_| true).is_none()
+        && (has_credit(&normalized_track) || !has_credit(normalized_title));
+    if is_the_song { 2 } else { 0 }
+}
+
 /// How well a candidate's title and artist match what is playing, each 0-4.
 fn metadata_scores(
     candidate: &Candidate,
@@ -434,7 +498,8 @@ fn metadata_scores(
         .as_deref()
         .filter(|name| !name.is_empty())
     {
-        Some(_) => track_title_score(candidate, normalized_title, normalized_artist),
+        Some(_) => track_title_score(candidate, normalized_title, normalized_artist)
+            .max(single_title_score(candidate, normalized_title)),
         None => score(candidate.album_name.as_deref(), normalized_title),
     };
     // lrc.red credits some artists in another script ("Paolo Conte" is
@@ -677,7 +742,8 @@ fn rank_matches<T>(
     // length, is the song itself: another song of the artist in another script is
     // not a transliteration of it, only a song of about the same length.
     let listed_by_title = hits.iter().any(|(candidate, _)| {
-        track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+        (track_title_score(candidate, &normalized_title, &normalized_artist) == 4
+            || single_title_score(candidate, &normalized_title) > 0)
             && metadata_scores(candidate, &normalized_title, &normalized_artist).1 > 0
     });
     hits.retain(|(candidate, _)| {
@@ -2643,6 +2709,197 @@ mod tests {
             &candidate("Official胡子男dism"),
             "official髭男dism"
         ));
+    }
+
+    fn on_album(mut hit: Candidate, album: &str) -> Candidate {
+        hit.album_name = Some(album.to_string());
+        hit
+    }
+
+    #[test]
+    fn a_single_named_like_the_song_stands_for_a_title_lrc_red_spells_differently() {
+        // lrc.red files "1% Battery Girl" as "1% Low Battery Girl" on the single
+        // of that name. Another song of the artist, in Japanese, is 1 s off the
+        // playing length (210 s), which used to make it pass as a transliteration.
+        for playing_ms in [208_547, 209_507, 210_000, 210_596, 211_000] {
+            let hits = vec![
+                (
+                    on_album(
+                        candidate("『暁の空に、輝ける誓い』", "Sān-Z, HOYO-MiX", 210.596),
+                        "『暁の空に、輝ける誓い』 - Single",
+                    ),
+                    "japanese",
+                ),
+                (
+                    on_album(
+                        candidate(
+                            "1% Low Battery Girl (feat. ChiliChill)",
+                            "Sān-Z & HOYO-MiX",
+                            208.547,
+                        ),
+                        "1% Battery Girl - Single",
+                    ),
+                    "single",
+                ),
+            ];
+
+            let ranked = rank_matches(
+                hits,
+                "1% Battery Girl (feat. ChiliChill)",
+                "Sān-Z & HOYO-MiX",
+                Some(playing_ms),
+            );
+
+            assert_eq!(
+                ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+                ["single"],
+                "playing length {playing_ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_single_vouches_for_the_title_not_an_album() {
+        let on_single =
+            |track: &str, album: &str| on_album(candidate(track, "AC/DC", 317.0), album);
+        let title = canonical_title("Back In Black", &normalize("AC/DC"));
+
+        // Every track of an album named like the song is not the song.
+        assert_eq!(
+            single_title_score(&on_single("Shoot to Thrill", "Back In Black"), &title),
+            0
+        );
+        assert_eq!(
+            single_title_score(
+                &on_single("Back In Black", "Back In Black - Single"),
+                &title
+            ),
+            2
+        );
+        // A name that is only part of the title is not the song.
+        assert_eq!(
+            single_title_score(&on_single("Back In Black", "Black - Single"), &title),
+            0
+        );
+        assert_eq!(
+            single_title_score(
+                &on_single("Back In Black", "Back In Black - SINGLE"),
+                "back in black part two"
+            ),
+            0
+        );
+        assert_eq!(single_name("Back In Black - SINGLE"), Some("Back In Black"));
+        assert_eq!(single_name("Single"), None);
+        assert_eq!(single_name(" - Single"), Some(""));
+    }
+
+    #[test]
+    fn a_single_vouches_for_its_song_not_for_the_other_recordings_on_it() {
+        let on_single = |track: &str| {
+            on_album(
+                candidate(track, "Sān-Z & HOYO-MiX", 208.5),
+                "1% Battery Girl - Single",
+            )
+        };
+        let featured = "1 battery girl feat chilichill";
+        let plain = "1 battery girl";
+
+        // The song, with the feature credit on either side or none.
+        assert_eq!(
+            single_title_score(
+                &on_single("1% Low Battery Girl (feat. ChiliChill)"),
+                featured
+            ),
+            2
+        );
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl (feat. ChiliChill)"), plain),
+            2
+        );
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl"), plain),
+            2
+        );
+        // The version without the feature is not the featured song.
+        assert_eq!(
+            single_title_score(&on_single("1% Low Battery Girl"), featured),
+            0
+        );
+        // A B-side with a title of its own is another song.
+        assert_eq!(single_title_score(&on_single("Dead Battery"), featured), 0);
+        assert_eq!(single_title_score(&on_single("Dead Battery"), plain), 0);
+        // Nor are its instrumental, remix or live recordings.
+        for other in [
+            "1% Low Battery Girl (Instrumental)",
+            "1% Low Battery Girl - Instrumental",
+            "1% Low Battery Girl (feat. ChiliChill) [Remix]",
+            "1% Low Battery Girl (Live)",
+        ] {
+            assert_eq!(
+                single_title_score(&on_single(other), featured),
+                0,
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_b_side_on_the_single_is_not_the_song() {
+        // Same artist, same length, on the single of the playing song, but
+        // another song: it must neither pass nor hide the cross-script match.
+        let hits = vec![(
+            on_album(
+                candidate("Dead Battery", "Sān-Z & HOYO-MiX", 208.0),
+                "1% Battery Girl - Single",
+            ),
+            "b-side",
+        )];
+
+        assert!(
+            rank_matches(
+                hits,
+                "1% Battery Girl (feat. ChiliChill)",
+                "Sān-Z & HOYO-MiX",
+                Some(208_547)
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_remastered_single_still_stands_for_its_song() {
+        let hits = vec![
+            (
+                on_album(
+                    candidate("『暁の空に、輝ける誓い』", "Sān-Z, HOYO-MiX", 208.6),
+                    "『暁の空に、輝ける誓い』 - Single",
+                ),
+                "japanese",
+            ),
+            (
+                on_album(
+                    candidate(
+                        "1% Low Battery Girl (Remastered) (feat. ChiliChill)",
+                        "Sān-Z & HOYO-MiX",
+                        208.547,
+                    ),
+                    "1% Battery Girl (Remastered) - Single",
+                ),
+                "single",
+            ),
+        ];
+
+        let ranked = rank_matches(
+            hits,
+            "1% Battery Girl (Remastered) (feat. ChiliChill)",
+            "Sān-Z & HOYO-MiX",
+            Some(208_547),
+        );
+
+        assert_eq!(
+            ranked.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+            ["single"]
+        );
     }
 
     #[test]
