@@ -13,7 +13,7 @@ use windows::Media::Control::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_MEDIA_NEXT_TRACK,
-    VK_MEDIA_PREV_TRACK,
+    VK_MEDIA_PREV_TRACK, VK_VOLUME_DOWN, VK_VOLUME_UP,
 };
 
 const WINDOWS_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
@@ -178,6 +178,12 @@ pub fn send_transport_control(
     println!("[media-control] Windows session declined {action}; sending media key fallback");
     send_media_key(media_key)?;
     Ok(true)
+}
+
+/// Raises (`up`) or lowers the system volume by one step, as the keyboard's volume
+/// keys do, so it also shows Windows' own volume flyout.
+pub fn change_volume(up: bool) -> windows::core::Result<()> {
+    send_media_key(if up { VK_VOLUME_UP } else { VK_VOLUME_DOWN })
 }
 
 fn send_media_key(

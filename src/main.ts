@@ -8,7 +8,9 @@ import "@fontsource-variable/source-sans-3";
 import "./styles.css";
 import { formatAccelerator, keyboardEventToAccelerator } from "./hotkeys";
 import { icons, toastIcon } from "./icons";
-import { createLyricsCache } from "./lyrics-cache";
+import { buildFeedbackIssue, type FeedbackReport } from "./feedback";
+import { LANGUAGES, setLanguage, t } from "./i18n";
+import { clearForNewVersion, createLyricsCache } from "./lyrics-cache";
 import { LyricsRetryBudget, loadLyricsResult, requestWordTiming } from "./lyrics-loader";
 import {
   getLocalLyricsNotice,
@@ -101,11 +103,14 @@ type HotkeyStatus = {
 
 let hotkeyStatuses: HotkeyStatus[] = [];
 
+/** English; shown through `t`. */
 const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   pinned: "Pin overlay",
   next: "Next song",
   previous: "Previous song",
   playPause: "Play / pause",
+  volumeUp: "Volume up",
+  volumeDown: "Volume down",
 };
 
 const ACCENT_PRESETS = [
@@ -228,6 +233,7 @@ let wordSyncingTrackKey = "";
 let lyricsRequestId = Date.now();
 
 let settings = loadSettings();
+setLanguage(settings.language);
 let currentMedia: MediaState = demoState;
 let currentPlaybackVariant: PlaybackVariant | null = playbackVariant(demoState);
 let currentTrackKey = currentPlaybackVariant ? variantToken(currentPlaybackVariant) : "";
@@ -278,32 +284,32 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <header class="chrome" id="chrome" data-drag-region>
         <div class="track-meta" data-drag-region>
           <h1 id="title">Music Companion</h1>
-          <p id="artist">Waiting for media</p>
+          <p id="artist">${t("Waiting for media")}</p>
         </div>
         <div class="window-actions">
           <div class="secondary-actions">
-            <button class="icon-button" id="settings-toggle" title="Settings" aria-label="Settings">
+            <button class="icon-button" id="settings-toggle" title="${t("Settings")}" aria-label="${t("Settings")}">
               ${icons.cog}
             </button>
-            <button class="icon-button" id="minimize" title="Minimize" aria-label="Minimize">
+            <button class="icon-button" id="minimize" title="${t("Minimize")}" aria-label="${t("Minimize")}">
               ${icons.minus}
             </button>
-            <button class="icon-button" id="maximize" title="Maximize" aria-label="Maximize">
+            <button class="icon-button" id="maximize" title="${t("Maximize")}" aria-label="${t("Maximize")}">
               ${icons.arrowsPointingOut}
             </button>
           </div>
-          <button class="icon-button danger" id="close" title="Hide" aria-label="Hide">
+          <button class="icon-button danger" id="close" title="${t("Hide")}" aria-label="${t("Hide")}">
             ${icons.xMark}
           </button>
-          <button class="icon-button compact-menu-toggle" id="compact-menu-toggle" title="Window menu" aria-label="Window menu" aria-expanded="false">
+          <button class="icon-button compact-menu-toggle" id="compact-menu-toggle" title="${t("Window menu")}" aria-label="${t("Window menu")}" aria-expanded="false">
             ${icons.bars3}
           </button>
           <div class="compact-menu" id="compact-menu" hidden>
-            <button data-action="settings">Settings</button>
-            <button data-action="minimize">Minimize</button>
-            <button data-action="maximize">Maximize</button>
-            <button data-action="hide">Hide</button>
-            <button class="danger" data-action="close">Close</button>
+            <button data-action="settings">${t("Settings")}</button>
+            <button data-action="minimize">${t("Minimize")}</button>
+            <button data-action="maximize">${t("Maximize")}</button>
+            <button data-action="hide">${t("Hide")}</button>
+            <button class="danger" data-action="close">${t("Close")}</button>
           </div>
         </div>
       </header>
@@ -312,7 +318,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="lyrics-list" id="lyrics-list"></div>
         <p class="word-sync-status" id="word-sync-status" role="status" hidden>
           <span class="searching-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-          Syncing words
+          ${t("Syncing words")}
         </p>
       </section>
 
@@ -321,54 +327,54 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span class="settings-app-icon" aria-hidden="true">${icons.musicalNote}</span>
           <span class="settings-app-name">Music Companion</span>
           <div class="caption-buttons">
-            <button type="button" data-settings-action="minimize" title="Minimize" aria-label="Minimize">${icons.minus}</button>
-            <button type="button" class="caption-close" data-settings-action="close" title="Close" aria-label="Close settings">${icons.xMark}</button>
+            <button type="button" data-settings-action="minimize" title="${t("Minimize")}" aria-label="${t("Minimize")}">${icons.minus}</button>
+            <button type="button" class="caption-close" data-settings-action="close" title="${t("Close")}" aria-label="${t("Close settings")}">${icons.xMark}</button>
           </div>
         </div>
         <header class="settings-header" id="settings-header" data-settings-drag>
           <div class="traffic-lights">
-            <button type="button" class="traffic-close" data-settings-action="close" title="Close" aria-label="Close settings"></button>
-            <button type="button" class="traffic-minimize" data-settings-action="minimize" title="Minimize" aria-label="Minimize"></button>
+            <button type="button" class="traffic-close" data-settings-action="close" title="${t("Close")}" aria-label="${t("Close settings")}"></button>
+            <button type="button" class="traffic-minimize" data-settings-action="minimize" title="${t("Minimize")}" aria-label="${t("Minimize")}"></button>
             <span class="traffic-zoom" aria-hidden="true"></span>
           </div>
-          <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
-            <button type="button" class="key active" role="tab" id="tab-look" data-settings-tab="look" aria-controls="page-look" aria-selected="true">${icons.swatch}Look</button>
-            <button type="button" class="key" role="tab" id="tab-lyrics" data-settings-tab="lyrics" aria-controls="page-lyrics" aria-selected="false">${icons.musicalNote}Lyrics</button>
-            <button type="button" class="key" role="tab" id="tab-shortcuts" data-settings-tab="shortcuts" aria-controls="page-shortcuts" aria-selected="false">${icons.keyboard}Shortcuts</button>
-            <button type="button" class="key" role="tab" id="tab-general" data-settings-tab="general" aria-controls="page-general" aria-selected="false">${icons.cog}General</button>
+          <nav class="settings-tabs" role="tablist" aria-label="${t("Settings sections")}">
+            <button type="button" class="key active" role="tab" id="tab-look" data-settings-tab="look" aria-controls="page-look" aria-selected="true">${icons.swatch}${t("Look")}</button>
+            <button type="button" class="key" role="tab" id="tab-lyrics" data-settings-tab="lyrics" aria-controls="page-lyrics" aria-selected="false">${icons.musicalNote}${t("Lyrics")}</button>
+            <button type="button" class="key" role="tab" id="tab-shortcuts" data-settings-tab="shortcuts" aria-controls="page-shortcuts" aria-selected="false">${icons.keyboard}${t("Shortcuts")}</button>
+            <button type="button" class="key" role="tab" id="tab-general" data-settings-tab="general" aria-controls="page-general" aria-selected="false">${icons.cog}${t("General")}</button>
           </nav>
         </header>
 
         <section class="settings-page" id="page-look" role="tabpanel" aria-labelledby="tab-look" data-settings-page="look">
           <div class="settings-grid">
             <div class="card slider-card">
-              ${sliderRow("opacity", "Background", 0, 100, 1, "opacity")}
-              ${sliderRow("blur-intensity", "Blur", 1, 100, 1, "blur")}
-              ${sliderRow("font-size", "Text size", 0.5, 3, 0.05, "size")}
-              ${sliderRow("line-spacing", "Line spacing", 20, 240, 10, "spacing")}
+              ${sliderRow("opacity", t("Background"), 0, 100, 1, "opacity")}
+              ${sliderRow("blur-intensity", t("Blur"), 1, 100, 1, "blur")}
+              ${sliderRow("font-size", t("Text size"), 0.5, 3, 0.05, "size")}
+              ${sliderRow("line-spacing", t("Line spacing"), 20, 240, 10, "spacing")}
             </div>
             <div class="card accent-card" id="accent-card">
-              <h3>Accent colour</h3>
+              <h3>${t("Accent colour")}</h3>
               <div class="accent-body">
                 <div class="wheel-well" id="accent-wheel">
-                  <div class="wheel" title="Drag to pick a colour"><span class="wheel-handle" id="accent-wheel-handle"></span></div>
+                  <div class="wheel" title="${t("Drag to pick a colour")}"><span class="wheel-handle" id="accent-wheel-handle"></span></div>
                 </div>
                 <div class="accent-side">
-                  <div class="candies" role="group" aria-label="Accent colour presets">
-                    ${ACCENT_PRESETS.map((color) => `<button type="button" class="candy" style="--candy: ${color}" data-accent-preset="${color}" title="${color}" aria-label="Use ${color}"></button>`).join("")}
+                  <div class="candies" role="group" aria-label="${t("Accent colour presets")}">
+                    ${ACCENT_PRESETS.map((color) => `<button type="button" class="candy" style="--candy: ${color}" data-accent-preset="${color}" title="${color}" aria-label="${t("Use {color}", { color })}"></button>`).join("")}
                   </div>
-                  <input id="accent-color-hex" class="hex-input" type="text" inputmode="text" maxlength="7" spellcheck="false" aria-label="Accent colour hex value" />
+                  <input id="accent-color-hex" class="hex-input" type="text" inputmode="text" maxlength="7" spellcheck="false" aria-label="${t("Accent colour hex value")}" />
                 </div>
               </div>
               <label class="setting-row" for="accent-dynamic">
-                <span><strong>Change with every song</strong><small>Picks a fresh colour for each track</small></span>
+                <span><strong>${t("Change with every song")}</strong><small>${t("Picks a fresh colour for each track")}</small></span>
                 <input id="accent-dynamic" class="switch" type="checkbox" role="switch" />
               </label>
             </div>
             <div class="card span" id="backdrop-material-card">
-              <h3>Overlay glass</h3>
-              <div class="choices" id="backdrop-material" role="radiogroup" aria-label="Overlay glass">
-                ${(PLATFORM === "windows" ? (["acrylic"] as const) : (["acrylic", "mica"] as const)).map((material) => `<button type="button" class="key choice" role="radio" data-backdrop-material="${material}"><span class="choice-pic glass-pic glass-${material}" aria-hidden="true"></span><span class="choice-title">${materialCopy[material].label}</span><span class="choice-description">${materialCopy[material].description}</span></button>`).join("")}
+              <h3>${t("Overlay glass")}</h3>
+              <div class="choices" id="backdrop-material" role="radiogroup" aria-label="${t("Overlay glass")}">
+                ${(PLATFORM === "windows" ? (["acrylic"] as const) : (["acrylic", "mica"] as const)).map((material) => `<button type="button" class="key choice" role="radio" data-backdrop-material="${material}"><span class="choice-pic glass-pic glass-${material}" aria-hidden="true"></span><span class="choice-title">${t(materialCopy[material].label)}</span><span class="choice-description">${t(materialCopy[material].description)}</span></button>`).join("")}
               </div>
             </div>
           </div>
@@ -377,20 +383,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <section class="settings-page" id="page-lyrics" role="tabpanel" aria-labelledby="tab-lyrics" data-settings-page="lyrics" hidden>
           <div class="settings-grid">
             <div class="card span">
-              <h3>How lyrics are written</h3>
-              <div class="choices" id="lyrics-script" role="radiogroup" aria-label="Lyrics script">
-                <button type="button" class="key choice" role="radio" data-lyrics-script="original"><span class="choice-pic script-pic" aria-hidden="true">夜に駆ける</span><span class="choice-title">Original</span><span class="choice-description">As the artist wrote them</span></button>
-                <button type="button" class="key choice" role="radio" data-lyrics-script="romanized"><span class="choice-pic script-pic" aria-hidden="true">Yoru ni kakeru</span><span class="choice-title">Romanized</span><span class="choice-description">In Latin letters, when the song has them</span></button>
-                <button type="button" class="key choice" role="radio" data-lyrics-script="both"><span class="choice-pic script-pic" aria-hidden="true"><span><ruby>夜<rt>yoru</rt></ruby><ruby>駆<rt>kake</rt></ruby></span></span><span class="choice-title">Original + romanized</span><span class="choice-description">Letters under each word. Hides translation</span></button>
+              <h3>${t("How lyrics are written")}</h3>
+              <div class="choices" id="lyrics-script" role="radiogroup" aria-label="${t("Lyrics script")}">
+                <button type="button" class="key choice" role="radio" data-lyrics-script="original"><span class="choice-pic script-pic" aria-hidden="true">夜に駆ける</span><span class="choice-title">${t("Original")}</span><span class="choice-description">${t("As the artist wrote them")}</span></button>
+                <button type="button" class="key choice" role="radio" data-lyrics-script="romanized"><span class="choice-pic script-pic" aria-hidden="true">Yoru ni kakeru</span><span class="choice-title">${t("Romanized")}</span><span class="choice-description">${t("In Latin letters, when the song has them")}</span></button>
+                <button type="button" class="key choice" role="radio" data-lyrics-script="both"><span class="choice-pic script-pic" aria-hidden="true"><span><ruby>夜<rt>yoru</rt></ruby><ruby>駆<rt>kake</rt></ruby></span></span><span class="choice-title">${t("Original + romanized")}</span><span class="choice-description">${t("Letters under each word. Hides translation")}</span></button>
               </div>
             </div>
             <div class="card span">
               <label class="setting-row" for="show-translation">
-                <span><strong>Show translation</strong><small id="translation-hint">A second line under each lyric, when there is one</small></span>
+                <span><strong>${t("Show translation")}</strong><small id="translation-hint">${t("A second line under each lyric, when there is one")}</small></span>
                 <input id="show-translation" class="switch" type="checkbox" role="switch" />
               </label>
               <label class="setting-row" for="word-sync">
-                <span><strong>Sync words with AI <span class="sparkle">${icons.sparkles}</span></strong><small>Lights up each word as it's sung. The first time takes about 10 seconds per song.</small></span>
+                <span><strong>${t("Sync words with AI")} <span class="sparkle">${icons.sparkles}</span></strong><small>${t("Lights up each word as it's sung. The first time takes about 10 seconds per song.")}</small></span>
                 <input id="word-sync" class="switch" type="checkbox" role="switch" />
               </label>
             </div>
@@ -399,28 +405,40 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
         <section class="settings-page" id="page-shortcuts" role="tabpanel" aria-labelledby="tab-shortcuts" data-settings-page="shortcuts" hidden>
           <div class="hotkey-grid">
-            ${hotkeyCard("pinned", "Pin overlay", "Clicks go through it")}
-            ${hotkeyCard("playPause", "Play / pause")}
-            ${hotkeyCard("next", "Next song")}
-            ${hotkeyCard("previous", "Previous song")}
+            ${hotkeyCard("pinned", t("Pin overlay"), t("Clicks go through it"))}
+            ${hotkeyCard("playPause", t("Play / pause"))}
+            ${hotkeyCard("next", t("Next song"))}
+            ${hotkeyCard("previous", t("Previous song"))}
+            ${hotkeyCard("volumeUp", t("Volume up"))}
+            ${hotkeyCard("volumeDown", t("Volume down"))}
           </div>
-          <p class="settings-tip">These work in every app. Click one and press your new combo.</p>
+          <p class="settings-tip">${t("These work in every app. Click one and press your new combo.")}</p>
         </section>
 
         <section class="settings-page" id="page-general" role="tabpanel" aria-labelledby="tab-general" data-settings-page="general" hidden>
           <div class="settings-grid">
             <div class="card span">
               <label class="setting-row" for="start-login">
-                <span><strong>Open at login</strong><small>Start with ${osName}, so lyrics are there when music is</small></span>
+                <span><strong>${t("Open at login")}</strong><small>${t("Start with {os}, so lyrics are there when music is", { os: osName })}</small></span>
                 <input id="start-login" class="switch" type="checkbox" role="switch" />
               </label>
               <label class="setting-row" for="start-minimized">
-                <span><strong>Start minimized</strong><small>Launch hidden in the tray instead of showing the overlay</small></span>
+                <span><strong>${t("Start minimized")}</strong><small>${t("Launch hidden in the tray instead of showing the overlay")}</small></span>
                 <input id="start-minimized" class="switch" type="checkbox" role="switch" />
               </label>
               <div class="setting-row">
-                <span><strong>Saved lyrics</strong><small>Kept on this device, so songs load instantly</small></span>
-                <button type="button" class="key button" id="clear-lyrics-cache">Clear</button>
+                <span><strong>${t("Saved lyrics")}</strong><small>${t("Kept on this device, so songs load instantly")}</small></span>
+                <button type="button" class="key button" id="clear-lyrics-cache">${t("Delete")}</button>
+              </div>
+              <div class="setting-row">
+                <span><strong>${t("Language")}</strong><small>${t("The interface only. Lyrics stay in the song's language")}</small></span>
+                <div class="choices language-choices" id="language" role="radiogroup" aria-label="${t("Language")}">
+                  ${LANGUAGES.map((language) => `<button type="button" class="key button" role="radio" data-language="${language.value}">${language.label}</button>`).join("")}
+                </div>
+              </div>
+              <div class="setting-row">
+                <span><strong>${t("A song is wrong or missing?")}</strong><small>${t("Opens a ready-made report on GitHub with the song and what the app found")}</small></span>
+                <button type="button" class="key button" id="send-feedback">${t("Send feedback")}</button>
               </div>
             </div>
           </div>
@@ -462,9 +480,24 @@ if (isSettingsWindow) {
   // ponytail: the window is created visible, so it flashes briefly before hiding.
   if (settings.startMinimized) void safeWindowAction(() => appWindow?.hide());
   void syncStartAtLogin();
-  schedulePolling();
+  // The first lookup waits for a cache that an update has emptied.
+  void clearLyricsCacheOnUpdate().finally(schedulePolling);
   startSyncLoop();
   void applySavedHotkeys();
+}
+
+/** Looks lyrics up again after an update: its lookup may find or fix what the old one did not. */
+async function clearLyricsCacheOnUpdate() {
+  if (!tauriAvailable) return;
+
+  try {
+    if (await clearForNewVersion(lyricCache, await getVersion(), localStorage)) {
+      wordSyncTried.clear();
+      console.info("[latency] lyrics cache cleared for a new app version");
+    }
+  } catch (error) {
+    console.warn("Unable to clear the lyrics cache for a new app version", error);
+  }
 }
 
 async function renderAppVersion() {
@@ -821,7 +854,7 @@ function wireUi() {
         settings.startAtLogin = !input.checked;
         input.checked = settings.startAtLogin;
         saveSettings();
-        showToast("Could not change start at login", undefined, "error");
+        showToast(t("Could not change start at login"), undefined, "error");
       }
     });
 
@@ -835,12 +868,76 @@ function wireUi() {
   document.querySelector("#clear-lyrics-cache")?.addEventListener("click", () => {
     clearLyricsCache();
     renderSettings();
-    showToast("Lyrics cache cleared", "Saved lyrics were removed from this device.");
+    showToast(t("Lyrics cache cleared"), t("Saved lyrics were removed from this device."));
     if (tauriAvailable) {
       void emit("lyrics-cache-cleared");
     }
   });
+  document.querySelector("#language")?.addEventListener("click", async (event) => {
+    const language = (event.target as Element).closest<HTMLButtonElement>("[data-language]")
+      ?.dataset.language;
+    if ((language !== "en" && language !== "it") || language === settings.language) return;
+    settings.language = language;
+    saveSettings();
+    // The interface is drawn once, in the language it starts in; the other window is told to start again too.
+    if (tauriAvailable) await emit("settings-updated", settings);
+    window.location.reload();
+  });
+  document.querySelector("#send-feedback")?.addEventListener("click", () => {
+    if (tauriAvailable && isSettingsWindow) {
+      // The overlay window knows the song, so it makes the report.
+      void emit("feedback-requested");
+    } else {
+      void sendFeedback();
+    }
+  });
   wireHotkeyInputs();
+}
+
+/** Opens a new GitHub issue that already says which song it is about and what the app found. */
+async function sendFeedback() {
+  try {
+    const mode = lyricsMode;
+    const report: FeedbackReport = {
+      appVersion: tauriAvailable ? await getVersion() : "dev",
+      platform: osName,
+      language: settings.language === "it" ? "Italian" : "English",
+      lyricsScript: settings.lyricsScript,
+      wordSync: settings.wordSync,
+      song: currentMedia.hasSession
+        ? {
+            title: currentMedia.title,
+            artist: currentMedia.artist,
+            album: currentMedia.album,
+            durationMs: currentMedia.durationMs,
+            player: currentMedia.sourceApp,
+          }
+        : null,
+      lyricsMode: currentMedia.hasSession ? mode : "missing",
+      lyrics: currentLyricsResult
+        ? {
+            trackName: currentLyricsResult.trackName,
+            artistName: currentLyricsResult.artistName,
+            albumName: currentLyricsResult.albumName,
+            wordTimed: currentLyricsResult.wordTimed,
+            source: currentLyricsResult.source,
+            lines: currentLyricsResult.lines.length,
+          }
+        : null,
+    };
+    await invoke("open_feedback_issue", { url: buildFeedbackIssue(report).url });
+    announceFeedback(true);
+  } catch (error) {
+    console.error("Unable to open the feedback report", error);
+    announceFeedback(false);
+  }
+}
+
+function announceFeedback(opened: boolean) {
+  if (opened) showToast(t("Feedback ready on GitHub"), t("Check it and press Submit."));
+  else showToast(t("Could not open GitHub"), undefined, "error");
+  // The settings window asked for it, and the person is looking at that window.
+  if (tauriAvailable && !isSettingsWindow) void emit("feedback-result", { opened });
 }
 
 function showToast(
@@ -887,7 +984,7 @@ function announceHotkeyResult(songChanged: boolean, wasPlaying: boolean) {
   if (index === -1) return;
   const [pending] = pendingHotkeyToasts.splice(index, 1);
   if (pending.action === "play/pause") {
-    showToast(currentMedia.isPlaying ? "Playing" : "Paused");
+    showToast(currentMedia.isPlaying ? t("Playing") : t("Paused"));
   } else {
     const { title, artist } = currentMedia;
     showToast(artist ? `${title} · ${artist}` : title, undefined, "note");
@@ -912,7 +1009,7 @@ function wireHotkeyInputs() {
     input.addEventListener("focus", () => {
       pending = null;
       input.classList.add("recording");
-      input.textContent = "Press keys…";
+      input.textContent = t("Press keys…");
       void safeInvoke("set_hotkey_recording", { recording: true });
     });
     input.addEventListener("keydown", (event) => {
@@ -972,18 +1069,20 @@ async function setHotkey(action: HotkeyAction, accelerator: string, retryFailed 
         )?.action;
       if (conflictingAction && conflictingAction in HOTKEY_ACTION_LABELS) {
         showToast(
-          `Already used by ${HOTKEY_ACTION_LABELS[conflictingAction as HotkeyAction]}`,
+          t("Already used by {action}", {
+            action: t(HOTKEY_ACTION_LABELS[conflictingAction as HotkeyAction]),
+          }),
           undefined,
           "error",
         );
       } else {
-        showToast("Shortcut unavailable", "Another application may be using it.", "error");
+        showToast(t("Shortcut unavailable"), t("Another application may be using it."), "error");
       }
     }
   } catch (error) {
     console.error("Unable to register global hotkey", error);
     if (retryFailed) {
-      showToast("Shortcut unavailable", "The shortcut could not be updated.", "error");
+      showToast(t("Shortcut unavailable"), t("The shortcut could not be updated."), "error");
     }
   }
   renderHotkeyStatuses();
@@ -1040,11 +1139,26 @@ function wireWindowEvents() {
   void listen("lyrics-cache-cleared", () => {
     clearLyricsCache();
   });
+  if (isSettingsWindow) {
+    void listen<{ opened: boolean }>("feedback-result", (event) => {
+      if (event.payload.opened) {
+        showToast(t("Feedback ready on GitHub"), t("Check it and press Submit."));
+      } else {
+        showToast(t("Could not open GitHub"), undefined, "error");
+      }
+    });
+  } else {
+    void listen("feedback-requested", () => void sendFeedback());
+  }
   void listen<SettingsState>("settings-updated", () => {
     // A slider drag sends one event per step; only what changes the lyrics themselves
     // rebuilds them, and a rebuild restarts the highlight.
     const previous = settings;
     settings = loadSettings();
+    if (previous.language !== settings.language) {
+      window.location.reload();
+      return;
+    }
     applySettings();
     renderSettings();
     if (
@@ -1081,7 +1195,9 @@ function renderHotkeyStatuses() {
     if (!status || status.registered) return;
     const warning = document.createElement("span");
     warning.className = "hotkey-warning";
-    warning.title = `This shortcut could not be registered: ${status.error ?? "already in use"}`;
+    warning.title = t("This shortcut could not be registered: {reason}", {
+      reason: status.error ?? t("already in use"),
+    });
     warning.setAttribute("aria-label", warning.title);
     warning.innerHTML = icons.exclamationTriangle;
     element.querySelector(".hotkey-value")!.prepend(warning);
@@ -1115,7 +1231,9 @@ function toggleOverlayLock() {
   const shortcut = formatAccelerator(settings.hotkeys.pinned)
     .split(" + ")
     .join(PLATFORM === "macos" ? "" : "+");
-  showToast(settings.clickThrough ? `Pinned · ${shortcut} to unpin` : "Unpinned");
+  showToast(
+    settings.clickThrough ? t("Pinned · {shortcut} to unpin", { shortcut }) : t("Unpinned"),
+  );
 }
 
 function bindRange(id: string, onChange: (value: number) => void) {
@@ -1557,11 +1675,11 @@ function renderChrome() {
   const displayMetadata = currentMedia.hasSession ? normalizeDisplayMetadata(currentMedia) : null;
 
   const titleText = currentMedia.hasSession
-    ? displayMetadata?.title || "Unknown track"
-    : "No media session";
+    ? displayMetadata?.title || t("Unknown track")
+    : t("No media session");
   const artistText = currentMedia.hasSession
-    ? displayMetadata?.artist || "Unknown artist"
-    : "Play something";
+    ? displayMetadata?.artist || t("Unknown artist")
+    : t("Play something");
   title.textContent = titleText;
   title.setAttribute("title", titleText);
   artist.textContent = artistText;
@@ -1580,32 +1698,32 @@ function renderLyrics() {
   lastScrolledLineIndex = -1;
 
   if (!currentMedia.hasSession) {
-    list.innerHTML = `<p class="empty-state">Play something in a media app.</p>`;
+    list.innerHTML = `<p class="empty-state">${t("Play something in a media app.")}</p>`;
     return;
   }
 
   if (lyricsMode === "searching") {
     list.innerHTML = `
-      <p class="empty-state lyrics-searching" aria-label="Searching for lyrics">
-        <span>Searching for lyrics</span><span class="searching-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <p class="empty-state lyrics-searching" aria-label="${t("Searching for lyrics")}">
+        <span>${t("Searching for lyrics")}</span><span class="searching-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </p>`;
     return;
   }
 
   if (lyricsMode === "error") {
     const state = lyricsEmptyState("error");
-    list.innerHTML = `<p class="empty-state"><span>${escapeHtml(state.title)}</span><button type="button" class="empty-retry" data-retry-lyrics>Try again</button></p>`;
+    list.innerHTML = `<p class="empty-state"><span>${escapeHtml(t(state.title))}</span><button type="button" class="empty-retry" data-retry-lyrics>${t("Try again")}</button></p>`;
     return;
   }
 
   if (lyricsMode === "instrumental" || lyricsMode === "excluded") {
-    list.innerHTML = `<p class="empty-state">${escapeHtml(lyricsNotice || "Instrumental")}</p>`;
+    list.innerHTML = `<p class="empty-state">${escapeHtml(t(lyricsNotice || "Instrumental"))}</p>`;
     return;
   }
 
   if (lyricsMode === "missing" || lyricsLines.length === 0) {
     const state = lyricsEmptyState("missing");
-    list.innerHTML = `<p class="empty-state">${escapeHtml(state.title)}</p>`;
+    list.innerHTML = `<p class="empty-state">${escapeHtml(t(state.title))}</p>`;
     return;
   }
 
@@ -1818,7 +1936,7 @@ function renderLyricsScript() {
     button.setAttribute("aria-checked", String(selected));
     if (button.dataset.lyricsScript !== "original") {
       button.disabled = !available;
-      button.title = available ? "" : "This song has no romanization";
+      button.title = available ? "" : t("This song has no romanization");
     }
   });
   // The settings window does not know the song, so the switch stays usable: the
@@ -1826,8 +1944,8 @@ function renderLyricsScript() {
   document.querySelector<HTMLInputElement>("#show-translation")!.checked = settings.showTranslation;
   document.querySelector<HTMLElement>("#translation-hint")!.textContent =
     settings.lyricsScript === "both"
-      ? "Hidden on songs shown with Original + romanized: it needs the same line"
-      : "A second line under each lyric, when there is one";
+      ? t("Hidden on songs shown with Original + romanized: it needs the same line")
+      : t("A second line under each lyric, when there is one");
 }
 
 function renderSettings() {
@@ -1848,6 +1966,11 @@ function renderSettings() {
   );
   document.querySelector<HTMLInputElement>("#start-login")!.checked = settings.startAtLogin;
   document.querySelector<HTMLInputElement>("#start-minimized")!.checked = settings.startMinimized;
+  document.querySelectorAll<HTMLButtonElement>("[data-language]").forEach((button) => {
+    const selected = button.dataset.language === settings.language;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-checked", String(selected));
+  });
   document.querySelector<HTMLInputElement>("#word-sync")!.checked = settings.wordSync;
   document.querySelectorAll<HTMLButtonElement>("[data-backdrop-material]").forEach((button) => {
     const selected = button.dataset.backdropMaterial === settings.backdropMaterial;
@@ -2127,8 +2250,8 @@ function hotkeyCard(action: HotkeyAction, label: string, description = "") {
     <div class="hotkey-card" data-hotkey-action="${action}">
       <span class="hotkey-label"><strong>${label}</strong>${description ? `<small>${description}</small>` : ""}</span>
       <span class="hotkey-value">
-        <button class="hotkey-reset" type="button" title="Restore default" aria-label="Restore the default ${label.toLowerCase()} shortcut">${icons.arrowPath}</button>
-        <button class="hotkey-input" type="button" aria-label="${label} shortcut">${keycaps(DEFAULT_HOTKEYS[action])}</button>
+        <button class="hotkey-reset" type="button" title="${t("Restore default")}" aria-label="${t("Restore the default {label} shortcut", { label: label.toLowerCase() })}">${icons.arrowPath}</button>
+        <button class="hotkey-input" type="button" aria-label="${t("{label} shortcut", { label })}">${keycaps(DEFAULT_HOTKEYS[action])}</button>
       </span>
     </div>`;
 }

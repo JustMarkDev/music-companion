@@ -433,6 +433,27 @@ export function createLyricsCache(obsoleteStorage: StorageAdapter | null) {
   return new LyricsCache(store, obsoleteStorage);
 }
 
+/** Where the version of the app that last used the cache is kept. */
+export const CACHE_APP_VERSION_STORAGE_KEY = "music-companion-lyrics-cache-app-version";
+
+/**
+ * Empties the cache the first time a version of the app runs on it. A release
+ * may find lyrics where the last one found none, or fix lyrics that were not the
+ * song's, and the cache would keep showing what the old lookup answered. The
+ * version is recorded only once the cache is empty, so a failed clear is retried
+ * at the next start. Resolves true when the cache was emptied.
+ */
+export async function clearForNewVersion(
+  cache: Pick<LyricsCache, "clear">,
+  appVersion: string,
+  storage: Pick<Storage, "getItem" | "setItem">,
+): Promise<boolean> {
+  if (storage.getItem(CACHE_APP_VERSION_STORAGE_KEY) === appVersion) return false;
+  await cache.clear();
+  storage.setItem(CACHE_APP_VERSION_STORAGE_KEY, appVersion);
+  return true;
+}
+
 function toIndexRecord(entry: CacheEntry): IndexRecord {
   return {
     id: entry.id,

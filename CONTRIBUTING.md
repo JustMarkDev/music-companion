@@ -67,8 +67,9 @@ apply formatting locally.
 ### Lyrics fuzzer
 
 `bun run fuzz:lyrics` looks up several hundred real songs (Japanese, Italian,
-featured artists, several credits) the way the app does, against lrc.red and
-LRCLIB, each under the spellings a player may report: shouted, joined, reversed
+featured artists, several credits) the way the app does, against lrc.red,
+Unison and LRCLIB (each measured as its own provider, plus the one the app
+would show), each under the spellings a player may report: shouted, joined, reversed
 or featured artists, "(TV Size)", "(Official Video)", "Artist - Topic", full-width
 letters, decomposed kana and accents, artist in the title, the title of one
 storefront with the artist of another, and a length off by a second or two. It
@@ -135,7 +136,7 @@ src/lyrics-cache.ts             Lyrics cache in IndexedDB, with word-sync bookke
 src/lyrics-loader.ts            Lyrics lookup, word-timing request, and retry budget (no DOM)
 src/styles.css                  Overlay and settings styles
 src-tauri/src/lib.rs            Shared commands, tray, and updater
-src-tauri/src/lyrics.rs         lrc.red lookup, ranking of its matches, and word sync
+src-tauri/src/lyrics.rs         lrc.red, Unison and LRCLIB lookups, ranking of their matches, and word sync
 src-tauri/src/lyrics/live.rs    Live lyrics fuzzer (ignored test) and its offline checks
 src-tauri/fixtures/lyrics-corpus.json  Real songs and their spellings for the fuzzer
 src-tauri/src/ttml.rs           Lyrics model and the parser for lrc.red's TTML files

@@ -31,7 +31,14 @@ describe("platform defaults", () => {
       next: "Ctrl+ArrowRight",
       previous: "Ctrl+ArrowLeft",
       playPause: "Ctrl+Shift+Space",
+      volumeUp: "Ctrl+ArrowUp",
+      volumeDown: "Ctrl+ArrowDown",
     });
+  });
+
+  it("puts the volume on Ctrl and the up and down arrows", () => {
+    expect(defaultHotkeysFor("windows").volumeUp).toBe("Ctrl+ArrowUp");
+    expect(defaultHotkeysFor("macos").volumeDown).toBe("Ctrl+Super+ArrowDown");
   });
 
   it("hands out independent copies", () => {
@@ -53,6 +60,12 @@ describe("decodeSettings", () => {
     expect(decodeSettings(null).showTranslation).toBe(false);
     expect(decodeSettings(JSON.stringify({ showTranslation: true })).showTranslation).toBe(true);
     expect(decodeSettings(JSON.stringify({ showTranslation: "yes" })).showTranslation).toBe(false);
+  });
+
+  it("speaks English unless Italian is chosen", () => {
+    expect(decodeSettings(null).language).toBe("en");
+    expect(decodeSettings(JSON.stringify({ language: "it" })).language).toBe("it");
+    expect(decodeSettings(JSON.stringify({ language: "fr" })).language).toBe("en");
   });
 
   it("clamps modern numeric settings", () => {

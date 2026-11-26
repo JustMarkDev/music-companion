@@ -34,9 +34,10 @@
 
 ## Highlights
 
-- 🎤 **Word-by-word sync**, with line-by-line as the fallback, from [lrc.red](https://lrc.red/).
+- 🎤 **Word-by-word sync**, with line-by-line as the fallback, from [lrc.red](https://lrc.red/), with [Unison](https://unison.betterlyrics.org/) (the Better Lyrics community) and [LRCLIB](https://lrclib.net/) for songs it lacks.
 - 🌏 **Romanization and translation** for Japanese, Korean, Chinese, Arabic, and Devanagari lyrics.
 - 👥 **Duets and background vocals**, set apart on the right and under the line.
+- 🔊 **Volume shortcuts** (Ctrl+Up / Ctrl+Down on Windows, Ctrl+Cmd+Up / Down on macOS), 🇮🇹 an **Italian interface** and a one-click **feedback** report for a wrong song.
 - 🪟 **Glass overlay**: transparent and always on top, with click-through when you need it.
 - 🎹 **Global hotkeys** and a tray or menu bar icon, so it never gets in the way.
 - 🎨 **Yours to tune**: opacity, blur, typography, and a fresh accent colour for every song.
@@ -65,6 +66,6 @@ Details are in [Using Music Companion](docs/usage.md).
 ## License
 
 Music Companion is available under the [GNU General Public License v3.0 only](LICENSE). It is not
-affiliated with Spotify, lrc.red, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.
+affiliated with Spotify, lrc.red, Unison, LRCLIB, Apple, YouTube, Microsoft, VLC, or Lyric Overlay.
 The bundled MediaRemote adapter is licensed separately under the BSD 3-Clause
 License; see `src-tauri/vendor/mediaremote-adapter/LICENSE`.

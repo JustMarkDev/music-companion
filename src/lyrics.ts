@@ -40,6 +40,8 @@ export type LyricsResult = {
   duration: number | null;
   /** True when some line times its individual words. */
   wordTimed: boolean;
+  /** The service the lyrics came from. */
+  source?: string;
   lines: LyricsResultLine[];
 };
 
@@ -164,17 +166,17 @@ export function getLocalLyricsNotice(title: string): string | null {
   if (slowed && reverb) return "Slowed + Reverb - No Lyrics";
 
   const variants: Array<[RegExp, string]> = [
-    [/\bslowed(?:\s+down)?\b/i, "Slowed"],
-    [/\breverb(?:erated)?\b/i, "Reverb"],
-    [/\bremix(?:ed)?\b/i, "Remix"],
-    [/\bsped[\s-]*up\b|\bspeed[\s-]*up\b/i, "Sped Up"],
-    [/\bnightcore\b/i, "Nightcore"],
-    [/\bkaraoke\b/i, "Karaoke"],
-    [/(?:[([\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live"],
-    [/\bcover\b/i, "Cover"],
+    [/\bslowed(?:\s+down)?\b/i, "Slowed - No Lyrics"],
+    [/\breverb(?:erated)?\b/i, "Reverb - No Lyrics"],
+    [/\bremix(?:ed)?\b/i, "Remix - No Lyrics"],
+    [/\bsped[\s-]*up\b|\bspeed[\s-]*up\b/i, "Sped Up - No Lyrics"],
+    [/\bnightcore\b/i, "Nightcore - No Lyrics"],
+    [/\bkaraoke\b/i, "Karaoke - No Lyrics"],
+    [/(?:[([\-–—]\s*live\b|\blive\s+(?:at|from|version|session)\b)/i, "Live - No Lyrics"],
+    [/\bcover\b/i, "Cover - No Lyrics"],
   ];
   const match = variants.find(([pattern]) => pattern.test(title));
-  return match ? `${match[1]} - No Lyrics` : null;
+  return match ? match[1] : null;
 }
 
 /**
