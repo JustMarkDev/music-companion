@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "music-companion"
-version = "2.5.4"
+version = "2.5.5"
 dependencies = [
  "objc2",
  "objc2-app-kit",
